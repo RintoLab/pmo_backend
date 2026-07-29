@@ -12,7 +12,8 @@ import Config
 # Configure Mix tasks and generators
 config :rinto_pmo,
   namespace: RintoPMO,
-  ecto_repos: [RintoPMO.Repo]
+  ecto_repos: [RintoPMO.Repo],
+  injectors: []
 
 config :rinto_pmo, Oban,
   repo: RintoPMO.Repo,

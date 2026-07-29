@@ -26,7 +26,11 @@ defmodule RintoPMO.DataCase do
       import Ecto
       import Ecto.Changeset
       import Ecto.Query
+      import Hammox
       import RintoPMO.DataCase
+      import RintoPMO.Factory
+
+      setup :verify_on_exit!
     end
   end
 

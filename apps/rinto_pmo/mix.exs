@@ -41,7 +41,9 @@ defmodule RintoPMO.MixProject do
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
       {:uuidv7, "~> 1.0"},
-      {:oban, "~> 2.20"}
+      {:oban, "~> 2.20"},
+      {:ex_machina, "~> 2.8.1", only: :test},
+      {:hammox, "~> 1.0", only: :test}
     ]
   end
 
@@ -51,7 +53,7 @@ defmodule RintoPMO.MixProject do
   defp aliases do
     [
       setup: ["deps.get", "ecto.setup"],
-      "ecto.setup": ["ecto.create", "ecto.migrate", "run #{__DIR__}/priv/repo/seeds.exs"],
+      "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
     ]

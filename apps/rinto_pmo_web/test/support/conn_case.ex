@@ -27,7 +27,11 @@ defmodule RintoPMOWeb.ConnCase do
       # Import conveniences for testing with connections
       import Plug.Conn
       import Phoenix.ConnTest
+      import Hammox
+      import RintoPMO.Factory
       import RintoPMOWeb.ConnCase
+
+      setup :verify_on_exit!
     end
   end
 
