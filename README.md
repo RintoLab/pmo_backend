@@ -7,6 +7,8 @@ To start your Phoenix server:
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
+The REST API contract is maintained in [`openapi.yaml`](openapi.yaml).
+
 Ready to run in production? Please [check our deployment guides](https://phoenix.hexdocs.pm/deployment.html).
 ## Umbrella project
 

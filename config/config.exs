@@ -13,7 +13,7 @@ import Config
 config :rinto_pmo,
   namespace: RintoPMO,
   ecto_repos: [RintoPMO.Repo],
-  injectors: []
+  injectors: [actors: RintoPMO.Actors]
 
 config :rinto_pmo, Oban,
   repo: RintoPMO.Repo,

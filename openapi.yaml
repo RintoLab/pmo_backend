@@ -1,0 +1,319 @@
+openapi: 3.0.3
+info:
+  title: Rinto PMO API
+  description: JSON REST API for Rinto PMO.
+  version: 0.1.0
+servers:
+  - url: http://localhost:4000/api/v1
+    description: Development
+  - url: https://pmo-api.kenton.wang/api/v1
+    description: Production
+tags:
+  - name: Actors
+    description: Global human participants and AI personas.
+paths:
+  /actors:
+    get:
+      tags: [Actors]
+      operationId: listActors
+      summary: List all actors
+      responses:
+        "200":
+          description: Actor list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActorListResponse"
+    post:
+      tags: [Actors]
+      operationId: createActor
+      summary: Create an actor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actor]
+              properties:
+                actor:
+                  $ref: "#/components/schemas/ActorCreateInput"
+              additionalProperties: false
+      responses:
+        "201":
+          description: Actor created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActorResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /actors/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ActorId"
+    get:
+      tags: [Actors]
+      operationId: getActor
+      summary: Get an actor
+      responses:
+        "200":
+          description: Actor details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Actors]
+      operationId: updateActor
+      summary: Update an actor
+      description: The actor kind is immutable after creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actor]
+              properties:
+                actor:
+                  $ref: "#/components/schemas/ActorUpdateInput"
+              additionalProperties: false
+      responses:
+        "200":
+          description: Actor updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Actors]
+      operationId: replaceActor
+      summary: Update an actor
+      description: Alias of PATCH. The actor kind is immutable after creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actor]
+              properties:
+                actor:
+                  $ref: "#/components/schemas/ActorUpdateInput"
+              additionalProperties: false
+      responses:
+        "200":
+          description: Actor updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+components:
+  parameters:
+    ActorId:
+      name: id
+      in: path
+      required: true
+      description: Actor UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
+  responses:
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationError"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/NotFoundError"
+  schemas:
+    ActorKind:
+      type: string
+      enum: [human, ai]
+    ThinkingLevel:
+      type: string
+      enum: [off, low, medium, high, max]
+    Actor:
+      type: object
+      required: [id, kind, name, enabled]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUIDv7 identifier.
+        kind:
+          $ref: "#/components/schemas/ActorKind"
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+        provider:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        thinking_level:
+          allOf:
+            - $ref: "#/components/schemas/ThinkingLevel"
+          nullable: true
+        system_prompt:
+          type: string
+          nullable: true
+        injection_profile:
+          type: object
+          nullable: true
+          additionalProperties: true
+        inserted_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      additionalProperties: false
+    HumanActorCreateInput:
+      type: object
+      required: [kind, name]
+      properties:
+        kind:
+          type: string
+          enum: [human]
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+          default: true
+      additionalProperties: false
+    AIActorCreateInput:
+      type: object
+      required: [kind, name, provider, model, thinking_level]
+      properties:
+        kind:
+          type: string
+          enum: [ai]
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+          default: true
+        provider:
+          type: string
+        model:
+          type: string
+        thinking_level:
+          $ref: "#/components/schemas/ThinkingLevel"
+        system_prompt:
+          type: string
+          nullable: true
+        injection_profile:
+          type: object
+          nullable: true
+          additionalProperties: true
+      additionalProperties: false
+    ActorCreateInput:
+      oneOf:
+        - $ref: "#/components/schemas/HumanActorCreateInput"
+        - $ref: "#/components/schemas/AIActorCreateInput"
+      discriminator:
+        propertyName: kind
+        mapping:
+          human: "#/components/schemas/HumanActorCreateInput"
+          ai: "#/components/schemas/AIActorCreateInput"
+    ActorUpdateInput:
+      type: object
+      properties:
+        kind:
+          allOf:
+            - $ref: "#/components/schemas/ActorKind"
+          description: May be supplied unchanged; changing it is rejected.
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+        provider:
+          type: string
+        model:
+          type: string
+        thinking_level:
+          $ref: "#/components/schemas/ThinkingLevel"
+        system_prompt:
+          type: string
+          nullable: true
+        injection_profile:
+          type: object
+          nullable: true
+          additionalProperties: true
+      additionalProperties: false
+    ActorResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Actor"
+      additionalProperties: false
+    ActorListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Actor"
+      additionalProperties: false
+    ValidationError:
+      type: object
+      required: [status, code, errors]
+      properties:
+        status:
+          type: integer
+          enum: [422]
+        code:
+          type: string
+          enum: [validation_error]
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+      additionalProperties: false
+    NotFoundError:
+      type: object
+      required: [status, code]
+      properties:
+        status:
+          type: integer
+          enum: [404]
+        code:
+          type: string
+          enum: [not_found]
+      additionalProperties: false

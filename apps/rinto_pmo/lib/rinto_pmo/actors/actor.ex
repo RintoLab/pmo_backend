@@ -8,6 +8,8 @@ defmodule RintoPMO.Actors.Actor do
 
   use RintoPMO, :schema
 
+  @type t :: %__MODULE__{}
+
   schema "actors" do
     field :kind, Ecto.Enum, values: [:human, :ai]
     field :name, :string

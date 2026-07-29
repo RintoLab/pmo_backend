@@ -1,21 +1,31 @@
 defmodule RintoPMOWeb.ErrorJSON do
-  @moduledoc """
-  This module is invoked by your endpoint in case of errors on JSON requests.
+  @moduledoc false
 
-  See config/config.exs.
-  """
+  def render(<<status::binary-size(3)>> <> ".json", %{code: code} = assigns) do
+    response = %{
+      status: String.to_integer(status),
+      code: code
+    }
 
-  # If you want to customize a particular status code,
-  # you may add your own clauses, such as:
-  #
-  # def render("500.json", _assigns) do
-  #   %{errors: %{detail: "Internal Server Error"}}
-  # end
+    case Map.get(assigns, :errors) do
+      nil -> response
+      errors -> Map.put(response, :errors, errors)
+    end
+  end
 
-  # By default, Phoenix returns the status message from
-  # the template name. For example, "404.json" becomes
-  # "Not Found".
-  def render(template, _assigns) do
-    %{errors: %{detail: Phoenix.Controller.status_message_from_template(template)}}
+  def render("400.json", _assigns) do
+    %{status: 400, code: :bad_request}
+  end
+
+  def render("404.json", _assigns) do
+    %{status: 404, code: :not_found}
+  end
+
+  def render("500.json", _assigns) do
+    %{status: 500, code: :internal_server_error}
+  end
+
+  def template_not_found(_template, _assigns) do
+    %{status: 500, code: :internal_server_error}
   end
 end
