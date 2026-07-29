@@ -14,6 +14,10 @@ config :rinto_pmo,
   namespace: RintoPMO,
   ecto_repos: [RintoPMO.Repo]
 
+config :rinto_pmo, Oban,
+  repo: RintoPMO.Repo,
+  queues: [default: 10]
+
 config :rinto_pmo_web,
   namespace: RintoPMOWeb,
   ecto_repos: [RintoPMO.Repo],

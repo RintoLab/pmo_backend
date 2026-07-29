@@ -40,7 +40,8 @@ defmodule RintoPMO.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
-      {:jason, "~> 1.2"}
+      {:uuidv7, "~> 1.0"},
+      {:oban, "~> 2.20"}
     ]
   end
 

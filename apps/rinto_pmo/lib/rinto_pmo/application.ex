@@ -9,6 +9,7 @@ defmodule RintoPMO.Application do
   def start(_type, _args) do
     children = [
       RintoPMO.Repo,
+      {Oban, Application.fetch_env!(:rinto_pmo, Oban)},
       {DNSCluster, query: Application.get_env(:rinto_pmo, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: RintoPMO.PubSub}
       # Start a worker by calling: RintoPMO.Worker.start_link(arg)

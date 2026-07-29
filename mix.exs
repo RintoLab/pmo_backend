@@ -8,13 +8,14 @@ defmodule RintoPMO.Umbrella.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
+      dialyzer: [plt_add_apps: [:ex_unit]],
       listeners: [Phoenix.CodeReloader]
     ]
   end
 
   def cli do
     [
-      preferred_envs: [precommit: :test]
+      preferred_envs: [check: :test]
     ]
   end
 
@@ -31,7 +32,11 @@ defmodule RintoPMO.Umbrella.MixProject do
   # Dependencies listed here are available only for this project
   # and cannot be accessed from applications inside the apps/ folder.
   defp deps do
-    [{:tidewave, "~> 0.8", only: [:dev]}]
+    [
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:tidewave, "~> 0.8", only: [:dev]}
+    ]
   end
 
   # Aliases are shortcuts or tasks specific to the current project.
@@ -47,7 +52,14 @@ defmodule RintoPMO.Umbrella.MixProject do
     [
       # run `mix setup` in all child apps
       setup: ["cmd mix setup"],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+      check: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format --check-formatted",
+        "credo --strict",
+        "dialyzer",
+        "test"
+      ]
     ]
   end
 end

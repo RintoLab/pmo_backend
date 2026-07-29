@@ -1,7 +1,15 @@
 {
+  "network": {
+    "allowedDomains": [
+      "builds.hex.pm",
+      "hex.pm",
+      "repo.hex.pm"
+    ]
+  },
   "filesystem": {
     "allowRead": [
-      "~/Kenton/pmo_doc"
+      "~/Kenton/pmo_doc",
+      "~/.local/share/mise"
     ]
   }
 }
