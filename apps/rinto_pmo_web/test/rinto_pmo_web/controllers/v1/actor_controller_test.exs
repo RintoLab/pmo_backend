@@ -5,7 +5,7 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
   alias RintoPMO.ActorsMock
 
   test "GET /api/v1/actors lists actors", %{conn: conn} do
-    actor = build(:actor, id: UUIDv7.generate(), name: "Human")
+    actor = insert(:actor, name: "Human")
     actor_id = actor.id
 
     expect(ActorsMock, :list_actors, fn -> [actor] end)
@@ -17,7 +17,7 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
   end
 
   test "GET /api/v1/actors/:id shows an actor", %{conn: conn} do
-    actor = build(:actor, id: UUIDv7.generate(), name: "Human")
+    actor = insert(:actor, name: "Human")
     actor_id = actor.id
 
     expect(ActorsMock, :get_actor!, fn id ->
@@ -31,7 +31,7 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
   end
 
   test "POST /api/v1/actors creates an actor", %{conn: conn} do
-    actor = build(:actor, id: UUIDv7.generate(), name: "Human")
+    actor = insert(:actor, name: "Human")
     actor_id = actor.id
     params = %{"kind" => "human", "name" => "Human"}
 
@@ -58,7 +58,7 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
   end
 
   test "PATCH /api/v1/actors/:id updates an actor", %{conn: conn} do
-    actor = build(:actor, id: UUIDv7.generate(), name: "Human")
+    actor = insert(:actor, name: "Human")
     actor_id = actor.id
     updated_actor = %{actor | name: "Updated Human"}
     params = %{"name" => "Updated Human"}

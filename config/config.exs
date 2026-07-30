@@ -13,7 +13,11 @@ import Config
 config :rinto_pmo,
   namespace: RintoPMO,
   ecto_repos: [RintoPMO.Repo],
-  injectors: [actors: RintoPMO.Actors]
+  injectors: [
+    actors: RintoPMO.Actors,
+    projects: RintoPMO.Projects,
+    repo_credentials: RintoPMO.RepoCredentials
+  ]
 
 config :rinto_pmo, Oban,
   repo: RintoPMO.Repo,
@@ -41,6 +45,7 @@ config :logger, :default_formatter,
   metadata: [:request_id]
 
 config :phoenix, :json_library, JSON
+config :phoenix, :filter_parameters, ["token"]
 
 # of this file so it overrides the configuration defined above.
 if "#{config_env()}.exs" |> Path.expand(__DIR__) |> File.exists?() do

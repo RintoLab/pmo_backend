@@ -11,6 +11,12 @@ servers:
 tags:
   - name: Actors
     description: Global human participants and AI personas.
+  - name: Projects
+    description: Projects and their archive lifecycle.
+  - name: Project Repositories
+    description: Read-only Git repositories scoped to a project.
+  - name: Repo Credentials
+    description: Reusable HTTPS username and token credentials.
 paths:
   /actors:
     get:
@@ -118,13 +124,376 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /projects:
+    get:
+      tags: [Projects]
+      operationId: listProjects
+      summary: List active projects
+      responses:
+        "200":
+          description: Active project list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectListResponse"
+    post:
+      tags: [Projects]
+      operationId: createProject
+      summary: Create a project
+      requestBody:
+        $ref: "#/components/requestBodies/ProjectCreate"
+      responses:
+        "201":
+          description: Project created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /projects/{slug}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectSlug"
+    get:
+      tags: [Projects]
+      operationId: getProject
+      summary: Get an active or archived project
+      responses:
+        "200":
+          description: Project details including repositories
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Projects]
+      operationId: updateProject
+      summary: Update project metadata
+      description: Status cannot be changed through this endpoint.
+      requestBody:
+        $ref: "#/components/requestBodies/ProjectUpdate"
+      responses:
+        "200":
+          description: Project updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Projects]
+      operationId: replaceProject
+      summary: Update project metadata
+      description: Alias of PATCH. Status cannot be changed through this endpoint.
+      requestBody:
+        $ref: "#/components/requestBodies/ProjectUpdate"
+      responses:
+        "200":
+          description: Project updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Projects]
+      operationId: archiveProject
+      summary: Archive a project
+      description: Idempotently sets status to archived. The project is not physically deleted and cannot be restored.
+      responses:
+        "204":
+          description: Project archived
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /projects/{slug}/repos:
+    parameters:
+      - $ref: "#/components/parameters/ProjectSlug"
+    get:
+      tags: [Project Repositories]
+      operationId: listProjectRepos
+      summary: List repositories for an active project
+      responses:
+        "200":
+          description: Project repository list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectRepoListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Project Repositories]
+      operationId: createProjectRepo
+      summary: Add a repository to an active project
+      requestBody:
+        $ref: "#/components/requestBodies/ProjectRepoCreate"
+      responses:
+        "201":
+          description: Project repository created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectRepoResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /projects/{slug}/repos/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectSlug"
+      - $ref: "#/components/parameters/ProjectRepoId"
+    get:
+      tags: [Project Repositories]
+      operationId: getProjectRepo
+      summary: Get a repository scoped to an active project
+      responses:
+        "200":
+          description: Project repository details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectRepoResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Project Repositories]
+      operationId: updateProjectRepo
+      summary: Update a repository configuration
+      requestBody:
+        $ref: "#/components/requestBodies/ProjectRepoUpdate"
+      responses:
+        "200":
+          description: Project repository updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectRepoResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Project Repositories]
+      operationId: replaceProjectRepo
+      summary: Update a repository configuration
+      description: Alias of PATCH.
+      requestBody:
+        $ref: "#/components/requestBodies/ProjectRepoUpdate"
+      responses:
+        "200":
+          description: Project repository updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectRepoResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Project Repositories]
+      operationId: deleteProjectRepo
+      summary: Delete a repository configuration
+      responses:
+        "204":
+          description: Project repository deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /repo_credentials:
+    get:
+      tags: [Repo Credentials]
+      operationId: listRepoCredentials
+      summary: List repository credentials
+      responses:
+        "200":
+          description: Repository credential list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoCredentialListResponse"
+    post:
+      tags: [Repo Credentials]
+      operationId: createRepoCredential
+      summary: Create a repository credential
+      requestBody:
+        $ref: "#/components/requestBodies/RepoCredentialCreate"
+      responses:
+        "201":
+          description: Repository credential created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoCredentialResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /repo_credentials/{id}:
+    parameters:
+      - $ref: "#/components/parameters/RepoCredentialId"
+    get:
+      tags: [Repo Credentials]
+      operationId: getRepoCredential
+      summary: Get a repository credential
+      responses:
+        "200":
+          description: Repository credential details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoCredentialResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Repo Credentials]
+      operationId: updateRepoCredential
+      summary: Update a repository credential
+      description: Omitting token retains its current value.
+      requestBody:
+        $ref: "#/components/requestBodies/RepoCredentialUpdate"
+      responses:
+        "200":
+          description: Repository credential updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoCredentialResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Repo Credentials]
+      operationId: replaceRepoCredential
+      summary: Update a repository credential
+      description: Alias of PATCH. Omitting token retains its current value.
+      requestBody:
+        $ref: "#/components/requestBodies/RepoCredentialUpdate"
+      responses:
+        "200":
+          description: Repository credential updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoCredentialResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Repo Credentials]
+      operationId: deleteRepoCredential
+      summary: Delete a repository credential
+      description: Repository references are set to null.
+      responses:
+        "204":
+          description: Repository credential deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
 components:
+  requestBodies:
+    ProjectCreate:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [project]
+            properties:
+              project:
+                $ref: "#/components/schemas/ProjectCreateInput"
+            additionalProperties: false
+    ProjectUpdate:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [project]
+            properties:
+              project:
+                $ref: "#/components/schemas/ProjectUpdateInput"
+            additionalProperties: false
+    ProjectRepoCreate:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [repo]
+            properties:
+              repo:
+                $ref: "#/components/schemas/ProjectRepoCreateInput"
+            additionalProperties: false
+    ProjectRepoUpdate:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [repo]
+            properties:
+              repo:
+                $ref: "#/components/schemas/ProjectRepoUpdateInput"
+            additionalProperties: false
+    RepoCredentialCreate:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [repo_credential]
+            properties:
+              repo_credential:
+                $ref: "#/components/schemas/RepoCredentialCreateInput"
+            additionalProperties: false
+    RepoCredentialUpdate:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [repo_credential]
+            properties:
+              repo_credential:
+                $ref: "#/components/schemas/RepoCredentialUpdateInput"
+            additionalProperties: false
   parameters:
     ActorId:
       name: id
       in: path
       required: true
       description: Actor UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
+    ProjectSlug:
+      name: slug
+      in: path
+      required: true
+      description: Unique project slug.
+      schema:
+        type: string
+        pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    ProjectRepoId:
+      name: id
+      in: path
+      required: true
+      description: Project repository UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
+    RepoCredentialId:
+      name: id
+      in: path
+      required: true
+      description: Repository credential UUIDv7 identifier.
       schema:
         type: string
         format: uuid
@@ -288,6 +657,259 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Actor"
+      additionalProperties: false
+    ProjectStatus:
+      type: string
+      enum: [active, archived]
+    ProjectSummary:
+      type: object
+      required: [id, name, slug, description, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUIDv7 identifier.
+        name:
+          type: string
+        slug:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        description:
+          type: string
+        status:
+          $ref: "#/components/schemas/ProjectStatus"
+        inserted_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      additionalProperties: false
+    Project:
+      type: object
+      required: [id, name, slug, description, status, repos]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUIDv7 identifier.
+        name:
+          type: string
+        slug:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        description:
+          type: string
+        status:
+          $ref: "#/components/schemas/ProjectStatus"
+        repos:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectRepo"
+        inserted_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      additionalProperties: false
+    ProjectCreateInput:
+      type: object
+      required: [name, slug, description]
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        description:
+          type: string
+      additionalProperties: false
+    ProjectUpdateInput:
+      type: object
+      description: Project status is not writable. Use DELETE to archive.
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        description:
+          type: string
+      additionalProperties: false
+    ProjectResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Project"
+      additionalProperties: false
+    ProjectListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectSummary"
+      additionalProperties: false
+    ProjectRepo:
+      type: object
+      required: [id, project_id, name, git_url, branch]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUIDv7 identifier.
+        project_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: Directory name in the future agent workspace.
+        git_url:
+          type: string
+          format: uri
+        branch:
+          type: string
+        credential_id:
+          type: string
+          format: uuid
+          nullable: true
+        last_synced_at:
+          type: string
+          format: date-time
+          nullable: true
+          readOnly: true
+        last_sync_error:
+          type: string
+          nullable: true
+          readOnly: true
+        inserted_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      additionalProperties: false
+    ProjectRepoCreateInput:
+      type: object
+      required: [name, git_url, branch]
+      properties:
+        name:
+          type: string
+        git_url:
+          type: string
+          format: uri
+          description: Must use HTTPS when credential_id is set.
+        branch:
+          type: string
+        credential_id:
+          type: string
+          format: uuid
+          nullable: true
+      additionalProperties: false
+    ProjectRepoUpdateInput:
+      type: object
+      properties:
+        name:
+          type: string
+        git_url:
+          type: string
+          format: uri
+          description: Must use HTTPS when credential_id is set.
+        branch:
+          type: string
+        credential_id:
+          type: string
+          format: uuid
+          nullable: true
+      additionalProperties: false
+    ProjectRepoResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/ProjectRepo"
+      additionalProperties: false
+    ProjectRepoListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectRepo"
+      additionalProperties: false
+    RepoCredential:
+      type: object
+      required: [id, name, username]
+      description: The token is never returned.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUIDv7 identifier.
+        name:
+          type: string
+        username:
+          type: string
+        inserted_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      additionalProperties: false
+    RepoCredentialCreateInput:
+      type: object
+      required: [name, username, token]
+      properties:
+        name:
+          type: string
+        username:
+          type: string
+        token:
+          type: string
+          format: password
+          writeOnly: true
+      additionalProperties: false
+    RepoCredentialUpdateInput:
+      type: object
+      description: An omitted token retains the existing token.
+      properties:
+        name:
+          type: string
+        username:
+          type: string
+        token:
+          type: string
+          format: password
+          writeOnly: true
+      additionalProperties: false
+    RepoCredentialResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/RepoCredential"
+      additionalProperties: false
+    RepoCredentialListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepoCredential"
       additionalProperties: false
     ValidationError:
       type: object

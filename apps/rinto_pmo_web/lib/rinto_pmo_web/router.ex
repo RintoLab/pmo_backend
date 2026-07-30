@@ -9,5 +9,14 @@ defmodule RintoPMOWeb.Router do
     pipe_through :api
 
     resources "/actors", ActorController, only: [:index, :show, :create, :update]
+
+    resources "/projects", ProjectController,
+      only: [:index, :show, :create, :update, :delete],
+      param: "slug" do
+      resources "/repos", ProjectRepoController, only: [:index, :show, :create, :update, :delete]
+    end
+
+    resources "/repo_credentials", RepoCredentialController,
+      only: [:index, :show, :create, :update, :delete]
   end
 end
