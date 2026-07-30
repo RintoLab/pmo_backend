@@ -105,7 +105,14 @@ defmodule RintoPMOWeb.V1.ProjectControllerTest do
 
     conn = post(conn, ~p"/api/v1/projects", project: params)
 
-    assert %{"status" => 422, "code" => "validation_error"} = json_response(conn, 422)
+    assert %{
+             "error" => "validation_error",
+             "message" => "Request validation failed.",
+             "details" => %{
+               "description" => ["can't be blank"],
+               "slug" => ["can't be blank"]
+             }
+           } = json_response(conn, 422)
   end
 
   test "GET /api/v1/projects/:slug returns 404", %{conn: conn} do
@@ -113,9 +120,15 @@ defmodule RintoPMOWeb.V1.ProjectControllerTest do
       raise Ecto.NoResultsError, queryable: Project
     end)
 
-    assert {404, _headers, _body} =
+    assert {404, _headers, body} =
              assert_error_sent(:not_found, fn ->
                get(conn, ~p"/api/v1/projects/missing")
              end)
+
+    assert Jason.decode!(body) == %{
+             "error" => "not_found",
+             "message" => "The requested resource was not found.",
+             "details" => %{}
+           }
   end
 end

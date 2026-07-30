@@ -51,9 +51,9 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
     conn = post(conn, ~p"/api/v1/actors", actor: params)
 
     assert %{
-             "status" => 422,
-             "code" => "validation_error",
-             "errors" => %{"name" => ["can't be blank"]}
+             "error" => "validation_error",
+             "message" => "Request validation failed.",
+             "details" => %{"name" => ["can't be blank"]}
            } = json_response(conn, 422)
   end
 

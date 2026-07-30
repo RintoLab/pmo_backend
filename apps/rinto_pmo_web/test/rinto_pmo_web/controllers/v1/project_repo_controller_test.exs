@@ -110,9 +110,12 @@ defmodule RintoPMOWeb.V1.ProjectRepoControllerTest do
     conn = post(conn, ~p"/api/v1/projects/#{project.slug}/repos", repo: params)
 
     assert %{
-             "status" => 422,
-             "code" => "validation_error",
-             "errors" => %{"branch" => ["can't be blank"], "git_url" => ["can't be blank"]}
+             "error" => "validation_error",
+             "message" => "Request validation failed.",
+             "details" => %{
+               "branch" => ["can't be blank"],
+               "git_url" => ["can't be blank"]
+             }
            } = json_response(conn, 422)
   end
 

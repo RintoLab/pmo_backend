@@ -911,18 +911,49 @@ components:
           items:
             $ref: "#/components/schemas/RepoCredential"
       additionalProperties: false
+    APIErrorCode:
+      type: string
+      description: Stable machine-readable error code.
+      enum:
+        - bad_request
+        - not_found
+        - stale_document
+        - task_state_conflict
+        - dependency_cycle
+        - validation_error
+        - task_blocked
+        - review_round_open
+        - invalid_block_op
+        - invalid_estimate
+        - task_not_splittable
+        - internal_server_error
+    APIError:
+      type: object
+      required: [error, message, details]
+      properties:
+        error:
+          $ref: "#/components/schemas/APIErrorCode"
+        message:
+          type: string
+          description: Human-readable error explanation.
+        details:
+          type: object
+          description: Error-specific structured context.
+          additionalProperties: true
+      additionalProperties: false
     ValidationError:
       type: object
-      required: [status, code, errors]
+      required: [error, message, details]
       properties:
-        status:
-          type: integer
-          enum: [422]
-        code:
+        error:
           type: string
           enum: [validation_error]
-        errors:
+        message:
+          type: string
+          example: Request validation failed.
+        details:
           type: object
+          description: Validation messages grouped by request field.
           additionalProperties:
             type: array
             items:
@@ -930,12 +961,15 @@ components:
       additionalProperties: false
     NotFoundError:
       type: object
-      required: [status, code]
+      required: [error, message, details]
       properties:
-        status:
-          type: integer
-          enum: [404]
-        code:
+        error:
           type: string
           enum: [not_found]
+        message:
+          type: string
+          example: The requested resource was not found.
+        details:
+          type: object
+          additionalProperties: false
       additionalProperties: false

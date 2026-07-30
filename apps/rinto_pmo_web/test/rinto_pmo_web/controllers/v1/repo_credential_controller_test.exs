@@ -103,9 +103,9 @@ defmodule RintoPMOWeb.V1.RepoCredentialControllerTest do
     conn = post(conn, ~p"/api/v1/repo_credentials", repo_credential: params)
 
     assert %{
-             "status" => 422,
-             "code" => "validation_error",
-             "errors" => %{
+             "error" => "validation_error",
+             "message" => "Request validation failed.",
+             "details" => %{
                "token" => ["can't be blank"],
                "username" => ["can't be blank"]
              }
