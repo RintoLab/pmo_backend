@@ -28,6 +28,7 @@ defmodule RintoPMO.Annotations.AnnotationReply do
     reply
     |> cast(attrs, [:annotation_id, :actor_id, :content, :position])
     |> validate_required([:annotation_id, :actor_id, :content, :position])
+    |> validate_length(:content, min: 1)
     |> validate_number(:position, greater_than_or_equal_to: 0)
     |> foreign_key_constraint(:annotation_id)
     |> foreign_key_constraint(:actor_id)
@@ -39,5 +40,6 @@ defmodule RintoPMO.Annotations.AnnotationReply do
     reply
     |> cast(attrs, [:content])
     |> validate_required([:content])
+    |> validate_length(:content, min: 1)
   end
 end

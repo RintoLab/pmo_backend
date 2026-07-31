@@ -440,7 +440,11 @@ paths:
           required: false
           description: Filter by logical block id. Use `none` for annotations without a block anchor.
           schema:
-            type: string
+            oneOf:
+              - type: string
+                format: uuid
+              - type: string
+                enum: [none]
       responses:
         "200":
           description: Annotation summaries

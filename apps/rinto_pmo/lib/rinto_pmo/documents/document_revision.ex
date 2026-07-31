@@ -30,6 +30,7 @@ defmodule RintoPMO.Documents.DocumentRevision do
     revision
     |> cast(attrs, [:title, :change_summary])
     |> validate_required([:title])
+    |> validate_length(:title, min: 1)
     |> foreign_key_constraint(:document_id)
     |> cast_assoc(:blocks, with: &DocumentBlock.initial_changeset/2)
     |> assign_block_positions()
@@ -41,6 +42,7 @@ defmodule RintoPMO.Documents.DocumentRevision do
     |> cast(attrs, [:title, :change_summary, :base_revision_id])
     |> inherit_title(parent, attrs)
     |> validate_required([:title, :base_revision_id])
+    |> validate_length(:title, min: 1)
     |> foreign_key_constraint(:document_id)
     |> foreign_key_constraint(:parent_id)
     |> unique_constraint(:parent_id)

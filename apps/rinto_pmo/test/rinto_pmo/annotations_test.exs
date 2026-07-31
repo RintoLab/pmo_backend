@@ -35,6 +35,19 @@ defmodule RintoPMO.AnnotationsTest do
       assert "can't be blank" in errors_on(changeset).content
     end
 
+    test "rejects blank annotation content" do
+      document = insert(:document)
+      actor = insert(:actor)
+
+      assert {:error, changeset} =
+               Annotations.create_annotation(document, %{actor_id: actor.id, content: ""})
+
+      assert content_errors = errors_on(changeset).content
+
+      assert "can't be blank" in content_errors or
+               Enum.any?(content_errors, &String.contains?(&1, "at least"))
+    end
+
     test "lists annotations without replies and filters by block_id" do
       document = insert(:document)
       other = insert(:document)
@@ -138,6 +151,19 @@ defmodule RintoPMO.AnnotationsTest do
       assert {:ok, updated} = Annotations.update_reply(reply, %{content: "New"})
       assert updated.content == "New"
       assert updated.position == 0
+    end
+
+    test "rejects blank reply content" do
+      annotation = insert(:annotation)
+      actor = insert(:actor)
+
+      assert {:error, changeset} =
+               Annotations.create_reply(annotation, %{actor_id: actor.id, content: ""})
+
+      assert content_errors = errors_on(changeset).content
+
+      assert "can't be blank" in content_errors or
+               Enum.any?(content_errors, &String.contains?(&1, "at least"))
     end
 
     test "scopes get_reply! to the annotation" do

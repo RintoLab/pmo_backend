@@ -23,12 +23,12 @@ defmodule RintoPMOWeb.V1.ProjectController do
     end
   end
 
-  def update(conn, %{"slug" => slug} = params) do
+  def update(conn, %{"slug" => slug}) do
     context = Utils.module(:projects)
     project = context.get_project_by_slug!(slug)
-    project_params = Map.delete(params, "slug")
 
-    with {:ok, project} <- context.update_project(project, project_params) do
+    # Use body params so a path slug does not mask an updated slug in the body.
+    with {:ok, project} <- context.update_project(project, conn.body_params) do
       render(conn, :show, project: project)
     end
   end

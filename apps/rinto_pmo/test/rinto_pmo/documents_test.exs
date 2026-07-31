@@ -41,6 +41,14 @@ defmodule RintoPMO.DocumentsTest do
       assert %{revisions: [%{title: ["can't be blank"]}]} = errors_on(changeset)
     end
 
+    test "rejects a blank revision title" do
+      assert {:error, changeset} = Documents.create_document(%{title: ""})
+      assert %{revisions: [%{title: title_errors}]} = errors_on(changeset)
+
+      assert "can't be blank" in title_errors or
+               Enum.any?(title_errors, &String.contains?(&1, "at least"))
+    end
+
     test "lists all, project, and unassigned scopes while hiding archived documents" do
       project = insert(:project)
       other_project = insert(:project)

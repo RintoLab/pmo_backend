@@ -41,6 +41,39 @@ defmodule RintoPMO.Projects.ProjectRepoTest do
       assert Ecto.Changeset.get_field(changeset, :last_synced_at) == nil
       assert Ecto.Changeset.get_field(changeset, :last_sync_error) == nil
     end
+
+    test "requires git_url to be a valid URI" do
+      changeset =
+        ProjectRepo.changeset(%ProjectRepo{}, Map.put(valid_attrs(), :git_url, "not a url"))
+
+      refute changeset.valid?
+      assert "must be a valid URI" in errors_on(changeset).git_url
+    end
+
+    test "requires HTTPS git_url when credential_id is set" do
+      credential = insert(:repo_credential)
+
+      changeset =
+        ProjectRepo.changeset(
+          %ProjectRepo{},
+          valid_attrs()
+          |> Map.put(:git_url, "http://example.com/owner/backend.git")
+          |> Map.put(:credential_id, credential.id)
+        )
+
+      refute changeset.valid?
+      assert "must use HTTPS when credential_id is set" in errors_on(changeset).git_url
+
+      https_changeset =
+        ProjectRepo.changeset(
+          %ProjectRepo{},
+          valid_attrs()
+          |> Map.put(:git_url, "https://example.com/owner/backend.git")
+          |> Map.put(:credential_id, credential.id)
+        )
+
+      assert https_changeset.valid?
+    end
   end
 
   defp valid_attrs do

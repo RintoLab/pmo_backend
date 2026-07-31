@@ -70,6 +70,20 @@ defmodule RintoPMOWeb.V1.ProjectControllerTest do
     assert %{"name" => "Updated"} = json_response(conn, 200)["data"]
   end
 
+  test "PATCH /api/v1/projects/:slug can rename the slug from the body", %{conn: conn} do
+    project = insert(:project)
+    project_slug = project.slug
+    params = %{"slug" => "renamed-project"}
+    updated = %{project | slug: "renamed-project"}
+
+    expect(ProjectsMock, :get_project_by_slug!, fn ^project_slug -> project end)
+    expect(ProjectsMock, :update_project, fn ^project, ^params -> {:ok, updated} end)
+
+    conn = patch(conn, ~p"/api/v1/projects/#{project_slug}", params)
+
+    assert %{"slug" => "renamed-project"} = json_response(conn, 200)["data"]
+  end
+
   test "PUT /api/v1/projects/:slug uses the same update action", %{conn: conn} do
     project = insert(:project)
     project_slug = project.slug

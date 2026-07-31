@@ -42,6 +42,7 @@ defmodule RintoPMO.Annotations.Annotation do
       :content
     ])
     |> validate_required([:document_id, :actor_id, :content])
+    |> validate_length(:content, min: 1)
     |> foreign_key_constraint(:document_id)
     |> foreign_key_constraint(:actor_id)
   end
@@ -51,5 +52,6 @@ defmodule RintoPMO.Annotations.Annotation do
     annotation
     |> cast(attrs, [:content, :block_id, :block_text, :selected_text])
     |> validate_required([:content])
+    |> validate_length(:content, min: 1)
   end
 end
