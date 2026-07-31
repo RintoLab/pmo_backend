@@ -37,7 +37,7 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
 
     expect(ActorsMock, :create_actor, fn ^params -> {:ok, actor} end)
 
-    conn = post(conn, ~p"/api/v1/actors", actor: params)
+    conn = post(conn, ~p"/api/v1/actors", params)
 
     assert %{"id" => ^actor_id, "name" => "Human"} = json_response(conn, 201)["data"]
   end
@@ -48,7 +48,7 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
 
     expect(ActorsMock, :create_actor, fn ^params -> {:error, changeset} end)
 
-    conn = post(conn, ~p"/api/v1/actors", actor: params)
+    conn = post(conn, ~p"/api/v1/actors", params)
 
     assert %{
              "error" => "validation_error",
@@ -70,7 +70,7 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
 
     expect(ActorsMock, :update_actor, fn ^actor, ^params -> {:ok, updated_actor} end)
 
-    conn = patch(conn, ~p"/api/v1/actors/#{actor.id}", actor: params)
+    conn = patch(conn, ~p"/api/v1/actors/#{actor.id}", params)
 
     assert %{"id" => ^actor_id, "name" => "Updated Human"} =
              json_response(conn, 200)["data"]

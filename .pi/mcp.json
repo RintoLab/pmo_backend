@@ -1,11 +1,5 @@
 {
   "mcpServers": {
-    "tidewave": {
-      "type": "http",
-      "url": "http://localhost:4000/tidewave/mcp?include_browser_tools=false",
-      "directTools": true,
-      "_source": "pi-acp-tidewave-sync"
-    },
     "apifox-pmo": {
       "command": "npx",
       "args": [
@@ -16,6 +10,12 @@
       "env": {
         "APIFOX_ACCESS_TOKEN": "${APIFOX_ACCESS_TOKEN}"
       }
+    },
+    "tidewave": {
+      "type": "http",
+      "url": "http://localhost:4000/tidewave/mcp?include_browser_tools=false",
+      "directTools": true,
+      "_source": "pi-acp-tidewave-sync"
     }
   }
 }

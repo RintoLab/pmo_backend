@@ -43,6 +43,8 @@ defmodule RintoPMOWeb do
 
       import Plug.Conn
 
+      action_fallback RintoPMOWeb.FallbackController
+
       unquote(verified_routes())
     end
   end

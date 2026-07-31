@@ -49,7 +49,7 @@ defmodule RintoPMOWeb.V1.RepoCredentialControllerTest do
 
     expect(RepoCredentialsMock, :create_repo_credential, fn ^params -> {:ok, credential} end)
 
-    conn = post(conn, ~p"/api/v1/repo_credentials", repo_credential: params)
+    conn = post(conn, ~p"/api/v1/repo_credentials", params)
 
     assert %{"name" => name} = data = json_response(conn, 201)["data"]
     assert name == credential.name
@@ -73,8 +73,7 @@ defmodule RintoPMOWeb.V1.RepoCredentialControllerTest do
       {:ok, updated}
     end)
 
-    conn =
-      patch(conn, ~p"/api/v1/repo_credentials/#{credential.id}", repo_credential: params)
+    conn = patch(conn, ~p"/api/v1/repo_credentials/#{credential.id}", params)
 
     assert %{"name" => "Updated"} = json_response(conn, 200)["data"]
   end
@@ -100,7 +99,7 @@ defmodule RintoPMOWeb.V1.RepoCredentialControllerTest do
 
     expect(RepoCredentialsMock, :create_repo_credential, fn ^params -> {:error, changeset} end)
 
-    conn = post(conn, ~p"/api/v1/repo_credentials", repo_credential: params)
+    conn = post(conn, ~p"/api/v1/repo_credentials", params)
 
     assert %{
              "error" => "validation_error",

@@ -7,6 +7,7 @@ defmodule RintoPMO.Projects.Project do
 
   use RintoPMO, :schema
 
+  alias RintoPMO.Documents.Document
   alias RintoPMO.Projects.ProjectRepo
 
   @type t :: %__MODULE__{}
@@ -18,6 +19,7 @@ defmodule RintoPMO.Projects.Project do
     field :status, Ecto.Enum, values: [:active, :archived], default: :active
 
     has_many :repos, ProjectRepo
+    has_many :documents, Document
 
     timestamps()
   end

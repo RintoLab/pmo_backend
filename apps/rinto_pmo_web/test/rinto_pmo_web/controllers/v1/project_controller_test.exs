@@ -51,7 +51,7 @@ defmodule RintoPMOWeb.V1.ProjectControllerTest do
 
     expect(ProjectsMock, :create_project, fn ^params -> {:ok, project} end)
 
-    conn = post(conn, ~p"/api/v1/projects", project: params)
+    conn = post(conn, ~p"/api/v1/projects", params)
 
     assert %{"slug" => ^project_slug, "repos" => []} = json_response(conn, 201)["data"]
   end
@@ -65,7 +65,7 @@ defmodule RintoPMOWeb.V1.ProjectControllerTest do
     expect(ProjectsMock, :get_project_by_slug!, fn ^project_slug -> project end)
     expect(ProjectsMock, :update_project, fn ^project, ^params -> {:ok, updated} end)
 
-    conn = patch(conn, ~p"/api/v1/projects/#{project_slug}", project: params)
+    conn = patch(conn, ~p"/api/v1/projects/#{project_slug}", params)
 
     assert %{"name" => "Updated"} = json_response(conn, 200)["data"]
   end
@@ -79,7 +79,7 @@ defmodule RintoPMOWeb.V1.ProjectControllerTest do
     expect(ProjectsMock, :get_project_by_slug!, fn ^project_slug -> project end)
     expect(ProjectsMock, :update_project, fn ^project, ^params -> {:ok, updated} end)
 
-    conn = put(conn, ~p"/api/v1/projects/#{project_slug}", project: params)
+    conn = put(conn, ~p"/api/v1/projects/#{project_slug}", params)
 
     assert %{"description" => "Updated"} = json_response(conn, 200)["data"]
   end
@@ -103,7 +103,7 @@ defmodule RintoPMOWeb.V1.ProjectControllerTest do
 
     expect(ProjectsMock, :create_project, fn ^params -> {:error, changeset} end)
 
-    conn = post(conn, ~p"/api/v1/projects", project: params)
+    conn = post(conn, ~p"/api/v1/projects", params)
 
     assert %{
              "error" => "validation_error",

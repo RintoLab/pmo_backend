@@ -4,7 +4,7 @@ defmodule RintoPMOWeb.ErrorJSON do
   @errors %{
     bad_request: {400, "The request is invalid."},
     not_found: {404, "The requested resource was not found."},
-    stale_document: {409, "The document has changed since the provided base version."},
+    stale_document: {409, "The document has changed since the provided base revision."},
     task_state_conflict: {409, "The task is no longer in the expected state."},
     dependency_cycle: {409, "The task dependency would create a cycle."},
     validation_error: {422, "Request validation failed."},

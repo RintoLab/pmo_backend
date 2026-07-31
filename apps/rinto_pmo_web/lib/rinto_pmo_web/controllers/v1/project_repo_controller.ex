@@ -3,8 +3,6 @@ defmodule RintoPMOWeb.V1.ProjectRepoController do
 
   alias RintoPMO.Utils
 
-  action_fallback RintoPMOWeb.FallbackController
-
   def index(conn, %{"project_slug" => project_slug}) do
     context = Utils.module(:projects)
     project = context.get_active_project_by_slug!(project_slug)
@@ -21,9 +19,10 @@ defmodule RintoPMOWeb.V1.ProjectRepoController do
     render(conn, :show, project_repo: project_repo)
   end
 
-  def create(conn, %{"project_slug" => project_slug, "repo" => project_repo_params}) do
+  def create(conn, %{"project_slug" => project_slug} = params) do
     context = Utils.module(:projects)
     project = context.get_active_project_by_slug!(project_slug)
+    project_repo_params = Map.delete(params, "project_slug")
 
     with {:ok, project_repo} <- context.create_project_repo(project, project_repo_params) do
       conn
@@ -32,14 +31,11 @@ defmodule RintoPMOWeb.V1.ProjectRepoController do
     end
   end
 
-  def update(conn, %{
-        "project_slug" => project_slug,
-        "id" => id,
-        "repo" => project_repo_params
-      }) do
+  def update(conn, %{"project_slug" => project_slug, "id" => id} = params) do
     context = Utils.module(:projects)
     project = context.get_active_project_by_slug!(project_slug)
     project_repo = context.get_project_repo!(project, id)
+    project_repo_params = Map.drop(params, ["project_slug", "id"])
 
     with {:ok, project_repo} <- context.update_project_repo(project_repo, project_repo_params) do
       render(conn, :show, project_repo: project_repo)

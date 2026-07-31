@@ -3,8 +3,6 @@ defmodule RintoPMOWeb.V1.RepoCredentialController do
 
   alias RintoPMO.Utils
 
-  action_fallback RintoPMOWeb.FallbackController
-
   def index(conn, _params) do
     repo_credentials = repo_credentials_context().list_repo_credentials()
 
@@ -17,18 +15,19 @@ defmodule RintoPMOWeb.V1.RepoCredentialController do
     render(conn, :show, repo_credential: repo_credential)
   end
 
-  def create(conn, %{"repo_credential" => repo_credential_params}) do
+  def create(conn, params) do
     with {:ok, repo_credential} <-
-           repo_credentials_context().create_repo_credential(repo_credential_params) do
+           repo_credentials_context().create_repo_credential(params) do
       conn
       |> put_status(:created)
       |> render(:show, repo_credential: repo_credential)
     end
   end
 
-  def update(conn, %{"id" => id, "repo_credential" => repo_credential_params}) do
+  def update(conn, %{"id" => id} = params) do
     context = repo_credentials_context()
     repo_credential = context.get_repo_credential!(id)
+    repo_credential_params = Map.delete(params, "id")
 
     with {:ok, repo_credential} <-
            context.update_repo_credential(repo_credential, repo_credential_params) do

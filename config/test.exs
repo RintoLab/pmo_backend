@@ -15,6 +15,7 @@ config :rinto_pmo, RintoPMO.Repo,
 
 config :rinto_pmo, :injectors,
   actors: RintoPMO.ActorsMock,
+  documents: RintoPMO.DocumentsMock,
   projects: RintoPMO.ProjectsMock,
   repo_credentials: RintoPMO.RepoCredentialsMock
 

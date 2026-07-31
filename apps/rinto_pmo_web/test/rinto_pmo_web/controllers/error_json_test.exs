@@ -7,7 +7,7 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     bad_request: {400, "The request is invalid.", %{parameter: "limit", reason: "is invalid"}},
     not_found: {404, "The requested resource was not found.", %{}},
     stale_document:
-      {409, "The document has changed since the provided base version.",
+      {409, "The document has changed since the provided base revision.",
        %{base_version: 2, current_version: 3, diff: []}},
     task_state_conflict:
       {409, "The task is no longer in the expected state.", %{current_status: "in_progress"}},

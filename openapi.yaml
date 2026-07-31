@@ -15,6 +15,8 @@ tags:
     description: Projects and their archive lifecycle.
   - name: Project Repositories
     description: Read-only Git repositories scoped to a project.
+  - name: Documents
+    description: Top-level, block-based documents and their immutable revision history.
   - name: Repo Credentials
     description: Reusable HTTPS username and token credentials.
 paths:
@@ -39,12 +41,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [actor]
-              properties:
-                actor:
-                  $ref: "#/components/schemas/ActorCreateInput"
-              additionalProperties: false
+              $ref: "#/components/schemas/ActorCreateInput"
       responses:
         "201":
           description: Actor created
@@ -80,12 +77,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [actor]
-              properties:
-                actor:
-                  $ref: "#/components/schemas/ActorUpdateInput"
-              additionalProperties: false
+              $ref: "#/components/schemas/ActorUpdateInput"
       responses:
         "200":
           description: Actor updated
@@ -107,12 +99,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [actor]
-              properties:
-                actor:
-                  $ref: "#/components/schemas/ActorUpdateInput"
-              additionalProperties: false
+              $ref: "#/components/schemas/ActorUpdateInput"
       responses:
         "200":
           description: Actor updated
@@ -307,6 +294,136 @@ paths:
           description: Project repository deleted
         "404":
           $ref: "#/components/responses/NotFound"
+  /documents:
+    get:
+      tags: [Documents]
+      operationId: listDocuments
+      summary: List non-archived documents
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          description: Filter by project UUIDv7 id. Use `none` for unassigned documents; omit for all documents.
+          schema:
+            oneOf:
+              - type: string
+                format: uuid
+              - type: string
+                enum: [none]
+      responses:
+        "200":
+          description: Document summaries with their latest revision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentListResponse"
+        "400":
+          description: Invalid project filter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+    post:
+      tags: [Documents]
+      operationId: createDocument
+      summary: Create a document and its initial revision
+      requestBody:
+        $ref: "#/components/requestBodies/DocumentCreate"
+      responses:
+        "201":
+          description: Document created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [Documents]
+      operationId: getDocument
+      summary: Get a document with its latest revision and blocks
+      responses:
+        "200":
+          description: Document details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Documents]
+      operationId: archiveDocument
+      summary: Archive a document
+      description: Idempotently archives the document. Archived documents are omitted from lists.
+      responses:
+        "204":
+          description: Document archived
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/revisions:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [Documents]
+      operationId: listDocumentRevisions
+      summary: List immutable document revisions
+      responses:
+        "200":
+          description: Revisions ordered by descending UUIDv7 id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRevisionListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Documents]
+      operationId: createDocumentRevision
+      summary: Create a revision by applying block operations
+      requestBody:
+        $ref: "#/components/requestBodies/DocumentRevisionCreate"
+      responses:
+        "201":
+          description: Revision created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRevisionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The base revision is stale
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          description: Revision or block operation is invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+  /documents/{document_id}/revisions/{revision_id}:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/DocumentRevisionId"
+    get:
+      tags: [Documents]
+      operationId: getDocumentRevision
+      summary: Get an immutable revision and its blocks
+      responses:
+        "200":
+          description: Revision details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRevisionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /repo_credentials:
     get:
       tags: [Repo Credentials]
@@ -403,67 +520,49 @@ components:
       content:
         application/json:
           schema:
-            type: object
-            required: [project]
-            properties:
-              project:
-                $ref: "#/components/schemas/ProjectCreateInput"
-            additionalProperties: false
+            $ref: "#/components/schemas/ProjectCreateInput"
     ProjectUpdate:
       required: true
       content:
         application/json:
           schema:
-            type: object
-            required: [project]
-            properties:
-              project:
-                $ref: "#/components/schemas/ProjectUpdateInput"
-            additionalProperties: false
+            $ref: "#/components/schemas/ProjectUpdateInput"
     ProjectRepoCreate:
       required: true
       content:
         application/json:
           schema:
-            type: object
-            required: [repo]
-            properties:
-              repo:
-                $ref: "#/components/schemas/ProjectRepoCreateInput"
-            additionalProperties: false
+            $ref: "#/components/schemas/ProjectRepoCreateInput"
     ProjectRepoUpdate:
       required: true
       content:
         application/json:
           schema:
-            type: object
-            required: [repo]
-            properties:
-              repo:
-                $ref: "#/components/schemas/ProjectRepoUpdateInput"
-            additionalProperties: false
+            $ref: "#/components/schemas/ProjectRepoUpdateInput"
+    DocumentCreate:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DocumentCreateInput"
+    DocumentRevisionCreate:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DocumentRevisionCreateInput"
     RepoCredentialCreate:
       required: true
       content:
         application/json:
           schema:
-            type: object
-            required: [repo_credential]
-            properties:
-              repo_credential:
-                $ref: "#/components/schemas/RepoCredentialCreateInput"
-            additionalProperties: false
+            $ref: "#/components/schemas/RepoCredentialCreateInput"
     RepoCredentialUpdate:
       required: true
       content:
         application/json:
           schema:
-            type: object
-            required: [repo_credential]
-            properties:
-              repo_credential:
-                $ref: "#/components/schemas/RepoCredentialUpdateInput"
-            additionalProperties: false
+            $ref: "#/components/schemas/RepoCredentialUpdateInput"
   parameters:
     ActorId:
       name: id
@@ -481,6 +580,22 @@ components:
       schema:
         type: string
         pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    DocumentId:
+      name: document_id
+      in: path
+      required: true
+      description: Document UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
+    DocumentRevisionId:
+      name: revision_id
+      in: path
+      required: true
+      description: Document revision UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
     ProjectRepoId:
       name: id
       in: path
@@ -756,6 +871,283 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ProjectSummary"
+      additionalProperties: false
+    DocumentBlockCreateInput:
+      type: object
+      required: [actor_id, content]
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+          description: A complete Markdown fragment, normally beginning with an H2 heading.
+      additionalProperties: false
+    InsertAfterBlockOperation:
+      type: object
+      required: [op, after_block_id, actor_id, content]
+      properties:
+        op:
+          type: string
+          enum: [insert_after]
+        after_block_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null inserts the new block first.
+        actor_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+      additionalProperties: false
+    UpdateBlockOperation:
+      type: object
+      required: [op, block_id, actor_id, content]
+      properties:
+        op:
+          type: string
+          enum: [update]
+        block_id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+      additionalProperties: false
+    MoveAfterBlockOperation:
+      type: object
+      required: [op, block_id, after_block_id]
+      properties:
+        op:
+          type: string
+          enum: [move_after]
+        block_id:
+          type: string
+          format: uuid
+        after_block_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null moves the block first.
+      additionalProperties: false
+    DeleteBlockOperation:
+      type: object
+      required: [op, block_id]
+      properties:
+        op:
+          type: string
+          enum: [delete]
+        block_id:
+          type: string
+          format: uuid
+      additionalProperties: false
+    DocumentBlockOperation:
+      oneOf:
+        - $ref: "#/components/schemas/InsertAfterBlockOperation"
+        - $ref: "#/components/schemas/UpdateBlockOperation"
+        - $ref: "#/components/schemas/MoveAfterBlockOperation"
+        - $ref: "#/components/schemas/DeleteBlockOperation"
+      discriminator:
+        propertyName: op
+        mapping:
+          insert_after: "#/components/schemas/InsertAfterBlockOperation"
+          update: "#/components/schemas/UpdateBlockOperation"
+          move_after: "#/components/schemas/MoveAfterBlockOperation"
+          delete: "#/components/schemas/DeleteBlockOperation"
+    DocumentCreateInput:
+      type: object
+      required: [title]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Optional project association. Omission or null creates an unassigned document.
+        title:
+          type: string
+          minLength: 1
+        change_summary:
+          type: string
+          nullable: true
+        blocks:
+          type: array
+          default: []
+          items:
+            $ref: "#/components/schemas/DocumentBlockCreateInput"
+      additionalProperties: false
+    DocumentRevisionCreateInput:
+      type: object
+      required: [base_revision_id]
+      properties:
+        base_revision_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          description: Omission inherits the parent revision title.
+        change_summary:
+          type: string
+          nullable: true
+        block_ops:
+          type: array
+          default: []
+          description: Operations are applied sequentially to the parent block snapshot.
+          items:
+            $ref: "#/components/schemas/DocumentBlockOperation"
+      additionalProperties: false
+    DocumentBlock:
+      type: object
+      required: [block_id, actor_id, content, position]
+      properties:
+        block_id:
+          type: string
+          format: uuid
+          description: Stable logical block identifier across revisions.
+        actor_id:
+          type: string
+          format: uuid
+          description: Actor responsible for this block content.
+        content:
+          type: string
+        position:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    DocumentRevisionSummary:
+      type: object
+      required: [id, document_id, parent_id, title, change_summary, inserted_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Time-sortable UUIDv7 identifier.
+        document_id:
+          type: string
+          format: uuid
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+        change_summary:
+          type: string
+          nullable: true
+        inserted_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    DocumentRevision:
+      type: object
+      required: [id, document_id, parent_id, title, change_summary, inserted_at, blocks]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Time-sortable UUIDv7 identifier.
+        document_id:
+          type: string
+          format: uuid
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+        change_summary:
+          type: string
+          nullable: true
+        inserted_at:
+          type: string
+          format: date-time
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentBlock"
+      additionalProperties: false
+    DocumentSummary:
+      type: object
+      required: [id, project_id, archived_at, latest_revision, inserted_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+          nullable: true
+        archived_at:
+          type: string
+          format: date-time
+          nullable: true
+        latest_revision:
+          $ref: "#/components/schemas/DocumentRevisionSummary"
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    Document:
+      type: object
+      required: [id, project_id, archived_at, latest_revision, inserted_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+          nullable: true
+        archived_at:
+          type: string
+          format: date-time
+          nullable: true
+        latest_revision:
+          $ref: "#/components/schemas/DocumentRevision"
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    DocumentResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Document"
+      additionalProperties: false
+    DocumentListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentSummary"
+      additionalProperties: false
+    DocumentRevisionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/DocumentRevision"
+      additionalProperties: false
+    DocumentRevisionListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentRevisionSummary"
       additionalProperties: false
     ProjectRepo:
       type: object

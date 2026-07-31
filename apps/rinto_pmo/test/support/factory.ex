@@ -4,6 +4,9 @@ defmodule RintoPMO.Factory do
   use ExMachina.Ecto, repo: RintoPMO.Repo
 
   alias RintoPMO.Actors.Actor
+  alias RintoPMO.Documents.Document
+  alias RintoPMO.Documents.DocumentBlock
+  alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Projects.Project
   alias RintoPMO.Projects.ProjectRepo
   alias RintoPMO.RepoCredentials.RepoCredential
@@ -20,6 +23,27 @@ defmodule RintoPMO.Factory do
       name: sequence(:project_name, &"Project #{&1}"),
       slug: sequence(:project_slug, &"project-#{&1}"),
       description: "A project"
+    }
+  end
+
+  def document_factory do
+    %Document{project: build(:project)}
+  end
+
+  def document_revision_factory do
+    %DocumentRevision{
+      document: build(:document),
+      title: sequence(:document_revision_title, &"Document #{&1}")
+    }
+  end
+
+  def document_block_factory do
+    %DocumentBlock{
+      block_id: UUIDv7.generate(),
+      revision: build(:document_revision),
+      actor: build(:actor),
+      content: "## Section\n\nContent",
+      position: 0
     }
   end
 

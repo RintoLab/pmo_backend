@@ -51,7 +51,7 @@ defmodule RintoPMOWeb.V1.ProjectRepoControllerTest do
       {:ok, project_repo}
     end)
 
-    conn = post(conn, ~p"/api/v1/projects/#{project.slug}/repos", repo: params)
+    conn = post(conn, ~p"/api/v1/projects/#{project.slug}/repos", params)
 
     assert %{"name" => "backend", "credential_id" => ^credential_id} =
              json_response(conn, 201)["data"]
@@ -75,7 +75,7 @@ defmodule RintoPMOWeb.V1.ProjectRepoControllerTest do
     end)
 
     conn =
-      patch(conn, ~p"/api/v1/projects/#{project.slug}/repos/#{project_repo.id}", repo: params)
+      patch(conn, ~p"/api/v1/projects/#{project.slug}/repos/#{project_repo.id}", params)
 
     assert %{"branch" => "next"} = json_response(conn, 200)["data"]
   end
@@ -107,7 +107,7 @@ defmodule RintoPMOWeb.V1.ProjectRepoControllerTest do
       {:error, changeset}
     end)
 
-    conn = post(conn, ~p"/api/v1/projects/#{project.slug}/repos", repo: params)
+    conn = post(conn, ~p"/api/v1/projects/#{project.slug}/repos", params)
 
     assert %{
              "error" => "validation_error",
