@@ -13,6 +13,7 @@ import Config
 config :rinto_pmo,
   namespace: RintoPMO,
   ecto_repos: [RintoPMO.Repo],
+  pi_executable: "pi",
   injectors: [
     actors: RintoPMO.Actors,
     annotations: RintoPMO.Annotations,

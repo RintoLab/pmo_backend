@@ -9,6 +9,7 @@ defmodule RintoPMOWeb.Router do
     pipe_through :api
 
     resources "/actors", ActorController, only: [:index, :show, :create, :update]
+    get "/ai_models", AIModelController, :index
 
     resources "/projects", ProjectController,
       only: [:index, :show, :create, :update, :delete],

@@ -11,9 +11,8 @@ defmodule RintoPMO.Application do
       RintoPMO.Repo,
       {Oban, Application.fetch_env!(:rinto_pmo, Oban)},
       {DNSCluster, query: Application.get_env(:rinto_pmo, :dns_cluster_query) || :ignore},
-      {Phoenix.PubSub, name: RintoPMO.PubSub}
-      # Start a worker by calling: RintoPMO.Worker.start_link(arg)
-      # {RintoPMO.Worker, arg}
+      {Phoenix.PubSub, name: RintoPMO.PubSub},
+      RintoPMO.Agent.ModelCatalog
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: RintoPMO.Supervisor)

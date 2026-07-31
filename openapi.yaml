@@ -11,6 +11,8 @@ servers:
 tags:
   - name: Actors
     description: Global human participants and AI personas.
+  - name: AI Models
+    description: Providers and models available from the local pi CLI for AI actor configuration.
   - name: Projects
     description: Projects and their archive lifecycle.
   - name: Project Repositories
@@ -607,6 +609,22 @@ paths:
           description: Reply deleted
         "404":
           $ref: "#/components/responses/NotFound"
+  /ai_models:
+    get:
+      tags: [AI Models]
+      operationId: listAIModels
+      summary: List supported AI providers and models
+      description: >
+        Returns the providers and models discovered from the local `pi --list-models`
+        catalog at application startup. Use this when creating an AI actor so the client
+        can offer only currently supported provider/model pairs.
+      responses:
+        "200":
+          description: Provider and model catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AIModelCatalogResponse"
   /repo_credentials:
     get:
       tags: [Repo Credentials]
@@ -869,6 +887,44 @@ components:
     ThinkingLevel:
       type: string
       enum: [off, low, medium, high, max]
+    AIModel:
+      type: object
+      required: [model, context_window, max_output, thinking, images]
+      properties:
+        model:
+          type: string
+          description: Model id as reported by pi.
+        context_window:
+          type: integer
+          minimum: 1
+        max_output:
+          type: integer
+          minimum: 1
+        thinking:
+          type: boolean
+        images:
+          type: boolean
+      additionalProperties: false
+    AIProviderModels:
+      type: object
+      required: [provider, models]
+      properties:
+        provider:
+          type: string
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/AIModel"
+      additionalProperties: false
+    AIModelCatalogResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AIProviderModels"
+      additionalProperties: false
     Actor:
       type: object
       required: [id, kind, name, enabled]

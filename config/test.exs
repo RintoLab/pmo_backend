@@ -20,6 +20,8 @@ config :rinto_pmo, :injectors,
   projects: RintoPMO.ProjectsMock,
   repo_credentials: RintoPMO.RepoCredentialsMock
 
+config :rinto_pmo, RintoPMO.Agent.ModelCatalog, loader: :noop
+
 config :rinto_pmo, Oban, testing: :manual, queues: false, plugins: false
 
 # We don't run a server during test. If one is required,
