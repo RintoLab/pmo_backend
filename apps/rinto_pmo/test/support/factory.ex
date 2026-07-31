@@ -4,6 +4,8 @@ defmodule RintoPMO.Factory do
   use ExMachina.Ecto, repo: RintoPMO.Repo
 
   alias RintoPMO.Actors.Actor
+  alias RintoPMO.Annotations.Annotation
+  alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
@@ -61,6 +63,23 @@ defmodule RintoPMO.Factory do
       name: sequence(:repo_credential_name, &"Credential #{&1}"),
       username: sequence(:repo_credential_username, &"git-user-#{&1}"),
       token: "test-token"
+    }
+  end
+
+  def annotation_factory do
+    %Annotation{
+      document: build(:document),
+      actor: build(:actor),
+      content: sequence(:annotation_content, &"Annotation #{&1}")
+    }
+  end
+
+  def annotation_reply_factory do
+    %AnnotationReply{
+      annotation: build(:annotation),
+      actor: build(:actor),
+      content: sequence(:annotation_reply_content, &"Reply #{&1}"),
+      position: 0
     }
   end
 end

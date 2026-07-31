@@ -15,6 +15,7 @@ config :rinto_pmo,
   ecto_repos: [RintoPMO.Repo],
   injectors: [
     actors: RintoPMO.Actors,
+    annotations: RintoPMO.Annotations,
     documents: RintoPMO.Documents,
     projects: RintoPMO.Projects,
     repo_credentials: RintoPMO.RepoCredentials

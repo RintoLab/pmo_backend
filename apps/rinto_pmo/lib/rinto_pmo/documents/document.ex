@@ -8,6 +8,7 @@ defmodule RintoPMO.Documents.Document do
 
   use RintoPMO, :schema
 
+  alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Projects.Project
 
@@ -19,6 +20,7 @@ defmodule RintoPMO.Documents.Document do
 
     belongs_to :project, Project
     has_many :revisions, DocumentRevision
+    has_many :annotations, Annotation
 
     timestamps()
   end

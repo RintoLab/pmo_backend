@@ -17,6 +17,8 @@ tags:
     description: Read-only Git repositories scoped to a project.
   - name: Documents
     description: Top-level, block-based documents and their immutable revision history.
+  - name: Annotations
+    description: Document annotations and flat follow-up replies (not review workflow, not AI chat logs).
   - name: Repo Credentials
     description: Reusable HTTPS username and token credentials.
 paths:
@@ -424,6 +426,183 @@ paths:
                 $ref: "#/components/schemas/DocumentRevisionResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/annotations:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [Annotations]
+      operationId: listAnnotations
+      summary: List annotations for a document
+      description: Returns annotation summaries without replies.
+      parameters:
+        - name: block_id
+          in: query
+          required: false
+          description: Filter by logical block id. Use `none` for annotations without a block anchor.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Annotation summaries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Annotations]
+      operationId: createAnnotation
+      summary: Create an annotation
+      requestBody:
+        $ref: "#/components/requestBodies/AnnotationCreate"
+      responses:
+        "201":
+          description: Annotation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/annotations/{id}:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationId"
+    get:
+      tags: [Annotations]
+      operationId: getAnnotation
+      summary: Get an annotation with replies
+      responses:
+        "200":
+          description: Annotation details including replies ordered by position
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Annotations]
+      operationId: updateAnnotation
+      summary: Update an annotation
+      requestBody:
+        $ref: "#/components/requestBodies/AnnotationUpdate"
+      responses:
+        "200":
+          description: Annotation updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Annotations]
+      operationId: replaceAnnotation
+      summary: Update an annotation
+      description: Alias of PATCH.
+      requestBody:
+        $ref: "#/components/requestBodies/AnnotationUpdate"
+      responses:
+        "200":
+          description: Annotation updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Annotations]
+      operationId: deleteAnnotation
+      summary: Delete an annotation and its replies
+      responses:
+        "204":
+          description: Annotation deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/annotations/{annotation_id}/replies:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationNestedId"
+    post:
+      tags: [Annotations]
+      operationId: createAnnotationReply
+      summary: Append a follow-up reply
+      description: Assigns the next monotonic position. Deleting earlier replies does not renumber later ones.
+      requestBody:
+        $ref: "#/components/requestBodies/AnnotationReplyCreate"
+      responses:
+        "201":
+          description: Reply created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationReplyResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/annotations/{annotation_id}/replies/{reply_id}:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationNestedId"
+      - $ref: "#/components/parameters/AnnotationReplyId"
+    patch:
+      tags: [Annotations]
+      operationId: updateAnnotationReply
+      summary: Update a reply's content
+      description: Position is immutable.
+      requestBody:
+        $ref: "#/components/requestBodies/AnnotationReplyUpdate"
+      responses:
+        "200":
+          description: Reply updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationReplyResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Annotations]
+      operationId: replaceAnnotationReply
+      summary: Update a reply's content
+      description: Alias of PATCH. Position is immutable.
+      requestBody:
+        $ref: "#/components/requestBodies/AnnotationReplyUpdate"
+      responses:
+        "200":
+          description: Reply updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationReplyResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Annotations]
+      operationId: deleteAnnotationReply
+      summary: Delete a reply
+      description: Later reply positions are not decremented.
+      responses:
+        "204":
+          description: Reply deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
   /repo_credentials:
     get:
       tags: [Repo Credentials]
@@ -563,6 +742,30 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/RepoCredentialUpdateInput"
+    AnnotationCreate:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AnnotationCreateInput"
+    AnnotationUpdate:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AnnotationUpdateInput"
+    AnnotationReplyCreate:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AnnotationReplyCreateInput"
+    AnnotationReplyUpdate:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AnnotationReplyUpdateInput"
   parameters:
     ActorId:
       name: id
@@ -612,7 +815,37 @@ components:
       schema:
         type: string
         format: uuid
+    AnnotationId:
+      name: id
+      in: path
+      required: true
+      description: Annotation UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
+    AnnotationNestedId:
+      name: annotation_id
+      in: path
+      required: true
+      description: Parent annotation UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
+    AnnotationReplyId:
+      name: reply_id
+      in: path
+      required: true
+      description: Annotation reply UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
   responses:
+    BadRequest:
+      description: The request is invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
     ValidationError:
       description: Request validation failed
       content:
@@ -1302,6 +1535,170 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RepoCredential"
+      additionalProperties: false
+    AnnotationSummary:
+      type: object
+      required:
+        [
+          id,
+          document_id,
+          actor_id,
+          block_id,
+          block_text,
+          selected_text,
+          content,
+          inserted_at,
+          updated_at
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        document_id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+          format: uuid
+        block_id:
+          type: string
+          format: uuid
+          nullable: true
+        block_text:
+          type: string
+          nullable: true
+          description: Optional snapshot of the block body when the annotation was created.
+        selected_text:
+          type: string
+          nullable: true
+          description: Selected text snapshot without positional offsets.
+        content:
+          type: string
+          description: Opening opinion for the annotation thread.
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    Annotation:
+      allOf:
+        - $ref: "#/components/schemas/AnnotationSummary"
+        - type: object
+          required: [replies]
+          properties:
+            replies:
+              type: array
+              items:
+                $ref: "#/components/schemas/AnnotationReply"
+          additionalProperties: false
+    AnnotationCreateInput:
+      type: object
+      required: [actor_id, content]
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+        block_id:
+          type: string
+          format: uuid
+          nullable: true
+        block_text:
+          type: string
+          nullable: true
+        selected_text:
+          type: string
+          nullable: true
+        content:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    AnnotationUpdateInput:
+      type: object
+      properties:
+        block_id:
+          type: string
+          format: uuid
+          nullable: true
+        block_text:
+          type: string
+          nullable: true
+        selected_text:
+          type: string
+          nullable: true
+        content:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    AnnotationReply:
+      type: object
+      required:
+        [id, annotation_id, actor_id, content, position, inserted_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        annotation_id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+        position:
+          type: integer
+          minimum: 0
+          description: Monotonic order within the annotation. Gaps remain after deletions.
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    AnnotationReplyCreateInput:
+      type: object
+      required: [actor_id, content]
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    AnnotationReplyUpdateInput:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    AnnotationResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Annotation"
+      additionalProperties: false
+    AnnotationListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnnotationSummary"
+      additionalProperties: false
+    AnnotationReplyResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/AnnotationReply"
       additionalProperties: false
     APIErrorCode:
       type: string

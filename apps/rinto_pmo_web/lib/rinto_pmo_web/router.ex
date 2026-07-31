@@ -20,6 +20,13 @@ defmodule RintoPMOWeb.Router do
       resources "/revisions", DocumentRevisionController,
         only: [:index, :show, :create],
         param: "revision_id"
+
+      resources "/annotations", AnnotationController,
+        only: [:index, :show, :create, :update, :delete] do
+        resources "/replies", AnnotationReplyController,
+          only: [:create, :update, :delete],
+          param: "reply_id"
+      end
     end
 
     resources "/repo_credentials", RepoCredentialController,
