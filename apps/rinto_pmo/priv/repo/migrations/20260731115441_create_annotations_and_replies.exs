@@ -18,9 +18,7 @@ defmodule RintoPMO.Repo.Migrations.CreateAnnotationsAndReplies do
       timestamps(type: :utc_datetime_usec)
     end
 
-    create index(:annotations, [:document_id, :id])
-    create index(:annotations, [:document_id, :block_id])
-    create index(:annotations, [:actor_id])
+    create index(:annotations, [:document_id])
 
     create table(:annotation_replies, primary_key: false) do
       add :id, :binary_id, primary_key: true
@@ -37,7 +35,6 @@ defmodule RintoPMO.Repo.Migrations.CreateAnnotationsAndReplies do
     end
 
     create unique_index(:annotation_replies, [:annotation_id, :position])
-    create index(:annotation_replies, [:actor_id])
 
     create constraint(:annotation_replies, :annotation_replies_position_non_negative,
              check: "position >= 0"

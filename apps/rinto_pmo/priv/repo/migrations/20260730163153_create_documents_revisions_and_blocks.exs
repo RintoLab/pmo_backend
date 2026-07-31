@@ -15,7 +15,6 @@ defmodule RintoPMO.Repo.Migrations.CreateDocumentsRevisionsAndBlocks do
     end
 
     create index(:documents, [:project_id])
-    create index(:documents, [:project_id, :archived_at])
 
     create table(:document_revisions, primary_key: false) do
       add :id, :binary_id, primary_key: true
@@ -31,7 +30,7 @@ defmodule RintoPMO.Repo.Migrations.CreateDocumentsRevisionsAndBlocks do
       timestamps(type: :utc_datetime_usec, updated_at: false)
     end
 
-    create index(:document_revisions, [:document_id, :id])
+    create index(:document_revisions, [:document_id])
     create unique_index(:document_revisions, [:parent_id], where: "parent_id IS NOT NULL")
 
     create constraint(:document_revisions, :document_revisions_parent_differs_from_id,
@@ -53,8 +52,6 @@ defmodule RintoPMO.Repo.Migrations.CreateDocumentsRevisionsAndBlocks do
 
     create unique_index(:document_blocks, [:revision_id, :block_id])
     create unique_index(:document_blocks, [:revision_id, :position])
-    create index(:document_blocks, [:block_id])
-    create index(:document_blocks, [:actor_id])
 
     create constraint(:document_blocks, :document_blocks_position_non_negative,
              check: "position >= 0"
