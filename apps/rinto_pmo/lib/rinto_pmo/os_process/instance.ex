@@ -161,12 +161,22 @@ defmodule RintoPMO.OSProcess.Instance do
   # {:exit, {:stopped, _}} still gets out even in the worst case.
   defp stop_and_report(%{exec_pid: exec_pid, spec: spec} = state, reason) do
     ref = Process.monitor(exec_pid)
-    _ = stop_exec(exec_pid)
 
-    receive do
-      {:DOWN, ^ref, :process, ^exec_pid, _reason} -> :ok
-    after
-      Spec.reap_timeout(spec) -> :ok
+    case stop_exec(exec_pid) do
+      :ok ->
+        receive do
+          {:DOWN, ^ref, :process, ^exec_pid, _reason} -> :ok
+        after
+          Spec.reap_timeout(spec) -> :ok
+        end
+
+      # erlexec could not signal the OS process, which in practice means the
+      # child had already exited and its process group was empty. erlexec
+      # answers that by dropping the child from its table, so the notification
+      # this wait is for is never coming -- and waiting for it burns the whole
+      # reap timeout on every stop/2 that races a child exiting on its own.
+      {:error, _reason} ->
+        Process.demonitor(ref, [:flush])
     end
 
     notify(state, {:exit, {:stopped, reason}})
@@ -186,12 +196,13 @@ defmodule RintoPMO.OSProcess.Instance do
   # Skipping a stop for an already-dead handle avoids an "unknown msg: pid not
   # alive" warning from erlexec. This narrows the race rather than closing it:
   # the child can still die between the check and the call, which is harmless.
+  #
+  # Failures return `{:error, _}` so `stop_and_report/2` does not wait on a
+  # DOWN that is not coming; the instance's link still reaps the LWP on exit.
   defp stop_exec(exec_pid) do
     if Process.alive?(exec_pid), do: :exec.stop(exec_pid), else: :ok
   catch
-    # Already gone, or the exec server is unavailable. erlexec's link has done
-    # (or will do) the reaping either way.
-    :exit, _reason -> :ok
+    :exit, reason -> {:error, {:exec_unavail, reason}}
   end
 
   defp emit_output(%{spec: %Spec{framing: :raw}} = state, stream, data) do

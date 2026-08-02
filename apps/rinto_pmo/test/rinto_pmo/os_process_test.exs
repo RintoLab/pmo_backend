@@ -21,6 +21,18 @@ defmodule RintoPMO.OSProcessTest do
 
   defp sh(script), do: [cmd: "/bin/sh", args: ["-c", script]]
 
+  # A child that announces itself before blocking forever. Waiting for that
+  # announcement is not just tidiness: erlexec's SIGTERM is lost if it lands in
+  # the window between fork and execve, and the stop then costs a full
+  # `:kill_timeout` instead of milliseconds. Tests that mean to kill a *running*
+  # child say so, and stay fast as a side effect.
+  defp long_running, do: sh("printf 'up\n'; sleep 60")
+
+  defp await_started(id) do
+    assert_receive {:os_process, ^id, {:stdout, "up\n"}}, 2_000
+    id
+  end
+
   # erlexec reports every OS process it still manages, so "is it really gone?"
   # needs no sleeping or polling.
   defp managed?(os_pid), do: os_pid in :exec.which_children()
@@ -197,7 +209,7 @@ defmodule RintoPMO.OSProcessTest do
 
   describe "stop/2" do
     test "kills a long-running child and deregisters it" do
-      id = start!(sh("sleep 60"))
+      id = long_running() |> start!() |> await_started()
       assert {:ok, %{pid: pid, os_pid: os_pid}} = OSProcess.info(id)
       ref = Process.monitor(pid)
 
@@ -212,7 +224,7 @@ defmodule RintoPMO.OSProcessTest do
     # The owner has no other way to learn the instance is gone, so an explicit
     # stop has to close the event stream just like a natural exit does.
     test "reports the teardown to the owner as a final exit event" do
-      id = start!(sh("sleep 60"))
+      id = long_running() |> start!() |> await_started()
 
       assert :ok = OSProcess.stop(id)
 
@@ -441,17 +453,15 @@ defmodule RintoPMO.OSProcessTest do
     test "killing the owner reaps the OS process" do
       test_pid = self()
 
-      owner =
-        spawn(fn ->
-          receive do
-            :never -> :ok
-          end
-        end)
+      # Forwarding lets the test see the child come up without becoming its
+      # owner, which is the whole point of the scenario.
+      owner = spawn(fn -> forward_forever(test_pid) end)
 
       id = unique_id()
-      assert {:ok, pid} = OSProcess.start([owner: owner, id: id] ++ sh("sleep 60"))
+      assert {:ok, pid} = OSProcess.start([owner: owner, id: id] ++ long_running())
       on_exit(fn -> OSProcess.stop(id) end)
 
+      assert_receive {:forwarded, {:os_process, ^id, {:stdout, "up\n"}}}, 2_000
       assert {:ok, %{os_pid: os_pid}} = OSProcess.info(id)
       ref = Process.monitor(pid)
 
@@ -462,6 +472,14 @@ defmodule RintoPMO.OSProcessTest do
       refute managed?(os_pid)
       assert Process.alive?(test_pid)
     end
+  end
+
+  defp forward_forever(target) do
+    receive do
+      message -> send(target, {:forwarded, message})
+    end
+
+    forward_forever(target)
   end
 
   defp eventually(fun, attempts \\ 50)
