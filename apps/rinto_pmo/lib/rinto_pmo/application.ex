@@ -16,6 +16,7 @@ defmodule RintoPMO.Application do
       # RintoPMO.Agent.ModelCatalog.
       {Task.Supervisor, name: RintoPMO.TaskSupervisor},
       RintoPMO.OSProcess.Supervisor,
+      RintoPMO.Agent.PiSession.Supervisor,
       RintoPMO.Agent.ModelCatalog
     ]
 

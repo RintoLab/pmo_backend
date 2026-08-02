@@ -243,6 +243,29 @@ defmodule RintoPMO.OSProcessTest do
     test "returns an error for an unknown id" do
       assert {:error, :not_found} = OSProcess.stop("nope")
     end
+
+    # The signal erlexec sends is lost if it lands between fork and execve, and
+    # erlexec never re-sends one -- it only escalates to SIGKILL at
+    # `:kill_timeout`. Stopping without waiting for the child to announce itself
+    # is the way to land in that window, so this deliberately skips the
+    # `await_started/1` every other stop test uses.
+    #
+    # The race does not fire every run, so a single fast stop proves nothing --
+    # repeat until one of them has hit the window. Asserting on the total keeps
+    # a re-signal that stopped working from passing as merely slow.
+    test "stays fast when the stop races the start" do
+      {elapsed, _} =
+        :timer.tc(fn ->
+          for _ <- 1..8 do
+            id = start!(long_running())
+            assert :ok = OSProcess.stop(id)
+          end
+        end)
+
+      # Eight stops that each waited out `:kill_timeout` (1s under test config)
+      # would take ~8s; eight re-signalled ones take well under one.
+      assert div(elapsed, 1_000) < 2_000
+    end
   end
 
   describe "addressing" do

@@ -13,6 +13,12 @@ defmodule RintoPMO.OSProcess.Instance do
 
   @registry RintoPMO.OSProcess.Registry
 
+  # How long a stopped child is given to go away before it is signalled again,
+  # and how many times. Long enough that the child is past execve in practice,
+  # short enough that stopping a healthy process is not noticeably delayed.
+  @resignal_after 50
+  @resignals 2
+
   @doc false
   def child_spec(%Spec{} = spec) do
     %{
@@ -164,11 +170,7 @@ defmodule RintoPMO.OSProcess.Instance do
 
     case stop_exec(exec_pid) do
       :ok ->
-        receive do
-          {:DOWN, ^ref, :process, ^exec_pid, _reason} -> :ok
-        after
-          Spec.reap_timeout(spec) -> :ok
-        end
+        await_reap(exec_pid, ref, deadline(Spec.reap_timeout(spec)), @resignals)
 
       # erlexec could not signal the OS process, which in practice means the
       # child had already exited and its process group was empty. erlexec
@@ -182,6 +184,54 @@ defmodule RintoPMO.OSProcess.Instance do
     notify(state, {:exit, {:stopped, reason}})
     :ok
   end
+
+  # erlexec loses the first SIGTERM when a stop races a start: until the child's
+  # execve completes it still carries exec-port's signal dispositions, and it is
+  # not yet in the process group the signal is aimed at. erlexec never re-sends
+  # -- `stop_child` records the attempt and only escalates to SIGKILL once
+  # :kill_timeout expires (deps/erlexec/c_src/exec_impl.cpp) -- so the stop
+  # blocks for that whole grace, five seconds by default. Re-signalling a child
+  # that has not gone away lands on the exec'd process and reaps it at once.
+  #
+  # A child ignoring SIGTERM on purpose loses nothing: the extra signals are as
+  # ignored as the first, and erlexec's SIGKILL is still the backstop.
+  defp await_reap(exec_pid, ref, deadline, resignals_left) do
+    wait =
+      if resignals_left > 0,
+        do: min(@resignal_after, remaining(deadline)),
+        else: remaining(deadline)
+
+    receive do
+      {:DOWN, ^ref, :process, ^exec_pid, _reason} ->
+        :ok
+    after
+      wait ->
+        if resignals_left > 0 do
+          _ = resignal(exec_pid)
+          await_reap(exec_pid, ref, deadline, resignals_left - 1)
+        else
+          :ok
+        end
+    end
+  end
+
+  # :exec.kill/2 rather than another :exec.stop/1, which is a no-op once erlexec
+  # has recorded a SIGTERM attempt. It signals the child alone rather than its
+  # group -- erlexec rejects a negative pid -- which is the right target here:
+  # the group is what the lost signal could not reach, and erlexec SIGTERMs the
+  # rest of it once the child exits.
+  #
+  # Skipping a dead handle avoids erlexec's "pid not alive" warning, exactly as
+  # in stop_exec/1 above.
+  defp resignal(exec_pid) do
+    if Process.alive?(exec_pid), do: :exec.kill(exec_pid, :sigterm), else: :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
+
+  defp remaining(deadline), do: max(0, deadline - System.monotonic_time(:millisecond))
 
   defp report_exit(state, status) do
     _ =

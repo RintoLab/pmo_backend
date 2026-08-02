@@ -379,10 +379,10 @@ defmodule RintoPMO.OSProcess do
   erlexec sends SIGTERM, then SIGKILL after the instance's `:kill_timeout`. The
   owner receives a final `{:exit, {:stopped, :normal}}`.
 
-  Do not rely on `stop/2` being instant for a process that has only just
-  started. erlexec may lose SIGTERM between `fork` and `execve` (the child still
-  carries exec-port's signal handler until exec completes) and only then fall
-  through to SIGKILL after `:kill_timeout`.
+  A stop that races a start is handled here rather than left to the caller:
+  erlexec loses SIGTERM if it lands between `fork` and `execve`, and never
+  re-sends it, so the instance signals again after a short grace instead of
+  waiting out `:kill_timeout`.
   """
   @spec stop(ref(), timeout()) :: :ok | {:error, :not_found | :timeout | {:stop_failed, term()}}
   def stop(ref, timeout \\ 10_000) do

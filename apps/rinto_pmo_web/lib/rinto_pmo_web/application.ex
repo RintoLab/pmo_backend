@@ -9,6 +9,9 @@ defmodule RintoPMOWeb.Application do
   def start(_type, _args) do
     children = [
       RintoPMOWeb.Telemetry,
+      # Runs channel commands off the channel process; see
+      # RintoPMOWeb.PiSessionChannel.
+      {Task.Supervisor, name: RintoPMOWeb.TaskSupervisor},
       # Start a worker by calling: RintoPMOWeb.Worker.start_link(arg)
       # {RintoPMOWeb.Worker, arg},
       # Start to serve requests, typically the last entry
