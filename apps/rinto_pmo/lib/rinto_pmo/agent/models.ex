@@ -1,204 +1,115 @@
 defmodule RintoPMO.Agent.Models do
   @moduledoc """
-  Discovers models available to the local `pi` CLI.
+  Discovers models available to the local `pi` runtime via RPC.
 
-  Runs `pi --list-models` and parses its fixed-width table into `AIModel` structs.
+  Uses `get_available_models` so each entry includes reasoning metadata and
+  `thinkingLevelMap`, which `pi --list-models` does not expose.
   """
 
   alias RintoPMO.Agent.AIModel
+  alias RintoPMO.Agent.Rpc
+  alias RintoPMO.Utils
 
   @type list_opts :: [
-          search: String.t(),
-          executable: String.t()
+          executable: String.t(),
+          timeout: timeout(),
+          offline: boolean()
         ]
-
-  @header_columns ["provider", "model", "context", "max-out", "thinking", "images"]
-
-  @doc """
-  Column headers emitted by `pi --list-models`. Used as the stable contract for parsing.
-  """
-  @spec header_columns() :: [String.t()]
-  def header_columns, do: @header_columns
 
   @doc """
   Lists models currently available to `pi` on this machine.
-
-  Options:
-
-    * `:search` – optional fuzzy filter forwarded to `pi --list-models <pattern>`
-    * `:executable` – path or name of the `pi` binary (default: configured `:pi_executable`)
   """
   @spec list_models(list_opts()) ::
           {:ok, [AIModel.t()]}
-          | {:error,
-             :pi_not_found | {:pi_exit, non_neg_integer(), String.t()} | :unrecognized_output}
+          | {:error, Rpc.error() | :unrecognized_output}
   def list_models(opts \\ []) do
-    executable = Keyword.get_lazy(opts, :executable, &pi_executable/0)
-    search = Keyword.get(opts, :search)
-
-    with {:ok, path} <- find_executable(executable),
-         {:ok, stdout} <- run_list_models(path, search) do
-      parse_output(stdout)
-    end
-  end
-
-  @doc """
-  Parses the tabular stdout of `pi --list-models` into `AIModel` structs.
-  """
-  @spec parse_output(String.t()) ::
-          {:ok, [AIModel.t()]} | {:error, :unrecognized_output}
-  def parse_output(output) when is_binary(output) do
-    lines =
-      output
-      |> strip_ansi()
-      |> String.split("\n", trim: true)
-      |> Enum.map(&String.trim_trailing/1)
-      |> Enum.reject(&(&1 == ""))
-
-    if models_unavailable?(lines) do
-      {:ok, []}
-    else
-      case Enum.split_while(lines, &(!header_line?(&1))) do
-        {_skipped, [_header | rows]} ->
-          parse_rows(rows)
-
-        _other ->
-          {:error, :unrecognized_output}
-      end
-    end
-  end
-
-  defp pi_executable do
-    Application.get_env(:rinto_pmo, :pi_executable, "pi")
-  end
-
-  defp find_executable(executable) do
-    cond do
-      File.regular?(executable) ->
-        {:ok, executable}
-
-      path = System.find_executable(executable) ->
-        {:ok, path}
-
-      true ->
-        {:error, :pi_not_found}
-    end
-  end
-
-  defp run_list_models(path, search) do
-    args =
-      case search do
-        pattern when is_binary(pattern) and pattern != "" -> ["--list-models", pattern]
-        _other -> ["--list-models"]
-      end
-
-    case System.cmd(path, args, stderr_to_stdout: false) do
-      {stdout, 0} -> {:ok, stdout}
-      {stdout, status} -> {:error, {:pi_exit, status, stdout}}
-    end
-  end
-
-  defp models_unavailable?(lines) do
-    Enum.any?(lines, fn line ->
-      String.starts_with?(line, "No models available") or
-        String.starts_with?(line, "No models matching")
-    end)
-  end
-
-  defp header_line?(line) do
-    split_columns(line) == @header_columns
-  end
-
-  defp parse_rows(rows) do
-    rows
-    |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
-      case parse_row(row) do
-        {:ok, model} -> {:cont, {:ok, [model | acc]}}
-        :skip -> {:cont, {:ok, acc}}
-        :error -> {:halt, {:error, :unrecognized_output}}
-      end
-    end)
-    |> case do
-      {:ok, models} -> {:ok, Enum.reverse(models)}
+    case rpc().request(%{"type" => "get_available_models"}, opts) do
+      {:ok, response} -> from_rpc_response(response)
       {:error, _} = error -> error
     end
   end
 
-  defp parse_row(line) do
-    case split_columns(line) do
-      [provider, model, context, max_out, thinking, images] ->
-        with {:ok, context_window} <- parse_token_count(context),
-             {:ok, max_output} <- parse_token_count(max_out),
-             {:ok, thinking?} <- parse_yes_no(thinking),
-             {:ok, images?} <- parse_yes_no(images) do
-          {:ok,
-           AIModel.new!(%{
-             provider: provider,
-             model: model,
-             context_window: context_window,
-             max_output: max_output,
-             thinking: thinking?,
-             images: images?
-           })}
-        else
-          :error -> :error
-        end
+  @doc """
+  Converts a `get_available_models` RPC response into `AIModel` structs.
+  """
+  @spec from_rpc_response(map()) ::
+          {:ok, [AIModel.t()]} | {:error, :unrecognized_output | {:rpc_error, String.t()}}
+  def from_rpc_response(%{"success" => false, "error" => message}) when is_binary(message) do
+    {:error, {:rpc_error, message}}
+  end
 
-      _other ->
-        if String.contains?(line, "  "), do: :error, else: :skip
+  def from_rpc_response(%{"success" => true, "data" => %{"models" => models}})
+      when is_list(models) do
+    parsed =
+      Enum.reduce_while(models, {:ok, []}, fn model, {:ok, acc} ->
+        case from_rpc_model(model) do
+          {:ok, ai_model} -> {:cont, {:ok, [ai_model | acc]}}
+          :error -> {:halt, {:error, :unrecognized_output}}
+        end
+      end)
+
+    case parsed do
+      {:ok, list} ->
+        {:ok,
+         list
+         |> Enum.reverse()
+         |> Enum.sort_by(&{&1.provider, &1.model})}
+
+      {:error, _} = error ->
+        error
     end
   end
 
-  defp split_columns(line), do: String.split(line, ~r/\s{2,}/, trim: true)
+  def from_rpc_response(_other), do: {:error, :unrecognized_output}
 
-  defp parse_yes_no("yes"), do: {:ok, true}
-  defp parse_yes_no("no"), do: {:ok, false}
-  defp parse_yes_no(_other), do: :error
+  @doc false
+  @spec from_rpc_model(map()) :: {:ok, AIModel.t()} | :error
+  def from_rpc_model(model) when is_map(model) do
+    attrs = %{
+      provider: field(model, "provider", :provider),
+      id: field(model, "id", :id),
+      context: field(model, "contextWindow", :contextWindow),
+      max_tokens: field(model, "maxTokens", :maxTokens),
+      input: field(model, "input", :input) || [],
+      reasoning: field(model, "reasoning", :reasoning) || false,
+      name: field(model, "name", :name)
+    }
 
-  defp parse_token_count(value) do
-    case Regex.run(~r/^(\d+(?:\.\d+)?)([KMkm])?$/, value) do
-      [_, number, ""] ->
-        parse_plain_number(number)
-
-      [_, number, unit] ->
-        with {:ok, amount} <- parse_plain_number(number) do
-          {:ok, scale_token_count(amount, unit)}
-        end
-
-      [_, number] ->
-        parse_plain_number(number)
-
-      nil ->
-        :error
+    if valid_model_attrs?(attrs) do
+      {:ok,
+       AIModel.new!(%{
+         provider: attrs.provider,
+         model: attrs.id,
+         name: if(is_binary(attrs.name), do: attrs.name),
+         context_window: attrs.context,
+         max_output: attrs.max_tokens,
+         thinking: attrs.reasoning in [true, "true"],
+         thinking_levels: AIModel.thinking_levels_for(model),
+         images: images?(attrs.input)
+       })}
+    else
+      :error
     end
   end
 
-  defp parse_plain_number(number) do
-    case Integer.parse(number) do
-      {int, ""} ->
-        {:ok, int}
+  def from_rpc_model(_other), do: :error
 
-      _ ->
-        case Float.parse(number) do
-          {float, ""} -> {:ok, float}
-          _ -> :error
-        end
-    end
+  defp rpc, do: Utils.module(:rpc)
+
+  defp field(map, string_key, atom_key) do
+    Map.get(map, string_key) || Map.get(map, atom_key)
   end
 
-  defp scale_token_count(number, unit) do
-    multiplier =
-      case unit do
-        "K" -> 1_000
-        "k" -> 1_000
-        "M" -> 1_000_000
-        "m" -> 1_000_000
-      end
-
-    round(number * multiplier)
+  defp valid_model_attrs?(%{provider: provider, id: id, context: context, max_tokens: max_tokens}) do
+    is_binary(provider) and provider != "" and
+      is_binary(id) and id != "" and
+      is_integer(context) and context > 0 and
+      is_integer(max_tokens) and max_tokens > 0
   end
 
-  defp strip_ansi(text) do
-    Regex.replace(~r/\e\[[0-9;]*[a-zA-Z]/, text, "")
+  defp images?(input) when is_list(input) do
+    Enum.any?(input, &(&1 in ["image", :image]))
   end
+
+  defp images?(_other), do: false
 end

@@ -17,7 +17,7 @@ defmodule RintoPMO.Actors.Actor do
     field :enabled, :boolean, default: true
     field :provider, :string
     field :model, :string
-    field :thinking_level, Ecto.Enum, values: [:off, :low, :medium, :high, :max]
+    field :thinking_level, :string
     field :system_prompt, :string
     field :injection_profile, :map
 

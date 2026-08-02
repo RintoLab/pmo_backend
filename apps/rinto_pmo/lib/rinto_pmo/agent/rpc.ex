@@ -8,9 +8,13 @@ defmodule RintoPMO.Agent.Rpc do
   Built on `RintoPMO.OSProcess`, which supplies the line framing, keeps pi a
   direct child with no shell to quote against, and guarantees the OS process is
   reaped even if this process dies mid-request.
+
+  `OSProcess` is reached through `RintoPMO.Utils.module/1`, so a test of this
+  module mocks it rather than spawning anything.
   """
 
   alias RintoPMO.OSProcess
+  alias RintoPMO.Utils
 
   @enforce_keys [:os_process, :session_dir, :cleanup_session?]
   defstruct @enforce_keys
@@ -31,6 +35,21 @@ defmodule RintoPMO.Agent.Rpc do
           | {:rpc_error, String.t()}
           | {:invalid_response, term()}
 
+  defmodule Behaviour do
+    @moduledoc """
+    What a caller needs from an RPC round trip.
+
+    Only `request/2`: `open/1`, `call/3` and `close/1` are the pieces it is
+    built from, not something a caller drives directly.
+    """
+
+    alias RintoPMO.Agent.Rpc
+
+    @callback request(map(), keyword()) :: {:ok, map()} | {:error, Rpc.error()}
+  end
+
+  @behaviour Behaviour
+
   # Long enough to absorb the trailing output of a pi that is shutting down,
   # short enough not to stall the caller.
   @leftover_timeout 200
@@ -48,6 +67,7 @@ defmodule RintoPMO.Agent.Rpc do
   Commands are sent as soon as pi is spawned. pi has no readiness handshake and
   buffers whatever arrives before it is ready, so there is nothing to wait for.
   """
+  @impl Behaviour
   @spec request(map(), keyword()) :: {:ok, map()} | {:error, error()}
   def request(command, opts \\ []) when is_map(command) do
     timeout = Keyword.get(opts, :timeout, 15_000)
@@ -97,7 +117,7 @@ defmodule RintoPMO.Agent.Rpc do
       stderr: :discard
     ]
 
-    case OSProcess.start(start_opts) do
+    case os_process().start(start_opts) do
       {:ok, _pid} ->
         {:ok, %__MODULE__{os_process: id, session_dir: session_dir, cleanup_session?: cleanup?}}
 
@@ -118,7 +138,7 @@ defmodule RintoPMO.Agent.Rpc do
     command_id = command_id(command)
     payload = command |> stringify_keys() |> Map.put("id", command_id)
 
-    case OSProcess.send(rpc.os_process, JSON.encode!(payload) <> "\n") do
+    case os_process().send(rpc.os_process, JSON.encode!(payload) <> "\n") do
       :ok ->
         await_response(rpc, command_id, System.monotonic_time(:millisecond) + timeout)
 
@@ -130,7 +150,7 @@ defmodule RintoPMO.Agent.Rpc do
   @doc false
   @spec close(t()) :: :ok
   def close(%__MODULE__{} = rpc) do
-    _ = OSProcess.stop(rpc.os_process)
+    _ = os_process().stop(rpc.os_process)
     drain(rpc.os_process)
     cleanup_session(rpc.session_dir, rpc.cleanup_session?)
     :ok
@@ -214,6 +234,8 @@ defmodule RintoPMO.Agent.Rpc do
     Map.get(command, "id") || Map.get(command, :id) ||
       "rpc-" <> Integer.to_string(System.unique_integer([:positive]))
   end
+
+  defp os_process, do: Utils.module(:os_process)
 
   defp pi_executable do
     Application.get_env(:rinto_pmo, :pi_executable, "pi")

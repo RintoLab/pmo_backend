@@ -27,10 +27,10 @@ defmodule RintoPMO.ActorsTest do
       {:ok, actor} = Actors.create_actor(valid_ai_attrs("AI"))
 
       assert {:ok, updated_actor} =
-               Actors.update_actor(actor, %{model: "new-model", thinking_level: :high})
+               Actors.update_actor(actor, %{model: "new-model", thinking_level: "high"})
 
       assert updated_actor.model == "new-model"
-      assert updated_actor.thinking_level == :high
+      assert updated_actor.thinking_level == "high"
 
       assert {:ok, disabled_actor} = Actors.update_actor(updated_actor, %{enabled: false})
       refute disabled_actor.enabled
@@ -43,7 +43,7 @@ defmodule RintoPMO.ActorsTest do
       name: name,
       provider: "provider",
       model: "model",
-      thinking_level: :high
+      thinking_level: "high"
     }
   end
 end

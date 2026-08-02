@@ -19,7 +19,10 @@ config :rinto_pmo,
     annotations: RintoPMO.Annotations,
     documents: RintoPMO.Documents,
     projects: RintoPMO.Projects,
-    repo_credentials: RintoPMO.RepoCredentials
+    repo_credentials: RintoPMO.RepoCredentials,
+    # Each layer of pi model discovery, so a test of one mocks the next.
+    rpc: RintoPMO.Agent.Rpc,
+    os_process: RintoPMO.OSProcess
   ]
 
 config :rinto_pmo, RintoPMO.OSProcess,

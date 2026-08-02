@@ -10,6 +10,7 @@ defmodule RintoPMOWeb.Router do
 
     resources "/actors", ActorController, only: [:index, :show, :create, :update]
     get "/ai_models", AIModelController, :index
+    post "/ai_models/refresh", AIModelController, :refresh
 
     resources "/projects", ProjectController,
       only: [:index, :show, :create, :update, :delete],

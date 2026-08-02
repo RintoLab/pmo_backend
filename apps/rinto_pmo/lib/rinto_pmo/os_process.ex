@@ -173,6 +173,31 @@ defmodule RintoPMO.OSProcess do
           | {:missing_option, atom()}
           | {:spawn_failed, term()}
 
+  defmodule Behaviour do
+    @moduledoc """
+    The subset callers reach for when driving a child process.
+
+    Exists so a caller can be tested without spawning anything. Deliberately
+    partial: only what a mocked caller needs, since everything else is exercised
+    against the real implementation.
+
+    Mocking this covers the calls but not the messages -- output still arrives as
+    `t:RintoPMO.OSProcess.message/0` sent to the owner, which a test fakes by
+    sending to itself. That makes the message shape a contract a mock cannot
+    check, so anything relying on it wants at least one test against the real
+    module.
+    """
+
+    alias RintoPMO.OSProcess
+
+    @callback start([OSProcess.start_opt()]) :: {:ok, pid()} | {:error, OSProcess.start_error()}
+    @callback send(OSProcess.ref(), iodata()) :: :ok | {:error, OSProcess.call_error()}
+    @callback stop(OSProcess.ref()) ::
+                :ok | {:error, :not_found | :timeout | {:stop_failed, term()}}
+  end
+
+  @behaviour Behaviour
+
   @typedoc """
   Why a request to an instance failed.
 

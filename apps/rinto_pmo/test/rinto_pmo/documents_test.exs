@@ -97,7 +97,7 @@ defmodule RintoPMO.DocumentsTest do
           kind: :ai,
           provider: "openai",
           model: "gpt",
-          thinking_level: :low
+          thinking_level: "low"
         )
 
       {:ok, document} =

@@ -23,7 +23,7 @@ defmodule RintoPMO.Actors.ActorTest do
           name: "Human",
           provider: "provider",
           model: "model",
-          thinking_level: :low,
+          thinking_level: "low",
           system_prompt: "prompt",
           injection_profile: %{"profile" => "custom"}
         })
@@ -41,7 +41,7 @@ defmodule RintoPMO.Actors.ActorTest do
       assert changeset.valid?
       assert Ecto.Changeset.get_field(changeset, :provider) == "provider"
       assert Ecto.Changeset.get_field(changeset, :model) == "model"
-      assert Ecto.Changeset.get_field(changeset, :thinking_level) == :high
+      assert Ecto.Changeset.get_field(changeset, :thinking_level) == "high"
     end
 
     test "requires kind and name for every actor" do
@@ -73,15 +73,19 @@ defmodule RintoPMO.Actors.ActorTest do
       end
     end
 
-    test "rejects invalid enum values without raising" do
+    test "rejects invalid kind values without raising" do
       invalid_kind = Actor.changeset(%{kind: :service, name: "Actor"})
-      invalid_thinking = Actor.changeset(%{valid_ai_attrs() | thinking_level: :extreme})
 
       refute invalid_kind.valid?
       assert "is invalid" in errors_on(invalid_kind, :kind)
+    end
 
-      refute invalid_thinking.valid?
-      assert "is invalid" in errors_on(invalid_thinking, :thinking_level)
+    test "accepts arbitrary thinking level strings for AI actors" do
+      changeset =
+        Actor.changeset(%{valid_ai_attrs() | thinking_level: "provider-specific-level"})
+
+      assert changeset.valid?
+      assert Ecto.Changeset.get_field(changeset, :thinking_level) == "provider-specific-level"
     end
 
     test "does not allow changing kind from human to AI" do
@@ -98,7 +102,7 @@ defmodule RintoPMO.Actors.ActorTest do
           kind: :ai,
           provider: "provider",
           model: "model",
-          thinking_level: :high
+          thinking_level: "high"
         )
 
       changeset = Actor.changeset(actor, %{kind: :human, name: "Human"})
@@ -113,7 +117,7 @@ defmodule RintoPMO.Actors.ActorTest do
           kind: :ai,
           provider: "provider",
           model: "model",
-          thinking_level: :high
+          thinking_level: "high"
         )
 
       changeset =
@@ -144,7 +148,7 @@ defmodule RintoPMO.Actors.ActorTest do
       name: "Architect",
       provider: "provider",
       model: "model",
-      thinking_level: :high,
+      thinking_level: "high",
       system_prompt: "Review architecture",
       injection_profile: %{"neighbor_blocks" => 3}
     }

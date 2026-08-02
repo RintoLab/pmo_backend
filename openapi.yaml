@@ -12,7 +12,7 @@ tags:
   - name: Actors
     description: Global human participants and AI personas.
   - name: AI Models
-    description: Providers and models available from the local pi CLI for AI actor configuration.
+    description: Providers and models available from the local pi RPC runtime for AI actor configuration.
   - name: Projects
     description: Projects and their archive lifecycle.
   - name: Project Repositories
@@ -615,16 +615,40 @@ paths:
       operationId: listAIModels
       summary: List supported AI providers and models
       description: >
-        Returns the providers and models discovered from the local `pi --list-models`
-        catalog at application startup. Use this when creating an AI actor so the client
-        can offer only currently supported provider/model pairs.
+        Returns the providers and models discovered from the local `pi --mode rpc`
+        `get_available_models` catalog at application startup. Use this when creating an
+        AI actor so the client can offer only currently supported provider/model pairs and
+        the thinking levels each model actually supports.
+
+
+        Discovery runs in the background, so `data` may be empty while it is still in
+        flight or if it failed. Read `status` rather than inferring from an empty list.
       responses:
         "200":
-          description: Provider and model catalog
+          description: Provider and model catalog, plus discovery status
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/AIModelCatalogResponse"
+  /ai_models/refresh:
+    post:
+      tags: [AI Models]
+      operationId: refreshAIModels
+      summary: Trigger rediscovery of AI models
+      description: >
+        Asks the server to re-run model discovery against the local pi runtime and
+        returns immediately without waiting for it. Use after installing or updating
+        models, which the server otherwise picks up only on restart.
+
+
+        Poll `GET /ai_models` and watch `status.loading` to observe the outcome; a
+        failure appears there as `status.state = "error"`, which is why this endpoint has
+        no error response of its own. A refresh already in flight absorbs the request, so
+        repeated calls do not stack up. The currently cached models remain readable
+        throughout, and a failed refresh leaves them untouched.
+      responses:
+        "204":
+          description: Rediscovery has been requested
   /repo_credentials:
     get:
       tags: [Repo Credentials]
@@ -886,14 +910,21 @@ components:
       enum: [human, ai]
     ThinkingLevel:
       type: string
-      enum: [off, low, medium, high, max]
+      minLength: 1
+      description: >
+        Provider-specific thinking/reasoning level id as reported by pi
+        (for example off, high, max). Not a fixed global enum.
     AIModel:
       type: object
-      required: [model, context_window, max_output, thinking, images]
+      required: [model, context_window, max_output, thinking, thinking_levels, images]
       properties:
         model:
           type: string
           description: Model id as reported by pi.
+        name:
+          type: string
+          nullable: true
+          description: Display name from pi, when available.
         context_window:
           type: integer
           minimum: 1
@@ -902,6 +933,12 @@ components:
           minimum: 1
         thinking:
           type: boolean
+          description: Whether the model supports extended thinking/reasoning.
+        thinking_levels:
+          type: array
+          description: Thinking levels supported by this model (from pi thinkingLevelMap).
+          items:
+            $ref: "#/components/schemas/ThinkingLevel"
         images:
           type: boolean
       additionalProperties: false
@@ -918,12 +955,43 @@ components:
       additionalProperties: false
     AIModelCatalogResponse:
       type: object
-      required: [data]
+      required: [data, status]
       properties:
         data:
           type: array
           items:
             $ref: "#/components/schemas/AIProviderModels"
+        status:
+          $ref: "#/components/schemas/AIModelCatalogStatus"
+      additionalProperties: false
+    AIModelCatalogStatus:
+      type: object
+      required: [state, loading, updated_at, error]
+      description: >
+        Whether the catalog in `data` is usable, and whether discovery is running.
+        `state` and `loading` are independent: a refresh keeps serving the models it is
+        replacing, so `state: ok` with `loading: true` means usable but being updated.
+      properties:
+        state:
+          type: string
+          enum: [not_loaded, ok, error]
+          description: >
+            Outcome of the last finished discovery. `not_loaded` means none has finished
+            yet, so an empty `data` says nothing about whether pi is available.
+        loading:
+          type: boolean
+          description: Whether a discovery is running right now. Poll until false.
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the catalog was last loaded successfully.
+        error:
+          type: string
+          nullable: true
+          description: >
+            Why the last discovery failed, for display to an operator. Diagnostic text,
+            not a stable code -- branch on `state` instead.
       additionalProperties: false
     Actor:
       type: object
@@ -952,6 +1020,7 @@ components:
           allOf:
             - $ref: "#/components/schemas/ThinkingLevel"
           nullable: true
+          description: Free-form level string for AI actors; must match a level exposed by the selected model.
         system_prompt:
           type: string
           nullable: true

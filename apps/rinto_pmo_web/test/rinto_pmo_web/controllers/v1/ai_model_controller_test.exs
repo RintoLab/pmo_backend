@@ -1,6 +1,8 @@
 defmodule RintoPMOWeb.V1.AIModelControllerTest do
   use RintoPMOWeb.ConnCase, async: false
 
+  @moduletag :capture_log
+
   alias RintoPMO.Agent.AIModel
   alias RintoPMO.Agent.ModelCatalog
 
@@ -10,9 +12,11 @@ defmodule RintoPMOWeb.V1.AIModelControllerTest do
         AIModel.new!(%{
           provider: "acme",
           model: "alpha",
+          name: "Alpha",
           context_window: 10_000,
           max_output: 1_000,
           thinking: false,
+          thinking_levels: [:off],
           images: false
         }),
         AIModel.new!(%{
@@ -21,6 +25,7 @@ defmodule RintoPMOWeb.V1.AIModelControllerTest do
           context_window: 100_000,
           max_output: 8_000,
           thinking: true,
+          thinking_levels: [:off, :low, :high],
           images: true
         })
       ])
@@ -28,7 +33,7 @@ defmodule RintoPMOWeb.V1.AIModelControllerTest do
     :ok
   end
 
-  test "GET /api/v1/ai_models lists providers and models for actor creation", %{conn: conn} do
+  test "GET /api/v1/ai_models lists providers, models, and thinking levels", %{conn: conn} do
     conn = get(conn, ~p"/api/v1/ai_models")
 
     assert %{
@@ -38,9 +43,11 @@ defmodule RintoPMOWeb.V1.AIModelControllerTest do
                  "models" => [
                    %{
                      "model" => "alpha",
+                     "name" => "Alpha",
                      "context_window" => 10_000,
                      "max_output" => 1_000,
                      "thinking" => false,
+                     "thinking_levels" => ["off"],
                      "images" => false
                    }
                  ]
@@ -50,14 +57,64 @@ defmodule RintoPMOWeb.V1.AIModelControllerTest do
                  "models" => [
                    %{
                      "model" => "gpt-test",
-                     "context_window" => 100_000,
-                     "max_output" => 8_000,
                      "thinking" => true,
+                     "thinking_levels" => ["off", "low", "high"],
                      "images" => true
                    }
                  ]
                }
              ]
            } = json_response(conn, 200)
+  end
+
+  test "GET /api/v1/ai_models reports catalog status alongside the models", %{conn: conn} do
+    conn = get(conn, ~p"/api/v1/ai_models")
+
+    assert %{
+             "status" => %{
+               "state" => "ok",
+               "loading" => false,
+               "updated_at" => updated_at,
+               "error" => nil
+             }
+           } = json_response(conn, 200)
+
+    assert {:ok, %DateTime{}, _offset} = DateTime.from_iso8601(updated_at)
+  end
+
+  test "GET /api/v1/ai_models distinguishes an empty catalog from a failed one", %{conn: conn} do
+    # An empty `data` alone cannot say whether discovery worked, which is the
+    # whole reason `status` is in the response.
+    :ok = ModelCatalog.replace!([])
+
+    assert %{"data" => [], "status" => %{"state" => "ok"}} =
+             conn |> get(~p"/api/v1/ai_models") |> json_response(200)
+  end
+
+  describe "POST /api/v1/ai_models/refresh" do
+    test "answers without waiting for discovery", %{conn: conn} do
+      # What the application's discovery does here is the catalog's business;
+      # this only has to hand back an acknowledgement. on_exit lets the run
+      # settle so it does not spill into the next test.
+      on_exit(&await_idle/0)
+
+      assert conn |> post(~p"/api/v1/ai_models/refresh") |> response(204) == ""
+    end
+  end
+
+  # A refresh is a cast, so it is not necessarily under way when this is called.
+  # Syncing on the process first makes sure this waits for the run just asked
+  # for rather than observing the idle state preceding it.
+  defp await_idle do
+    :sys.get_state(ModelCatalog)
+
+    Enum.reduce_while(1..300, :timeout, fn _i, _acc ->
+      if Map.fetch!(ModelCatalog.status(), :loading?) do
+        Process.sleep(20)
+        {:cont, :timeout}
+      else
+        {:halt, :ok}
+      end
+    end)
   end
 end

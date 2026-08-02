@@ -18,9 +18,13 @@ config :rinto_pmo, :injectors,
   annotations: RintoPMO.AnnotationsMock,
   documents: RintoPMO.DocumentsMock,
   projects: RintoPMO.ProjectsMock,
-  repo_credentials: RintoPMO.RepoCredentialsMock
+  repo_credentials: RintoPMO.RepoCredentialsMock,
+  rpc: RintoPMO.Agent.RpcMock,
+  os_process: RintoPMO.OSProcessMock
 
-config :rinto_pmo, RintoPMO.Agent.ModelCatalog, loader: :noop
+# Keeps the application's own catalog off pi. Tests that exercise discovery
+# start a catalog of their own with a `:discover` of their choosing.
+config :rinto_pmo, RintoPMO.Agent.ModelCatalog, load_on_start: false
 
 # Shorter SIGTERM grace so kill/stop tests finish quickly.
 config :rinto_pmo, RintoPMO.OSProcess, kill_timeout: 1, drain_timeout: 25
