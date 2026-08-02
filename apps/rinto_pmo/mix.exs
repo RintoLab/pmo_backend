@@ -42,6 +42,7 @@ defmodule RintoPMO.MixProject do
       {:postgrex, ">= 0.0.0"},
       {:uuidv7, "~> 1.0"},
       {:oban, "~> 2.20"},
+      {:erlexec, "~> 2.3"},
       {:ex_machina, "~> 2.8.1", only: :test},
       {:hammox, "~> 1.0", only: :test}
     ]

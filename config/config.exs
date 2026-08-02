@@ -22,6 +22,16 @@ config :rinto_pmo,
     repo_credentials: RintoPMO.RepoCredentials
   ]
 
+config :rinto_pmo, RintoPMO.OSProcess,
+  # Seconds between SIGTERM and SIGKILL when stopping a child.
+  kill_timeout: 5,
+  # Milliseconds to keep collecting output after a child exits.
+  drain_timeout: 25,
+  # Under `framing: :lines`, cap the pending partial line at this many bytes so
+  # a child that never emits a newline cannot grow the buffer without bound.
+  # Unbounded by default: cutting a line is lossy, so it is opt-in per child.
+  max_line_bytes: :infinity
+
 config :rinto_pmo, Oban,
   repo: RintoPMO.Repo,
   queues: [default: 10]

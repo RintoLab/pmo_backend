@@ -22,6 +22,9 @@ config :rinto_pmo, :injectors,
 
 config :rinto_pmo, RintoPMO.Agent.ModelCatalog, loader: :noop
 
+# Shorter SIGTERM grace so kill/stop tests finish quickly.
+config :rinto_pmo, RintoPMO.OSProcess, kill_timeout: 1, drain_timeout: 25
+
 config :rinto_pmo, Oban, testing: :manual, queues: false, plugins: false
 
 # We don't run a server during test. If one is required,

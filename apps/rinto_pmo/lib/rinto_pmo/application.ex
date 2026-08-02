@@ -12,6 +12,7 @@ defmodule RintoPMO.Application do
       {Oban, Application.fetch_env!(:rinto_pmo, Oban)},
       {DNSCluster, query: Application.get_env(:rinto_pmo, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: RintoPMO.PubSub},
+      RintoPMO.OSProcess.Supervisor,
       RintoPMO.Agent.ModelCatalog
     ]
 

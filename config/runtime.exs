@@ -10,6 +10,12 @@ import Config
 config :rinto_pmo_web, RintoPMOWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# erlexec's exec-port refuses to start without SHELL, which releases running
+# under systemd or Docker frequently leave unset.
+if System.get_env("SHELL") in [nil, ""] do
+  System.put_env("SHELL", "/bin/sh")
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
