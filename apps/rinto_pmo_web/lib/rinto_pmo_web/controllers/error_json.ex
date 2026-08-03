@@ -4,6 +4,8 @@ defmodule RintoPMOWeb.ErrorJSON do
   @errors %{
     bad_request: {400, "The request is invalid."},
     not_found: {404, "The requested resource was not found."},
+    image_too_large: {413, "The image exceeds the size accepted for inline use."},
+    unsupported_image: {415, "The file is not an image format that can be sent to a model."},
     stale_document: {409, "The document has changed since the provided base revision."},
     task_state_conflict: {409, "The task is no longer in the expected state."},
     dependency_cycle: {409, "The task dependency would create a cycle."},
@@ -13,7 +15,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     invalid_block_op: {422, "The block operation is invalid."},
     invalid_estimate: {422, "The task estimate is invalid."},
     task_not_splittable: {422, "The task cannot be split in its current state."},
-    internal_server_error: {500, "An internal server error occurred."}
+    corrupt_image: {422, "The image header could not be read."},
+    internal_server_error: {500, "An internal server error occurred."},
+    attachment_unwritable: {500, "The attachment could not be stored."},
+    attachment_unreadable: {500, "The attachment bytes are missing or unreadable."}
   }
 
   @template_codes %{

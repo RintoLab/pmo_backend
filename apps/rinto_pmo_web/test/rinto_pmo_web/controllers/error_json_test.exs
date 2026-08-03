@@ -6,6 +6,12 @@ defmodule RintoPMOWeb.ErrorJSONTest do
   @errors %{
     bad_request: {400, "The request is invalid.", %{parameter: "limit", reason: "is invalid"}},
     not_found: {404, "The requested resource was not found.", %{}},
+    image_too_large:
+      {413, "The image exceeds the size accepted for inline use.",
+       %{byte_size: 9_000_000, limit: 4_500_000}},
+    unsupported_image:
+      {415, "The file is not an image format that can be sent to a model.",
+       %{supported: ["image/png", "image/jpeg"]}},
     stale_document:
       {409, "The document has changed since the provided base revision.",
        %{base_version: 2, current_version: 3, diff: []}},
@@ -24,7 +30,11 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {422, "The task estimate is invalid.", %{field: "likely", reason: "must be ordered"}},
     task_not_splittable:
       {422, "The task cannot be split in its current state.", %{current_status: "done"}},
-    internal_server_error: {500, "An internal server error occurred.", %{}}
+    corrupt_image: {422, "The image header could not be read.", %{}},
+    internal_server_error: {500, "An internal server error occurred.", %{}},
+    attachment_unwritable: {500, "The attachment could not be stored.", %{reason: "enospc"}},
+    attachment_unreadable:
+      {500, "The attachment bytes are missing or unreadable.", %{reason: "enoent"}}
   }
 
   for {code, {status, message, details}} <- @errors do

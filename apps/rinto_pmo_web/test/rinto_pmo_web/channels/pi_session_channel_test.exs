@@ -2,6 +2,8 @@ defmodule RintoPMOWeb.PiSessionChannelTest do
   use RintoPMOWeb.ChannelCase, async: true
 
   alias RintoPMO.Agent.PiSession
+  alias RintoPMO.AttachmentsMock
+  alias RintoPMO.DocumentsMock
   alias RintoPMOWeb.PiSocket
 
   @moduletag :capture_log
@@ -43,6 +45,49 @@ defmodule RintoPMOWeb.PiSessionChannelTest do
     printf '{"type":"response","id":"%s","success":true,"data":{"picked":%s}}\\n' "$id" "$(printf '%s' "$answer" | sed 's/.*"value":"\\([^"]*\\)".*/\\"\\1\\"/')"
     sleep 30
     """)
+  end
+
+  # Echoes like echo_pi but also records every command line it received, so a
+  # test can assert on what actually reached pi rather than on the reply.
+  #
+  # The capture path is quoted: ExUnit builds `tmp_dir` from the test name, so
+  # any test whose name contains a quote or a space would otherwise produce a
+  # script that will not parse.
+  defp capturing_pi(tmp_dir, capture_path) do
+    fake_pi(tmp_dir, """
+    while IFS= read -r line; do
+      printf '%s\\n' "$line" >> "#{capture_path}"
+      id=$(printf '%s' "$line" | sed 's/.*"id":"\\([^"]*\\)".*/\\1/')
+      printf '{"type":"response","id":"%s","success":true,"data":{"ok":true}}\\n' "$id"
+    done
+    """)
+  end
+
+  # Safe to read once the reply has arrived: pi writes the line before it
+  # answers, so a delivered response means the capture is on disk.
+  defp last_command(capture_path) do
+    capture_path
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> List.last()
+    |> JSON.decode!()
+  end
+
+  # Refs are resolved in the channel process, not the test's, so Hammox has to
+  # be told that process may use the expectation.
+  defp expect_in_channel(socket, mock, function, implementation) do
+    expect(mock, function, implementation)
+    allow(mock, self(), socket.channel_pid)
+  end
+
+  defp document_ref(document), do: %{"type" => "document", "id" => document.id}
+
+  defp document_with_block(content) do
+    document = insert(:document)
+    revision = insert(:document_revision, document: document)
+    block = insert(:document_block, revision: revision, content: content, position: 0)
+
+    %{document | latest_revision: %{revision | blocks: [block]}}
   end
 
   defp start_session!(opts) do
@@ -133,6 +178,101 @@ defmodule RintoPMOWeb.PiSessionChannelTest do
 
       ref = push(socket, "nonsense", %{})
       assert_reply ref, :error, %{reason: "unknown_event"}, 5_000
+    end
+  end
+
+  describe "prompt references" do
+    test "expands a document ref ahead of the message", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "sent.jsonl")
+      socket = join!(start_session!(capturing_pi(tmp_dir, capture)))
+      document = document_with_block("The quarterly plan")
+
+      expect_in_channel(socket, DocumentsMock, :get_document!, fn _id -> document end)
+
+      ref =
+        push(socket, "prompt", %{"message" => "summarise it", "refs" => [document_ref(document)]})
+
+      assert_reply ref, :ok, _payload, 5_000
+
+      assert %{"message" => message} = last_command(capture)
+      assert message =~ ~s(<document id="#{document.id}")
+      assert message =~ "The quarterly plan"
+      assert String.ends_with?(message, "\n\nsummarise it")
+    end
+
+    test "sends an attachment's bytes as an image alongside the text", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "sent.jsonl")
+      socket = join!(start_session!(capturing_pi(tmp_dir, capture)))
+      attachment = insert(:attachment)
+      image = %{"type" => "image", "mimeType" => "image/png", "data" => "QUJD"}
+
+      expect_in_channel(socket, AttachmentsMock, :get_attachment!, fn _id -> attachment end)
+
+      expect_in_channel(socket, AttachmentsMock, :image_content, fn _attachment ->
+        {:ok, image}
+      end)
+
+      expect_in_channel(socket, AttachmentsMock, :touch_attachments, fn ids ->
+        assert ids == [attachment.id]
+        :ok
+      end)
+
+      ref =
+        push(socket, "prompt", %{
+          "message" => "what is this?",
+          "refs" => [%{"type" => "attachment", "id" => attachment.id}]
+        })
+
+      assert_reply ref, :ok, _payload, 5_000
+
+      assert %{"message" => message, "images" => [^image]} = last_command(capture)
+      assert message =~ ~s(<attachment id="#{attachment.id}")
+    end
+
+    test "omits images entirely when there are none", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "sent.jsonl")
+      socket = join!(start_session!(capturing_pi(tmp_dir, capture)))
+
+      ref = push(socket, "prompt", %{"message" => "hello"})
+      assert_reply ref, :ok, _payload, 5_000
+
+      refute Map.has_key?(last_command(capture), "images")
+    end
+
+    test "still passes raw images through for a client that has its own", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "sent.jsonl")
+      socket = join!(start_session!(capturing_pi(tmp_dir, capture)))
+      image = %{"type" => "image", "mimeType" => "image/png", "data" => "QUJD"}
+
+      ref = push(socket, "prompt", %{"message" => "look", "images" => [image]})
+      assert_reply ref, :ok, _payload, 5_000
+
+      assert %{"images" => [^image]} = last_command(capture)
+    end
+
+    # A prompt that quietly lost its reference is worse than one that failed:
+    # the agent would answer with confidence about something it never saw.
+    test "refuses the prompt when a ref cannot be resolved", %{tmp_dir: tmp_dir} do
+      socket = join!(start_session!(echo_pi(tmp_dir)))
+
+      expect_in_channel(socket, DocumentsMock, :get_document!, fn _id ->
+        raise Ecto.NoResultsError, queryable: RintoPMO.Documents.Document
+      end)
+
+      ref =
+        push(socket, "prompt", %{
+          "message" => "hi",
+          "refs" => [%{"type" => "document", "id" => UUIDv7.generate()}]
+        })
+
+      assert_reply ref, :error, %{reason: "ref_not_found"}, 5_000
+    end
+
+    test "refuses a ref it does not understand", %{tmp_dir: tmp_dir} do
+      socket = join!(start_session!(echo_pi(tmp_dir)))
+
+      ref = push(socket, "prompt", %{"message" => "hi", "refs" => [%{"type" => "wormhole"}]})
+      assert_reply ref, :error, %{reason: "invalid_ref"}, 5_000
     end
   end
 

@@ -17,6 +17,7 @@ config :rinto_pmo,
   injectors: [
     actors: RintoPMO.Actors,
     annotations: RintoPMO.Annotations,
+    attachments: RintoPMO.Attachments,
     documents: RintoPMO.Documents,
     projects: RintoPMO.Projects,
     repo_credentials: RintoPMO.RepoCredentials,
@@ -24,6 +25,26 @@ config :rinto_pmo,
     rpc: RintoPMO.Agent.Rpc,
     os_process: RintoPMO.OSProcess
   ]
+
+config :rinto_pmo, RintoPMO.Attachments,
+  # Where uploaded image bytes live. Override per environment; a release should
+  # point this at a volume that outlives the deploy.
+  root: Path.expand("../apps/rinto_pmo/priv/attachments", __DIR__),
+  # pi caps an inline image at 4.5MB before handing it to a provider
+  # (`utils/image-resize-core.js`). Nothing resizes on the RPC path, so this is
+  # the real ceiling rather than a hint.
+  max_bytes: 4_500_000,
+  # Well above pi's own 2000px auto-resize target, which exists to save tokens
+  # rather than to satisfy an API. We cannot resize, so this only fences off the
+  # sizes providers reject outright; clients should downscale for cost.
+  max_dimension: 8_000
+
+config :rinto_pmo, RintoPMO.Agent.PromptBuilder,
+  # Characters of block content inlined per referenced document before the rest
+  # is elided.
+  max_document_chars: 20_000,
+  # Documents listed in a project reference's index.
+  max_project_documents: 50
 
 config :rinto_pmo, RintoPMO.OSProcess,
   # Seconds between SIGTERM and SIGKILL when stopping a child.

@@ -23,6 +23,10 @@ tags:
     description: Document annotations and flat follow-up replies (not review workflow, not AI chat logs).
   - name: Repo Credentials
     description: Reusable HTTPS username and token credentials.
+  - name: Attachments
+    description: >
+      Uploaded images, referenced from AI chat messages. Validated once at
+      upload so that expanding a reference later is a plain read.
 paths:
   /actors:
     get:
@@ -649,6 +653,110 @@ paths:
       responses:
         "204":
           description: Rediscovery has been requested
+  /attachments:
+    post:
+      tags: [Attachments]
+      operationId: createAttachment
+      summary: Upload an image
+      description: >
+        Accepts `multipart/form-data` rather than base64 JSON: base64 is a third
+        larger and would have to be decoded before anything could be validated.
+
+
+        Format and dimensions are read from the bytes themselves, so the
+        uploaded filename and `Content-Type` do not influence the stored
+        `mime_type`. Only the formats a model accepts inline are stored --
+        PNG, JPEG, GIF, WebP.
+
+
+        Nothing is resized. An image over the pixel or byte limit is refused,
+        not shrunk, so downscale client-side before uploading; large images also
+        cost tokens on every turn they stay in the conversation.
+      requestBody:
+        $ref: "#/components/requestBodies/AttachmentCreate"
+      responses:
+        "201":
+          description: Attachment stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttachmentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/ImageTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedImage"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /attachments/{id}:
+    parameters:
+      - $ref: "#/components/parameters/AttachmentId"
+    get:
+      tags: [Attachments]
+      operationId: getAttachment
+      summary: Get attachment metadata
+      description: Metadata only. The bytes are served by the content endpoint.
+      responses:
+        "200":
+          description: Attachment metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttachmentResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Attachments]
+      operationId: deleteAttachment
+      summary: Delete an attachment
+      description: >
+        Removes the metadata and the stored bytes. Chat messages that already
+        referenced it keep the copy pi received; only future references break.
+      responses:
+        "204":
+          description: Attachment deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /attachments/{id}/content:
+    parameters:
+      - $ref: "#/components/parameters/AttachmentId"
+    get:
+      tags: [Attachments]
+      operationId: getAttachmentContent
+      summary: Download the image bytes
+      description: >
+        Served with `Content-Disposition: inline` so it can back an `<img>` tag
+        directly. This is for rendering a transcript after a reload, when the
+        client holds attachment ids but no longer holds the bytes.
+      responses:
+        "200":
+          description: Raw image bytes
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/gif:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          description: The stored bytes are missing or unreadable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /repo_credentials:
     get:
       tags: [Repo Credentials]
@@ -806,6 +914,15 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/AnnotationReplyCreateInput"
+    AttachmentCreate:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: "#/components/schemas/AttachmentCreateInput"
+          encoding:
+            file:
+              contentType: image/png, image/jpeg, image/gif, image/webp
     AnnotationReplyUpdate:
       required: true
       content:
@@ -885,6 +1002,14 @@ components:
       schema:
         type: string
         format: uuid
+    AttachmentId:
+      name: id
+      in: path
+      required: true
+      description: Attachment UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
   responses:
     BadRequest:
       description: The request is invalid
@@ -904,6 +1029,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/NotFoundError"
+    ImageTooLarge:
+      description: The image exceeds the byte or pixel limit accepted for inline use
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    UnsupportedImage:
+      description: The file is not an image format a model accepts inline
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
   schemas:
     ActorKind:
       type: string
@@ -1829,12 +1966,91 @@ components:
         data:
           $ref: "#/components/schemas/AnnotationReply"
       additionalProperties: false
+    AttachmentCreateInput:
+      type: object
+      required: [actor_id, file]
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+          description: Actor the upload is attributed to.
+        file:
+          type: string
+          format: binary
+          description: >
+            The image itself. Its declared content type is ignored; the format
+            is sniffed from the bytes.
+      additionalProperties: false
+    Attachment:
+      type: object
+      required:
+        [
+          id,
+          actor_id,
+          filename,
+          mime_type,
+          byte_size,
+          width,
+          height,
+          checksum,
+          inserted_at,
+          last_used_at,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+          format: uuid
+        filename:
+          type: string
+          nullable: true
+          description: Original upload name, kept for display only.
+        mime_type:
+          type: string
+          enum: [image/png, image/jpeg, image/gif, image/webp]
+          description: Detected from the bytes, not from the request.
+        byte_size:
+          type: integer
+          minimum: 1
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        checksum:
+          type: string
+          description: Lowercase hex SHA-256 of the stored bytes.
+        inserted_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            When this image was last expanded into an agent prompt. Null means
+            it was uploaded but never sent, which is the state an abandoned
+            upload stays in. Recorded for a future retention policy; nothing
+            deletes on it today.
+      additionalProperties: false
+    AttachmentResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Attachment"
+      additionalProperties: false
     APIErrorCode:
       type: string
       description: Stable machine-readable error code.
       enum:
         - bad_request
         - not_found
+        - image_too_large
+        - unsupported_image
         - stale_document
         - task_state_conflict
         - dependency_cycle
@@ -1844,7 +2060,10 @@ components:
         - invalid_block_op
         - invalid_estimate
         - task_not_splittable
+        - corrupt_image
         - internal_server_error
+        - attachment_unwritable
+        - attachment_unreadable
     APIError:
       type: object
       required: [error, message, details]

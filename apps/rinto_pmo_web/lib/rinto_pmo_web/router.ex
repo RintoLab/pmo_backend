@@ -31,6 +31,9 @@ defmodule RintoPMOWeb.Router do
       end
     end
 
+    resources "/attachments", AttachmentController, only: [:show, :create, :delete]
+    get "/attachments/:id/content", AttachmentController, :content
+
     resources "/repo_credentials", RepoCredentialController,
       only: [:index, :show, :create, :update, :delete]
   end

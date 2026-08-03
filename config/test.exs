@@ -16,11 +16,21 @@ config :rinto_pmo, RintoPMO.Repo,
 config :rinto_pmo, :injectors,
   actors: RintoPMO.ActorsMock,
   annotations: RintoPMO.AnnotationsMock,
+  attachments: RintoPMO.AttachmentsMock,
   documents: RintoPMO.DocumentsMock,
   projects: RintoPMO.ProjectsMock,
   repo_credentials: RintoPMO.RepoCredentialsMock,
   rpc: RintoPMO.Agent.RpcMock,
   os_process: RintoPMO.OSProcessMock
+
+# Uploads land in a scratch directory: tests write real files, and the project
+# tree should not collect them.
+config :rinto_pmo, RintoPMO.Attachments,
+  root:
+    Path.join(
+      System.tmp_dir!(),
+      "rinto-pmo-attachments-test#{System.get_env("MIX_TEST_PARTITION")}"
+    )
 
 # Keeps the application's own catalog off pi. Tests that exercise discovery
 # start a catalog of their own with a `:discover` of their choosing.

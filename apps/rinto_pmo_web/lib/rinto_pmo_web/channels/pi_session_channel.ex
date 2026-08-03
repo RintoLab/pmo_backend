@@ -20,7 +20,14 @@ defmodule RintoPMOWeb.PiSessionChannel do
   ## Client to server
 
     * `"prompt"` -- `%{"message" => "..."}`, the ordinary way to talk to the
-      agent; optional `"images"` and `"streamingBehavior"` pass straight through
+      agent; optional `"refs"` name things in this system to put in front of the
+      message (see `RintoPMO.Agent.PromptBuilder`), while `"images"` and
+      `"streamingBehavior"` pass straight through
+
+  A `"prompt"` carrying `"refs"` is refused outright -- `{"reason":
+  "ref_not_found"}` or `{"reason": "invalid_ref"}` -- rather than sent with the
+  reference silently dropped. Half a question is worse than none: the agent
+  would answer confidently about a document it never saw.
     * `"command"` -- `%{"type" => "get_state", ...}`, any raw RPC command
     * `"answer"` -- `%{"ui_id" => id, "value" | "confirmed" | "cancelled" => _}`
     * `"pending_ui"` -- re-read the parked questions
@@ -44,6 +51,7 @@ defmodule RintoPMOWeb.PiSessionChannel do
   use RintoPMOWeb, :channel
 
   alias RintoPMO.Agent.PiSession
+  alias RintoPMO.Agent.PromptBuilder
 
   @impl true
   def join("pi_session:" <> session_id, params, socket) do
@@ -116,12 +124,19 @@ defmodule RintoPMOWeb.PiSessionChannel do
   # this API readable against pi's protocol docs.
   @impl true
   def handle_in("prompt", %{"message" => message} = payload, socket) do
-    dispatch(
-      socket,
-      payload
-      |> Map.take(["images", "streamingBehavior"])
-      |> Map.merge(%{"type" => "prompt", "message" => message})
-    )
+    case PromptBuilder.build(message, Map.get(payload, "refs", [])) do
+      {:ok, built} ->
+        command =
+          payload
+          |> Map.take(["streamingBehavior"])
+          |> Map.merge(%{"type" => "prompt", "message" => built.message})
+          |> put_images(built.images ++ Map.get(payload, "images", []))
+
+        dispatch(socket, command)
+
+      {:error, reason, details} ->
+        {:reply, {:error, %{reason: to_string(reason), details: details}}, socket}
+    end
   end
 
   def handle_in("command", %{"type" => _type} = payload, socket) do
@@ -174,6 +189,11 @@ defmodule RintoPMOWeb.PiSessionChannel do
 
     {:noreply, socket}
   end
+
+  # pi treats `images` as optional; sending an empty array would put an empty
+  # content list in front of every text-only turn for no reason.
+  defp put_images(command, []), do: command
+  defp put_images(command, images), do: Map.put(command, "images", images)
 
   defp decode_answer(%{"value" => value}) when is_binary(value), do: {:ok, {:value, value}}
 

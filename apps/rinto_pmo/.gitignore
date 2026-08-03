@@ -22,5 +22,9 @@ erl_crash.dump
 # Temporary files, for example, from tests.
 /tmp/
 
+# Uploaded attachment bytes. The dev default writes here; a release should
+# point RintoPMO.Attachments :root at a volume instead.
+/priv/attachments/
+
 # Ignore package tarball (built via "mix hex.build").
 rinto_pmo-*.tar

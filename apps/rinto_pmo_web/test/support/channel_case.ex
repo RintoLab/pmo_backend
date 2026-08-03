@@ -13,8 +13,12 @@ defmodule RintoPMOWeb.ChannelCase do
       # The default endpoint for testing
       @endpoint RintoPMOWeb.Endpoint
 
+      import Hammox
       import Phoenix.ChannelTest
+      import RintoPMO.Factory
       import RintoPMOWeb.ChannelCase
+
+      setup :verify_on_exit!
     end
   end
 

@@ -6,6 +6,7 @@ defmodule RintoPMO.Factory do
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
+  alias RintoPMO.Attachments.Attachment
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
@@ -71,6 +72,18 @@ defmodule RintoPMO.Factory do
       document: build(:document),
       actor: build(:actor),
       content: sequence(:annotation_content, &"Annotation #{&1}")
+    }
+  end
+
+  def attachment_factory do
+    %Attachment{
+      actor: build(:actor),
+      filename: sequence(:attachment_filename, &"image-#{&1}.png"),
+      mime_type: "image/png",
+      byte_size: 70,
+      width: 1,
+      height: 1,
+      checksum: String.duplicate("0", 64)
     }
   end
 
