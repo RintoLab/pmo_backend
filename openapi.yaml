@@ -1380,7 +1380,7 @@ components:
           format: uuid
         content:
           type: string
-          description: A complete Markdown fragment, normally beginning with an H2 heading.
+          description: A complete Markdown fragment, normally beginning with an H2 or H3 heading.
       additionalProperties: false
     InsertAfterBlockOperation:
       type: object
