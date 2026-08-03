@@ -19,6 +19,25 @@ defmodule RintoPMO.OSProcess.Instance do
   @resignal_after 50
   @resignals 2
 
+  # How long terminate/2 waits for an exit the child has already earned before
+  # deciding it has to signal instead.
+  #
+  # Stopping a child that has exited but has not been reaped yet leaves erlexec
+  # inconsistent: the signal goes to a process group holding nothing but a
+  # zombie and fails, and erlexec answers a signal it could not deliver by
+  # dropping the child from its table without ever reporting the status it had
+  # (deps/erlexec/c_src/exec_impl.cpp, stop_child/4). The owner then gets an
+  # invented `:stopped` instead of the real status, and erlexec logs
+  # `unknown msg: {error, "pid not alive"}` once the instance dies and the
+  # stale entry it left behind is cleaned up.
+  #
+  # Whenever that happens the child's exit is already travelling port -> exec
+  # server -> instance, a few hundred microseconds away, so a short wait turns
+  # the race into a clean report. A stop that really does have to kill something
+  # pays the wait in full, which is immaterial next to the signal round trip
+  # that follows it.
+  @exit_grace 10
+
   @doc false
   def child_spec(%Spec{} = spec) do
     %{
@@ -146,15 +165,16 @@ defmodule RintoPMO.OSProcess.Instance do
     report_exit(state, pending)
   end
 
-  # The child may have exited already with its {:EXIT, ...} still unprocessed in
-  # the mailbox -- a stop/2 that raced the child finishing on its own. Reporting
-  # the status it actually earned beats inventing a `:stopped` one, and skipping
-  # the redundant :exec.stop/1 avoids erlexec's "pid not alive" warning.
+  # A stop that races the child finishing on its own, which is the normal ending
+  # for a short-lived child whose owner tears it down as it completes. Reporting
+  # the status the child actually earned beats inventing a `:stopped` one, and
+  # not signalling a child that is already gone is what keeps erlexec consistent
+  # -- see @exit_grace.
   def terminate(reason, %{exec_pid: exec_pid} = state) do
     receive do
       {:EXIT, ^exec_pid, exit_reason} -> report_exit(state, exit_status(exit_reason))
     after
-      0 -> stop_and_report(state, reason)
+      @exit_grace -> stop_and_report(state, reason)
     end
   end
 
@@ -172,11 +192,11 @@ defmodule RintoPMO.OSProcess.Instance do
       :ok ->
         await_reap(exec_pid, ref, deadline(Spec.reap_timeout(spec)), @resignals)
 
-      # erlexec could not signal the OS process, which in practice means the
-      # child had already exited and its process group was empty. erlexec
-      # answers that by dropping the child from its table, so the notification
-      # this wait is for is never coming -- and waiting for it burns the whole
-      # reap timeout on every stop/2 that races a child exiting on its own.
+      # erlexec could not signal the OS process, which means the child died
+      # inside the grace window @exit_grace was meant to cover, leaving its
+      # process group empty. erlexec answers that by dropping the child from its
+      # table, so the notification this wait is for is never coming -- and
+      # waiting for it would burn the whole reap timeout.
       {:error, _reason} ->
         Process.demonitor(ref, [:flush])
     end

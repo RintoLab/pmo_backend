@@ -244,6 +244,27 @@ defmodule RintoPMO.OSProcessTest do
       assert {:error, :not_found} = OSProcess.stop("nope")
     end
 
+    # A one-shot child is normally stopped just as it finishes, and erlexec has
+    # no way to signal a child that has already exited: the signal fails, and
+    # erlexec answers a failed signal by dropping the child without ever
+    # reporting the status it had earned. The visible damage is this invented
+    # `:stopped` status; erlexec also logs `unknown msg: {error, "pid not
+    # alive"}` about the entry it leaves behind.
+    #
+    # Stopping the instant the child's only output arrives lands in that window
+    # nearly every time, and repeating makes sure of it.
+    test "reports the child's own status when the stop lands as it finishes" do
+      for _ <- 1..8 do
+        id = start!(sh("printf 'done\n'"))
+        assert_receive {:os_process, ^id, {:stdout, "done\n"}}, 2_000
+
+        # Either the stop won the race or the instance had already reported and
+        # gone. Both have to end in the child's own status.
+        _ = OSProcess.stop(id)
+        assert_receive {:os_process, ^id, {:exit, {:exit, 0}}}, 2_000
+      end
+    end
+
     # The signal erlexec sends is lost if it lands between fork and execve, and
     # erlexec never re-sends one -- it only escalates to SIGKILL at
     # `:kill_timeout`. Stopping without waiting for the child to announce itself

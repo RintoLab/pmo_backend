@@ -93,12 +93,16 @@ defmodule RintoPMOWeb.V1.AIModelControllerTest do
 
   describe "POST /api/v1/ai_models/refresh" do
     test "answers without waiting for discovery", %{conn: conn} do
-      # What the application's discovery does here is the catalog's business;
-      # this only has to hand back an acknowledgement. on_exit lets the run
-      # settle so it does not spill into the next test.
-      on_exit(&await_idle/0)
+      expect(RintoPMO.Agent.RpcMock, :request, fn %{"type" => "get_available_models"}, [] ->
+        {:ok, %{"success" => true, "data" => %{"models" => []}}}
+      end)
+
+      # Discovery runs under the catalog's task rather than the test process,
+      # so explicitly give it access to this test's mock expectation.
+      allow(RintoPMO.Agent.RpcMock, self(), ModelCatalog)
 
       assert conn |> post(~p"/api/v1/ai_models/refresh") |> response(204) == ""
+      assert :ok = await_idle()
     end
   end
 
