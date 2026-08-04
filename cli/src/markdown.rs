@@ -18,8 +18,8 @@
 //! deeper stay with their parent: past H3 the fragments stop being independently
 //! reviewable.
 
-/// Splits `source` at every H2 or H3 heading that is not inside a fenced code
-/// block.
+/// Splits `source` at every H1, H2 or H3 heading that is not inside a fenced
+/// code block.
 ///
 /// Text preceding the first heading becomes its own leading block. Blocks that
 /// are blank after trimming are dropped, so trailing newlines and runs of blank
@@ -78,13 +78,19 @@ fn fence_marker(line: &str) -> Option<(char, usize)> {
     (length >= 3).then_some((character, length))
 }
 
-/// True for `## Heading` and `### Heading`; false for `#`, `#### Heading`, and
+/// True for `# `, `## ` and `### ` headings; false for `#### ` and deeper, and
 /// for a hash run with no space after it (`##inline`).
+///
+/// H1 splits like the rest. The document title is a separate input and is never
+/// read out of the body, so an H1 here is ordinary content -- a body may carry
+/// several. Leaving the shallowest heading as the one that does not split would
+/// glue a second H1 onto whatever came before it, which is the inconsistency,
+/// not the split.
 fn is_split_heading(line: &str) -> bool {
     let line = strip_indent(line);
     let hashes = line.chars().take_while(|c| *c == '#').count();
 
-    if !(2..=3).contains(&hashes) {
+    if !(1..=3).contains(&hashes) {
         return false;
     }
 
@@ -164,6 +170,25 @@ mod tests {
             split_into_blocks(source),
             vec!["## One\n\n````\n```\n## still code\n````"]
         );
+    }
+
+    #[test]
+    fn splits_at_h1_headings_too() {
+        let blocks = split_into_blocks("# One\n\nfirst\n\n# Two\n\nsecond\n");
+
+        assert_eq!(blocks, vec!["# One\n\nfirst", "# Two\n\nsecond"]);
+    }
+
+    #[test]
+    fn a_body_may_carry_several_h1s() {
+        let blocks = split_into_blocks("# A\n\na\n\n## Sub\n\ns\n\n# B\n\nb\n");
+
+        assert_eq!(blocks, vec!["# A\n\na", "## Sub\n\ns", "# B\n\nb"]);
+    }
+
+    #[test]
+    fn ignores_a_hash_with_no_space() {
+        assert_eq!(split_into_blocks("#notaheading\n"), vec!["#notaheading"]);
     }
 
     #[test]

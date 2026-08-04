@@ -19,11 +19,11 @@ pub enum DocCommand {
 
 #[derive(Args)]
 pub struct CreateArgs {
-    /// Document title
+    /// Document title; supplied separately, never inside the body
     #[arg(long)]
     title: String,
 
-    /// Markdown file holding the body; split into blocks at `##` and `###` headings
+    /// Markdown file holding the body; split into blocks at `#`, `##` and `###` headings
     #[arg(long, value_name = "FILE", required_unless_present = "blocks")]
     body: Option<PathBuf>,
 
@@ -80,7 +80,7 @@ fn create(args: CreateArgs) -> Result<()> {
     let client = &Client::from_env()?;
 
     let blocks = match (&args.body, &args.blocks) {
-        (Some(path), _) => blocks_from_markdown(path, client.actor_id())?,
+        (Some(path), _) => stamp(read_markdown(path)?, client.actor_id()),
         (None, Some(path)) => blocks_from_json(path, client.actor_id())?,
         // clap's `required_unless_present` already rejects this.
         (None, None) => unreachable!("clap guarantees one of --body or --blocks"),
@@ -113,7 +113,7 @@ fn create(args: CreateArgs) -> Result<()> {
 /// create a real document and then have to clean it up.
 fn dry_run(args: &CreateArgs) -> Result<()> {
     let blocks: Vec<String> = match (&args.body, &args.blocks) {
-        (Some(path), _) => markdown::split_into_blocks(&read(path)?),
+        (Some(path), _) => read_markdown(path)?,
         (None, Some(path)) => blocks_from_json(path, "")?
             .iter()
             .map(|block| content_of(block).to_string())
@@ -121,10 +121,7 @@ fn dry_run(args: &CreateArgs) -> Result<()> {
         (None, None) => unreachable!("clap guarantees one of --body or --blocks"),
     };
 
-    if blocks.is_empty() {
-        return Err(Error::Input("there is no content to write".to_string()));
-    }
-
+    println!("title: {}", args.title);
     println!("{} block(s), nothing created:", blocks.len());
     for (index, block) in blocks.iter().enumerate() {
         let opening = block.lines().next().unwrap_or("").trim();
@@ -205,9 +202,8 @@ fn list(client: &Client, args: ListArgs) -> Result<()> {
     Ok(())
 }
 
-fn blocks_from_markdown(path: &Path, actor_id: &str) -> Result<Vec<Value>> {
-    let source = read(path)?;
-    let blocks = markdown::split_into_blocks(&source);
+fn read_markdown(path: &Path) -> Result<Vec<String>> {
+    let blocks = markdown::split_into_blocks(&read(path)?);
 
     if blocks.is_empty() {
         return Err(Error::Input(format!(
@@ -216,10 +212,14 @@ fn blocks_from_markdown(path: &Path, actor_id: &str) -> Result<Vec<Value>> {
         )));
     }
 
-    Ok(blocks
+    Ok(blocks)
+}
+
+fn stamp(contents: Vec<String>, actor_id: &str) -> Vec<Value> {
+    contents
         .into_iter()
         .map(|content| json!({ "actor_id": actor_id, "content": content }))
-        .collect())
+        .collect()
 }
 
 /// Passes author-supplied block objects through untouched apart from stamping
