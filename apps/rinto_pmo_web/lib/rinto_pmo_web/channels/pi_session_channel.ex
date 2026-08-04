@@ -124,8 +124,14 @@ defmodule RintoPMOWeb.PiSessionChannel do
   # this API readable against pi's protocol docs.
   @impl true
   def handle_in("prompt", %{"message" => message} = payload, socket) do
-    case PromptBuilder.build(message, Map.get(payload, "refs", [])) do
+    refs = Map.get(payload, "refs", [])
+
+    case PromptBuilder.build(message, refs) do
       {:ok, built} ->
+        # Written before the command goes out, so the human's turn is at a
+        # lower position than the reply the recorder writes for it.
+        record_prompt(socket, message, refs, payload)
+
         command =
           payload
           |> Map.take(["streamingBehavior"])
@@ -189,6 +195,41 @@ defmodule RintoPMOWeb.PiSessionChannel do
 
     {:noreply, socket}
   end
+
+  # The user's turn is written here rather than by
+  # `RintoPMO.Conversations.Recorder`, because the refs that came with it are
+  # known only at this point and a message without its refs cannot be replayed.
+  # The raw text is stored, never `built.message` -- replay re-expands the refs
+  # against the documents as they stand then, instead of feeding back a
+  # snapshot from weeks ago.
+  #
+  # `actor_id` is what opts a prompt into being recorded. A session nobody
+  # claimed is still perfectly usable; it simply is not a topic, and there is
+  # no honest actor to attribute its turns to.
+  defp record_prompt(socket, message, refs, %{"actor_id" => actor_id})
+       when is_binary(actor_id) do
+    context = conversations()
+
+    case context.get_conversation_by_session(socket.assigns.session_id) do
+      nil ->
+        :ok
+
+      conversation ->
+        _result =
+          context.append_message(conversation, %{
+            actor_id: actor_id,
+            role: :user,
+            content: message,
+            refs: refs
+          })
+
+        :ok
+    end
+  end
+
+  defp record_prompt(_socket, _message, _refs, _payload), do: :ok
+
+  defp conversations, do: RintoPMO.Utils.module(:conversations)
 
   # pi treats `images` as optional; sending an empty array would put an empty
   # content list in front of every text-only turn for no reason.

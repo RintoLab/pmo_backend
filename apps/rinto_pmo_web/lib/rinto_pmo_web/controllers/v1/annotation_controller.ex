@@ -84,9 +84,38 @@ defmodule RintoPMOWeb.V1.AnnotationController do
     end
   end
 
+  @doc """
+  Lists the topics that ever discussed this annotation.
+
+  Derived from message refs rather than a join table, which is why an
+  annotation can be under discussion in several topics at once without
+  anything having to record that fact.
+  """
+  def conversations(conn, %{"document_id" => document_id, "id" => id}) do
+    document = get_document!(document_id)
+    annotation = annotations_context().get_annotation!(document, id)
+
+    conversations =
+      Utils.module(:conversations).list_conversations_for_ref("annotation", annotation.id)
+
+    conn
+    |> put_view(json: RintoPMOWeb.V1.ConversationJSON)
+    |> render(:index, conversations: conversations)
+  end
+
   defp annotation_filter(params) do
-    with {:ok, filter} <- block_id_filter(params) do
-      status_filter(params, filter)
+    with {:ok, filter} <- block_id_filter(params),
+         {:ok, filter} <- status_filter(params, filter) do
+      pending_conclusion_filter(params, filter)
+    end
+  end
+
+  defp pending_conclusion_filter(params, filter) do
+    case Map.get(params, "pending_conclusion") do
+      nil -> {:ok, filter}
+      "true" -> {:ok, Map.put(filter, :pending_conclusion, true)}
+      "false" -> {:ok, Map.put(filter, :pending_conclusion, false)}
+      _invalid -> {:error, :bad_request, %{"pending_conclusion" => ["is invalid"]}}
     end
   end
 

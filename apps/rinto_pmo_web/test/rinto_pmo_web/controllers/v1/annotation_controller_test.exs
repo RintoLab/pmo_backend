@@ -3,6 +3,7 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
 
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.AnnotationsMock
+  alias RintoPMO.ConversationsMock
   alias RintoPMO.DocumentsMock
 
   test "GET annotations lists summaries without replies", %{conn: conn} do
@@ -238,6 +239,39 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
     conn = post(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/reopen")
 
     assert %{"status" => "open", "resolved_by_revision_id" => nil} =
+             json_response(conn, 200)["data"]
+  end
+
+  test "GET annotations filters to conclusions awaiting a decision", %{conn: conn} do
+    document = expect_document()
+
+    expect(AnnotationsMock, :list_annotations, fn ^document, %{pending_conclusion: true} ->
+      []
+    end)
+
+    conn = get(conn, ~p"/api/v1/documents/#{document.id}/annotations?pending_conclusion=true")
+    assert json_response(conn, 200)["data"] == []
+  end
+
+  test "GET annotations/:id/conversations lists the topics that discussed it", %{conn: conn} do
+    document = expect_document()
+    annotation = insert(:annotation, document: document)
+    conversation = insert(:conversation, title: "Tighten §3")
+    conversation_id = conversation.id
+    annotation_id = annotation.id
+
+    expect(AnnotationsMock, :get_annotation!, fn ^document, _id ->
+      %{annotation | replies: []}
+    end)
+
+    expect(ConversationsMock, :list_conversations_for_ref, fn "annotation", ^annotation_id ->
+      [conversation]
+    end)
+
+    conn =
+      get(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/conversations")
+
+    assert [%{"id" => ^conversation_id, "title" => "Tighten §3"}] =
              json_response(conn, 200)["data"]
   end
 

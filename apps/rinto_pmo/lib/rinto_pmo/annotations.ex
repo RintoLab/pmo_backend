@@ -18,7 +18,8 @@ defmodule RintoPMO.Annotations do
 
     @type filter :: %{
             optional(:block_id) => UUIDv7.t() | nil,
-            optional(:status) => Annotation.status()
+            optional(:status) => Annotation.status(),
+            optional(:pending_conclusion) => boolean()
           }
 
     @callback list_annotations(Document.t(), filter()) :: [Annotation.t()]
@@ -195,9 +196,39 @@ defmodule RintoPMO.Annotations do
       {:status, status}, query ->
         where(query, [annotation], annotation.status == ^status)
 
+      {:pending_conclusion, true}, query ->
+        where(
+          query,
+          [annotation],
+          annotation.status == :open and
+            annotation.id in subquery(concluded_annotation_ids())
+        )
+
+      {:pending_conclusion, false}, query ->
+        where(
+          query,
+          [annotation],
+          annotation.status != :open or
+            annotation.id not in subquery(concluded_annotation_ids())
+        )
+
       {_other, _value}, query ->
         query
     end)
+  end
+
+  # "A conclusion is waiting on you": still open, and a reply on it came out of
+  # a conversation. The reply is the AI saying it is done; the open status is
+  # nobody having decided yet.
+  #
+  # Deliberately not keyed on whether a human has *read* it. Clearing the
+  # marker on read would make it vanish at precisely the moment intervention is
+  # most needed -- the annotation unresolved, the document unchanged, and the
+  # prompt gone from view. See docs/document-conversations.md.
+  defp concluded_annotation_ids do
+    AnnotationReply
+    |> where([reply], not is_nil(reply.source_message_id))
+    |> select([reply], reply.annotation_id)
   end
 
   defp next_reply_position(repo, annotation_id) do

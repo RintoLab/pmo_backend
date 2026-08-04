@@ -331,6 +331,96 @@ defmodule RintoPMO.AnnotationsTest do
     end
   end
 
+  describe "conclusions from a conversation" do
+    test "a reply can point back at the message it came from" do
+      annotation = insert(:annotation)
+      actor = insert(:actor)
+      message = insert(:message)
+
+      assert {:ok, reply} =
+               Annotations.create_reply(annotation, %{
+                 actor_id: actor.id,
+                 content: "§3 contradicts §1; rewrite the second clause.",
+                 source_message_id: message.id
+               })
+
+      assert reply.source_message_id == message.id
+    end
+
+    test "a reply without a source is still fine" do
+      annotation = insert(:annotation)
+      actor = insert(:actor)
+
+      assert {:ok, reply} =
+               Annotations.create_reply(annotation, %{actor_id: actor.id, content: "Mine"})
+
+      assert reply.source_message_id == nil
+    end
+
+    test "rejects a source message that does not exist" do
+      annotation = insert(:annotation)
+      actor = insert(:actor)
+
+      assert {:error, changeset} =
+               Annotations.create_reply(annotation, %{
+                 actor_id: actor.id,
+                 content: "From nowhere",
+                 source_message_id: UUIDv7.generate()
+               })
+
+      assert "does not exist" in errors_on(changeset).source_message_id
+    end
+
+    test "filters to the annotations with a conclusion waiting on a decision" do
+      document = insert(:document)
+      actor = insert(:actor)
+
+      waiting = insert(:annotation, document: document, status: :open)
+      quiet = insert(:annotation, document: document, status: :open)
+      decided = insert(:annotation, document: document, status: :resolved)
+
+      for annotation <- [waiting, decided] do
+        {:ok, _reply} =
+          Annotations.create_reply(annotation, %{
+            actor_id: actor.id,
+            content: "Concluded",
+            source_message_id: insert(:message).id
+          })
+      end
+
+      # A reply with no conversation behind it is somebody's own opinion, not
+      # a conclusion the AI is handing over.
+      {:ok, _reply} =
+        Annotations.create_reply(quiet, %{actor_id: actor.id, content: "Just a thought"})
+
+      assert annotation_ids(Annotations.list_annotations(document, %{pending_conclusion: true})) ==
+               MapSet.new([waiting.id])
+
+      assert annotation_ids(Annotations.list_annotations(document, %{pending_conclusion: false})) ==
+               MapSet.new([quiet.id, decided.id])
+    end
+
+    test "resolving clears the pending marker without anything being read" do
+      document = insert(:document)
+      actor = insert(:actor)
+      annotation = insert(:annotation, document: document, status: :open)
+
+      {:ok, _reply} =
+        Annotations.create_reply(annotation, %{
+          actor_id: actor.id,
+          content: "Concluded",
+          source_message_id: insert(:message).id
+        })
+
+      assert annotation_ids(Annotations.list_annotations(document, %{pending_conclusion: true})) ==
+               MapSet.new([annotation.id])
+
+      {:ok, _resolved} = Annotations.resolve_annotation(annotation, %{})
+
+      assert Annotations.list_annotations(document, %{pending_conclusion: true}) == []
+    end
+  end
+
   defp annotation_ids(annotations) do
     annotations |> Enum.map(& &1.id) |> MapSet.new()
   end

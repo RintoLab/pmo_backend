@@ -1,6 +1,7 @@
 Hammox.defmock(RintoPMO.ActorsMock, for: RintoPMO.Actors.Behaviour)
 Hammox.defmock(RintoPMO.AnnotationsMock, for: RintoPMO.Annotations.Behaviour)
 Hammox.defmock(RintoPMO.AttachmentsMock, for: RintoPMO.Attachments.Behaviour)
+Hammox.defmock(RintoPMO.ConversationsMock, for: RintoPMO.Conversations.Behaviour)
 Hammox.defmock(RintoPMO.DocumentsMock, for: RintoPMO.Documents.Behaviour)
 Hammox.defmock(RintoPMO.ProjectsMock, for: RintoPMO.Projects.Behaviour)
 Hammox.defmock(RintoPMO.RepoCredentialsMock, for: RintoPMO.RepoCredentials.Behaviour)

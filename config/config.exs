@@ -18,6 +18,7 @@ config :rinto_pmo,
     actors: RintoPMO.Actors,
     annotations: RintoPMO.Annotations,
     attachments: RintoPMO.Attachments,
+    conversations: RintoPMO.Conversations,
     documents: RintoPMO.Documents,
     projects: RintoPMO.Projects,
     repo_credentials: RintoPMO.RepoCredentials,
@@ -39,12 +40,21 @@ config :rinto_pmo, RintoPMO.Attachments,
   # sizes providers reject outright; clients should downscale for cost.
   max_dimension: 8_000
 
+config :rinto_pmo, RintoPMO.Conversations,
+  # Simultaneously running pi processes. Topics are unlimited; processes are
+  # not, and nothing else in the system stops one from being started.
+  max_active_sessions: 8
+
 config :rinto_pmo, RintoPMO.Agent.PromptBuilder,
   # Characters of block content inlined per referenced document before the rest
   # is elided.
   max_document_chars: 20_000,
   # Documents listed in a project reference's index.
-  max_project_documents: 50
+  max_project_documents: 50,
+  # Turns expanded by a conversation reference. This is the replay depth for a
+  # cold topic: enough for the model to pick the thread back up, far short of
+  # re-feeding a month of discussion.
+  max_conversation_turns: 10
 
 config :rinto_pmo, RintoPMO.OSProcess,
   # Seconds between SIGTERM and SIGKILL when stopping a child.

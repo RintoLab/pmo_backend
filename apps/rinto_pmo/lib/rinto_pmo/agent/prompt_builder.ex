@@ -30,10 +30,16 @@ defmodule RintoPMO.Agent.PromptBuilder do
   | `annotation` | `id` + `document_id` | `<annotation>` and its replies |
   | `project` | `slug` | `<project>` and an index of its documents |
   | `attachment` | `id` | `<attachment>` marker plus an inline image |
+  | `conversation` | `id` | `<conversation>` holding its most recent turns |
 
   Projects are keyed by `slug` because that is how they are addressed
   everywhere else here; an annotation needs `document_id` because it is only
   ever reachable through its document.
+
+  A `conversation` ref is how a cold topic comes back to life. pi runs with
+  `--no-session` and keeps no history of its own, so reviving a topic means
+  handing its recent turns to a fresh process. Only the tail is expanded --
+  replaying an entire topic is expensive and rarely worth more than its end.
 
   Attachments are the one type producing something other than text: the marker
   goes in the message so the model knows what the picture is called, and the
@@ -49,6 +55,8 @@ defmodule RintoPMO.Agent.PromptBuilder do
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Attachments.Attachment
+  alias RintoPMO.Conversations.Conversation
+  alias RintoPMO.Conversations.Message
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Projects.Project
@@ -126,6 +134,14 @@ defmodule RintoPMO.Agent.PromptBuilder do
   defp resolve(%{"type" => "project", "slug" => slug}) when is_binary(slug) do
     with {:ok, project} <- fetch(fn -> projects().get_project_by_slug!(slug) end, "project", slug) do
       {:ok, text_only(render_project(project))}
+    end
+  end
+
+  defp resolve(%{"type" => "conversation", "id" => id}) when is_binary(id) do
+    with {:ok, conversation} <-
+           fetch(fn -> conversations().get_conversation!(id) end, "conversation", id) do
+      messages = conversations().recent_messages(conversation, setting(:max_conversation_turns))
+      {:ok, text_only(render_conversation(conversation, messages))}
     end
   end
 
@@ -215,6 +231,21 @@ defmodule RintoPMO.Agent.PromptBuilder do
       attributes,
       join_present([project.description, project_documents(project)])
     )
+  end
+
+  defp render_conversation(%Conversation{} = conversation, messages) do
+    attributes =
+      [{"id", conversation.id}] ++
+        optional_attribute("title", conversation.title) ++
+        [{"turns", length(messages)}]
+
+    body =
+      Enum.map_join(messages, "\n", fn %Message{} = message ->
+        ~s(<turn role="#{message.role}" position="#{message.position}">\n) <>
+          message.content <> "\n</turn>"
+      end)
+
+    element("conversation", attributes, body)
   end
 
   defp render_attachment(%Attachment{} = attachment) do
@@ -325,6 +356,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   defp documents, do: Utils.module(:documents)
   defp annotations, do: Utils.module(:annotations)
+  defp conversations, do: Utils.module(:conversations)
   defp projects, do: Utils.module(:projects)
   defp attachments, do: Utils.module(:attachments)
 

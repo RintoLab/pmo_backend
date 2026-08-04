@@ -4,6 +4,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
   alias RintoPMO.Agent.PromptBuilder
   alias RintoPMO.AnnotationsMock
   alias RintoPMO.AttachmentsMock
+  alias RintoPMO.ConversationsMock
   alias RintoPMO.DocumentsMock
   alias RintoPMO.ProjectsMock
 
@@ -175,6 +176,64 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
 
       assert {:error, :attachment_unreadable, _details} =
                PromptBuilder.build("hi", [%{"type" => "attachment", "id" => attachment.id}])
+    end
+  end
+
+  describe "build/2 with a conversation ref" do
+    test "renders the recent turns so a cold topic can be picked back up" do
+      conversation = insert(:conversation, title: "Tighten §3")
+      actor = insert(:actor)
+
+      messages = [
+        insert(:message,
+          conversation: conversation,
+          actor: actor,
+          role: :user,
+          content: "Is §3 consistent with §1?",
+          position: 0
+        ),
+        insert(:message,
+          conversation: conversation,
+          actor: actor,
+          role: :assistant,
+          content: "No -- §3 says the opposite.",
+          position: 1
+        )
+      ]
+
+      expect(ConversationsMock, :get_conversation!, fn id ->
+        assert id == conversation.id
+        conversation
+      end)
+
+      expect(ConversationsMock, :recent_messages, fn ^conversation, limit ->
+        # The replay depth, not the whole topic.
+        assert limit == 10
+        messages
+      end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("carry on", [
+                 %{"type" => "conversation", "id" => conversation.id}
+               ])
+
+      assert message =~ ~s(<conversation id="#{conversation.id}" title="Tighten §3" turns="2">)
+      assert message =~ ~s(<turn role="user" position="0">)
+      assert message =~ "Is §3 consistent with §1?"
+      assert message =~ ~s(<turn role="assistant" position="1">)
+      assert message =~ "No -- §3 says the opposite."
+      assert String.ends_with?(message, "\n\ncarry on")
+    end
+
+    test "names the conversation that no longer exists" do
+      id = UUIDv7.generate()
+
+      expect(ConversationsMock, :get_conversation!, fn _id ->
+        raise Ecto.NoResultsError, queryable: RintoPMO.Conversations.Conversation
+      end)
+
+      assert {:error, :ref_not_found, %{"type" => "conversation", "id" => ^id}} =
+               PromptBuilder.build("carry on", [%{"type" => "conversation", "id" => id}])
     end
   end
 

@@ -35,7 +35,21 @@ defmodule RintoPMOWeb.Router do
       post "/annotations/:id/resolve", AnnotationController, :resolve
       post "/annotations/:id/dismiss", AnnotationController, :dismiss
       post "/annotations/:id/reopen", AnnotationController, :reopen
+
+      # The many-to-many between annotations and topics, derived from message
+      # refs. No join table backs this.
+      get "/annotations/:id/conversations", AnnotationController, :conversations
     end
+
+    # Not nested under documents: a topic can span several documents, or none,
+    # so it belongs to no document's URL space.
+    resources "/conversations", ConversationController, only: [:index, :show, :create, :update] do
+      # Append and read only -- a conversation records what happened.
+      resources "/messages", MessageController, only: [:index, :show, :create]
+    end
+
+    # Cooling is not deleting: the process goes, every message stays.
+    post "/conversations/:id/close", ConversationController, :close
 
     resources "/attachments", AttachmentController, only: [:show, :create, :delete]
     get "/attachments/:id/content", AttachmentController, :content

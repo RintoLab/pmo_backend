@@ -7,6 +7,9 @@ defmodule RintoPMO.Factory do
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Attachments.Attachment
+  alias RintoPMO.Conversations.Conversation
+  alias RintoPMO.Conversations.Message
+  alias RintoPMO.Conversations.MessageRef
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
@@ -94,6 +97,33 @@ defmodule RintoPMO.Factory do
       actor: build(:actor),
       content: sequence(:annotation_reply_content, &"Reply #{&1}"),
       position: 0
+    }
+  end
+
+  def conversation_factory do
+    %Conversation{
+      title: sequence(:conversation_title, &"Topic #{&1}"),
+      actor: build(:actor)
+    }
+  end
+
+  def message_factory do
+    %Message{
+      conversation: build(:conversation),
+      actor: build(:actor),
+      role: :user,
+      content: sequence(:message_content, &"Message #{&1}"),
+      position: 0
+    }
+  end
+
+  def message_ref_factory do
+    %MessageRef{
+      message: build(:message),
+      ref_type: "document",
+      position: 0,
+      ref_id: UUIDv7.generate(),
+      payload: %{"type" => "document", "id" => UUIDv7.generate()}
     }
   end
 end

@@ -3,6 +3,7 @@ defmodule RintoPMOWeb.PiSessionChannelTest do
 
   alias RintoPMO.Agent.PiSession
   alias RintoPMO.AttachmentsMock
+  alias RintoPMO.ConversationsMock
   alias RintoPMO.DocumentsMock
   alias RintoPMOWeb.PiSocket
 
@@ -273,6 +274,71 @@ defmodule RintoPMOWeb.PiSessionChannelTest do
 
       ref = push(socket, "prompt", %{"message" => "hi", "refs" => [%{"type" => "wormhole"}]})
       assert_reply ref, :error, %{reason: "invalid_ref"}, 5_000
+    end
+  end
+
+  describe "recording the human's turn" do
+    test "writes the raw message and its refs, not the expanded prelude", %{tmp_dir: tmp_dir} do
+      session_id = start_session!(echo_pi(tmp_dir))
+      socket = join!(session_id)
+      document = document_with_block("The quarterly plan")
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+      actor_id = actor.id
+      test_pid = self()
+
+      expect_in_channel(socket, DocumentsMock, :get_document!, fn _id -> document end)
+
+      expect_in_channel(socket, ConversationsMock, :get_conversation_by_session, fn id ->
+        assert id == session_id
+        conversation
+      end)
+
+      expect_in_channel(socket, ConversationsMock, :append_message, fn ^conversation, attrs ->
+        send(test_pid, {:appended, attrs})
+        {:ok, insert(:message, conversation: conversation, actor: actor)}
+      end)
+
+      ref =
+        push(socket, "prompt", %{
+          "message" => "summarise it",
+          "actor_id" => actor.id,
+          "refs" => [document_ref(document)]
+        })
+
+      assert_reply ref, :ok, _payload, 5_000
+
+      assert_receive {:appended, attrs}
+      assert attrs.role == :user
+      assert attrs.actor_id == actor_id
+      # The raw text. Replay re-expands the refs against the document as it is
+      # then, so storing the prelude would feed back a stale snapshot.
+      assert attrs.content == "summarise it"
+      refute attrs.content =~ "<document"
+      assert attrs.refs == [document_ref(document)]
+    end
+
+    test "a prompt naming no actor is not recorded", %{tmp_dir: tmp_dir} do
+      socket = join!(start_session!(echo_pi(tmp_dir)))
+
+      # No expectation on ConversationsMock: a session nobody claimed is still
+      # usable, it simply is not a topic. The strict mock fails the test if the
+      # channel reaches for the context anyway.
+      ref = push(socket, "prompt", %{"message" => "hello"})
+      assert_reply ref, :ok, _payload, 5_000
+    end
+
+    test "a session carrying no topic is not recorded", %{tmp_dir: tmp_dir} do
+      session_id = start_session!(echo_pi(tmp_dir))
+      socket = join!(session_id)
+      actor = insert(:actor)
+
+      expect_in_channel(socket, ConversationsMock, :get_conversation_by_session, fn _id ->
+        nil
+      end)
+
+      ref = push(socket, "prompt", %{"message" => "hello", "actor_id" => actor.id})
+      assert_reply ref, :ok, _payload, 5_000
     end
   end
 
