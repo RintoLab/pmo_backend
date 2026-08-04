@@ -103,6 +103,155 @@ defmodule RintoPMO.AnnotationsTest do
     end
   end
 
+  describe "status" do
+    test "starts open" do
+      document = insert(:document)
+      actor = insert(:actor)
+
+      assert {:ok, annotation} =
+               Annotations.create_annotation(document, %{actor_id: actor.id, content: "Note"})
+
+      assert annotation.status == :open
+      assert annotation.resolved_by_revision_id == nil
+    end
+
+    test "round-trips resolve, reopen, resolve and clears the revision on reopen" do
+      annotation = insert(:annotation)
+      revision = insert(:document_revision, document: annotation.document)
+
+      assert {:ok, resolved} =
+               Annotations.resolve_annotation(annotation, %{
+                 resolved_by_revision_id: revision.id
+               })
+
+      assert resolved.status == :resolved
+      assert resolved.resolved_by_revision_id == revision.id
+
+      assert {:ok, reopened} = Annotations.reopen_annotation(resolved)
+      assert reopened.status == :open
+      assert reopened.resolved_by_revision_id == nil
+
+      assert {:ok, resolved_again} = Annotations.resolve_annotation(reopened, %{})
+      assert resolved_again.status == :resolved
+      assert resolved_again.resolved_by_revision_id == nil
+    end
+
+    test "resolves without naming a revision" do
+      annotation = insert(:annotation)
+
+      assert {:ok, resolved} = Annotations.resolve_annotation(annotation, %{})
+      assert resolved.status == :resolved
+      assert resolved.resolved_by_revision_id == nil
+    end
+
+    test "dismisses an annotation" do
+      annotation = insert(:annotation)
+
+      assert {:ok, dismissed} = Annotations.dismiss_annotation(annotation)
+      assert dismissed.status == :dismissed
+
+      assert {:ok, reopened} = Annotations.reopen_annotation(dismissed)
+      assert reopened.status == :open
+    end
+
+    test "rejects a resolving revision that does not exist" do
+      annotation = insert(:annotation)
+
+      assert {:error, changeset} =
+               Annotations.resolve_annotation(annotation, %{
+                 resolved_by_revision_id: UUIDv7.generate()
+               })
+
+      assert "does not exist" in errors_on(changeset).resolved_by_revision_id
+    end
+
+    test "update_annotation cannot change status" do
+      annotation = insert(:annotation)
+
+      assert {:ok, updated} =
+               Annotations.update_annotation(annotation, %{
+                 "content" => "New",
+                 "status" => "resolved"
+               })
+
+      assert updated.content == "New"
+      assert updated.status == :open
+      assert Repo.get!(Annotation, annotation.id).status == :open
+    end
+
+    test "create_annotation cannot set a status other than open" do
+      document = insert(:document)
+      actor = insert(:actor)
+
+      assert {:ok, annotation} =
+               Annotations.create_annotation(document, %{
+                 "actor_id" => actor.id,
+                 "content" => "Note",
+                 "status" => "resolved"
+               })
+
+      assert annotation.status == :open
+    end
+
+    test "filters the list by status" do
+      document = insert(:document)
+      actor = insert(:actor)
+
+      {:ok, open} =
+        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Open"})
+
+      {:ok, to_resolve} =
+        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Resolved"})
+
+      {:ok, to_dismiss} =
+        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Dismissed"})
+
+      {:ok, resolved} = Annotations.resolve_annotation(to_resolve, %{})
+      {:ok, dismissed} = Annotations.dismiss_annotation(to_dismiss)
+
+      assert annotation_ids(Annotations.list_annotations(document, %{status: :open})) ==
+               MapSet.new([open.id])
+
+      assert annotation_ids(Annotations.list_annotations(document, %{status: :resolved})) ==
+               MapSet.new([resolved.id])
+
+      assert annotation_ids(Annotations.list_annotations(document, %{status: :dismissed})) ==
+               MapSet.new([dismissed.id])
+
+      assert annotation_ids(Annotations.list_annotations(document, %{})) ==
+               MapSet.new([open.id, resolved.id, dismissed.id])
+    end
+
+    test "combines the status and block_id filters" do
+      document = insert(:document)
+      actor = insert(:actor)
+      block_id = UUIDv7.generate()
+
+      {:ok, anchored_open} =
+        Annotations.create_annotation(document, %{
+          actor_id: actor.id,
+          block_id: block_id,
+          content: "Anchored open"
+        })
+
+      {:ok, anchored_other} =
+        Annotations.create_annotation(document, %{
+          actor_id: actor.id,
+          block_id: block_id,
+          content: "Anchored resolved"
+        })
+
+      {:ok, _resolved} = Annotations.resolve_annotation(anchored_other, %{})
+
+      {:ok, _unanchored} =
+        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Unanchored"})
+
+      assert annotation_ids(
+               Annotations.list_annotations(document, %{block_id: block_id, status: :open})
+             ) == MapSet.new([anchored_open.id])
+    end
+  end
+
   describe "replies" do
     test "appends monotonic positions and does not renumber after delete" do
       annotation = insert(:annotation)

@@ -29,6 +29,12 @@ defmodule RintoPMOWeb.Router do
           only: [:create, :update, :delete],
           param: "reply_id"
       end
+
+      # Status is deliberately not part of the annotation update payload: only
+      # a human decision moves it, never an edit of the wording.
+      post "/annotations/:id/resolve", AnnotationController, :resolve
+      post "/annotations/:id/dismiss", AnnotationController, :dismiss
+      post "/annotations/:id/reopen", AnnotationController, :reopen
     end
 
     resources "/attachments", AttachmentController, only: [:show, :create, :delete]

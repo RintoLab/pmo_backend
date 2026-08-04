@@ -16,7 +16,10 @@ defmodule RintoPMO.Annotations do
     alias RintoPMO.Annotations.AnnotationReply
     alias RintoPMO.Documents.Document
 
-    @type filter :: %{optional(:block_id) => UUIDv7.t() | nil}
+    @type filter :: %{
+            optional(:block_id) => UUIDv7.t() | nil,
+            optional(:status) => Annotation.status()
+          }
 
     @callback list_annotations(Document.t(), filter()) :: [Annotation.t()]
     @callback get_annotation!(Document.t(), UUIDv7.t()) :: Annotation.t()
@@ -25,6 +28,13 @@ defmodule RintoPMO.Annotations do
     @callback update_annotation(Annotation.t(), map()) ::
                 {:ok, Annotation.t()} | {:error, Ecto.Changeset.t()}
     @callback delete_annotation(Annotation.t()) ::
+                {:ok, Annotation.t()} | {:error, Ecto.Changeset.t()}
+
+    @callback resolve_annotation(Annotation.t(), map()) ::
+                {:ok, Annotation.t()} | {:error, Ecto.Changeset.t()}
+    @callback dismiss_annotation(Annotation.t()) ::
+                {:ok, Annotation.t()} | {:error, Ecto.Changeset.t()}
+    @callback reopen_annotation(Annotation.t()) ::
                 {:ok, Annotation.t()} | {:error, Ecto.Changeset.t()}
 
     @callback create_reply(Annotation.t(), map()) ::
@@ -93,6 +103,39 @@ defmodule RintoPMO.Annotations do
   end
 
   @doc """
+  Marks an annotation resolved, optionally naming the revision that settled it.
+
+  `attrs` may carry `resolved_by_revision_id`. Status changes never travel
+  through `update_annotation/2`, so that editing wording cannot close a thread.
+  """
+  @impl true
+  def resolve_annotation(%Annotation{} = annotation, attrs) do
+    annotation
+    |> Annotation.status_changeset(:resolved, attrs)
+    |> Repo.update()
+  end
+
+  @doc """
+  Marks an annotation dismissed: decided against, without a document change.
+  """
+  @impl true
+  def dismiss_annotation(%Annotation{} = annotation) do
+    annotation
+    |> Annotation.status_changeset(:dismissed)
+    |> Repo.update()
+  end
+
+  @doc """
+  Returns an annotation to `:open`, clearing `resolved_by_revision_id`.
+  """
+  @impl true
+  def reopen_annotation(%Annotation{} = annotation) do
+    annotation
+    |> Annotation.status_changeset(:open)
+    |> Repo.update()
+  end
+
+  @doc """
   Appends a reply with the next monotonic position.
   """
   @impl true
@@ -148,6 +191,9 @@ defmodule RintoPMO.Annotations do
 
       {:block_id, block_id}, query ->
         where(query, [annotation], annotation.block_id == ^block_id)
+
+      {:status, status}, query ->
+        where(query, [annotation], annotation.status == ^status)
 
       {_other, _value}, query ->
         query

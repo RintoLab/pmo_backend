@@ -1,7 +1,10 @@
 defmodule RintoPMOWeb.V1.AnnotationController do
   use RintoPMOWeb, :controller
 
+  alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Utils
+
+  @statuses Map.new(Annotation.statuses(), &{Atom.to_string(&1), &1})
 
   def index(conn, %{"document_id" => document_id} = params) do
     document = get_document!(document_id)
@@ -50,7 +53,44 @@ defmodule RintoPMOWeb.V1.AnnotationController do
     end
   end
 
+  def resolve(conn, %{"document_id" => document_id, "id" => id} = params) do
+    context = annotations_context()
+    document = get_document!(document_id)
+    annotation = context.get_annotation!(document, id)
+    attrs = Map.take(params, ["resolved_by_revision_id"])
+
+    with {:ok, annotation} <- context.resolve_annotation(annotation, attrs) do
+      render(conn, :show, annotation: annotation)
+    end
+  end
+
+  def dismiss(conn, %{"document_id" => document_id, "id" => id}) do
+    context = annotations_context()
+    document = get_document!(document_id)
+    annotation = context.get_annotation!(document, id)
+
+    with {:ok, annotation} <- context.dismiss_annotation(annotation) do
+      render(conn, :show, annotation: annotation)
+    end
+  end
+
+  def reopen(conn, %{"document_id" => document_id, "id" => id}) do
+    context = annotations_context()
+    document = get_document!(document_id)
+    annotation = context.get_annotation!(document, id)
+
+    with {:ok, annotation} <- context.reopen_annotation(annotation) do
+      render(conn, :show, annotation: annotation)
+    end
+  end
+
   defp annotation_filter(params) do
+    with {:ok, filter} <- block_id_filter(params) do
+      status_filter(params, filter)
+    end
+  end
+
+  defp block_id_filter(params) do
     case Map.get(params, "block_id") do
       nil ->
         {:ok, %{}}
@@ -62,6 +102,19 @@ defmodule RintoPMOWeb.V1.AnnotationController do
         case UUIDv7.cast(value) do
           {:ok, block_id} -> {:ok, %{block_id: block_id}}
           :error -> {:error, :bad_request, %{"block_id" => ["is invalid"]}}
+        end
+    end
+  end
+
+  defp status_filter(params, filter) do
+    case Map.get(params, "status") do
+      nil ->
+        {:ok, filter}
+
+      value ->
+        case Map.fetch(@statuses, value) do
+          {:ok, status} -> {:ok, Map.put(filter, :status, status)}
+          :error -> {:error, :bad_request, %{"status" => ["is invalid"]}}
         end
     end
   end

@@ -451,6 +451,13 @@ paths:
                 format: uuid
               - type: string
                 enum: [none]
+        - name: status
+          in: query
+          required: false
+          description: Filter by lifecycle status. Combines with `block_id`.
+          schema:
+            type: string
+            enum: [open, resolved, dismissed]
       responses:
         "200":
           description: Annotation summaries
@@ -540,6 +547,74 @@ paths:
           description: Annotation deleted
         "404":
           $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/annotations/{id}/resolve:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationId"
+    post:
+      tags: [Annotations]
+      operationId: resolveAnnotation
+      summary: Mark an annotation resolved
+      description: >
+        Status lives behind its own actions rather than the update payload, so
+        that editing an annotation's wording cannot silently close it.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnnotationResolveInput"
+      responses:
+        "200":
+          description: Annotation resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/annotations/{id}/dismiss:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationId"
+    post:
+      tags: [Annotations]
+      operationId: dismissAnnotation
+      summary: Mark an annotation dismissed
+      description: Decided against without a document change.
+      responses:
+        "200":
+          description: Annotation dismissed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/annotations/{id}/reopen:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationId"
+    post:
+      tags: [Annotations]
+      operationId: reopenAnnotation
+      summary: Return an annotation to open
+      description: Clears `resolved_by_revision_id`; nothing settles the annotation any more.
+      responses:
+        "200":
+          description: Annotation reopened
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /documents/{document_id}/annotations/{annotation_id}/replies:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -1813,6 +1888,8 @@ components:
           block_text,
           selected_text,
           content,
+          status,
+          resolved_by_revision_id,
           inserted_at,
           updated_at
         ]
@@ -1841,12 +1918,33 @@ components:
         content:
           type: string
           description: Opening opinion for the annotation thread.
+        status:
+          type: string
+          enum: [open, resolved, dismissed]
+          description: >
+            Lifecycle of the annotation. Only an explicit human decision moves
+            it, via the resolve, dismiss, and reopen actions; being discussed
+            never changes it, and it is ignored on create and update.
+        resolved_by_revision_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The revision that settled this annotation, when one is named.
         inserted_at:
           type: string
           format: date-time
         updated_at:
           type: string
           format: date-time
+      additionalProperties: false
+    AnnotationResolveInput:
+      type: object
+      properties:
+        resolved_by_revision_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The revision that settled this annotation, when the caller knows it.
       additionalProperties: false
     Annotation:
       allOf:
