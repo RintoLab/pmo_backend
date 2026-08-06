@@ -17,6 +17,9 @@ defmodule RintoPMOWeb.V1.DocumentRevisionJSON do
       parent_id: revision.parent_id,
       title: revision.title,
       change_summary: revision.change_summary,
+      # Which discussion produced this. "What did that discussion change?" is
+      # then a query rather than an entity anyone had to store.
+      source_conversation_id: revision.source_conversation_id,
       inserted_at: revision.inserted_at
     }
   end
@@ -24,8 +27,14 @@ defmodule RintoPMOWeb.V1.DocumentRevisionJSON do
   def data(%DocumentRevision{} = revision) do
     revision
     |> summary()
-    |> Map.put(:blocks, Enum.map(revision.blocks, &block_data/1))
+    |> Map.put(:blocks, blocks(revision))
   end
+
+  defp blocks(%DocumentRevision{blocks: blocks}) when is_list(blocks) do
+    Enum.map(blocks, &block_data/1)
+  end
+
+  defp blocks(%DocumentRevision{}), do: []
 
   defp block_data(%DocumentBlock{} = block) do
     %{

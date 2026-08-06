@@ -9,7 +9,16 @@ defmodule RintoPMOWeb.ErrorJSON do
     stale_document: {409, "The document has changed since the provided base revision."},
     task_state_conflict: {409, "The task is no longer in the expected state."},
     dependency_cycle: {409, "The task dependency would create a cycle."},
+    # A contention is a question for a person, not a failure to retry, so it is
+    # a conflict rather than a validation error.
+    unresolved_contention: {409, "The block has competing proposals that nobody has decided."},
     validation_error: {422, "Request validation failed."},
+    unknown_block: {422, "The block is not part of the document's latest revision."},
+    no_live_proposal: {422, "The block has no proposal to commit."},
+    nothing_to_commit: {422, "No block has a proposal ready to commit."},
+    invalid_block_ids: {422, "The selected blocks are invalid."},
+    proposal_not_found: {422, "The proposal is not live on that block."},
+    annotation_not_found: {422, "The annotation does not belong to this document."},
     task_blocked: {422, "The task is blocked by unfinished dependencies."},
     review_round_open: {422, "The document already has an open review round."},
     invalid_block_op: {422, "The block operation is invalid."},

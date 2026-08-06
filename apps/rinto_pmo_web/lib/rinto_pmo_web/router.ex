@@ -23,6 +23,21 @@ defmodule RintoPMOWeb.Router do
         only: [:index, :show, :create],
         param: "revision_id"
 
+      # An agent writes through proposals, never straight to a revision: a
+      # revision is what a person agreed to.
+      resources "/proposals", BlockProposalController, only: [:index, :show, :create]
+
+      post "/proposals/:id/decide", BlockProposalController, :decide
+      get "/contentions", BlockProposalController, :contentions
+
+      # The document as one topic sees it: its own proposals standing in, and
+      # only the count of anyone else's.
+      get "/conversations/:conversation_id/blocks", BlockProposalController, :blocks
+
+      # Where a revision, the annotations it settles, and the proposals it
+      # accepts all move together.
+      post "/commit", DocumentRevisionController, :commit
+
       resources "/annotations", AnnotationController,
         only: [:index, :show, :create, :update, :delete] do
         resources "/replies", AnnotationReplyController,

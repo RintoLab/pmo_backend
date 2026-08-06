@@ -10,6 +10,7 @@ defmodule RintoPMO.Factory do
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Conversations.Message
   alias RintoPMO.Conversations.MessageRef
+  alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
@@ -114,6 +115,20 @@ defmodule RintoPMO.Factory do
       role: :user,
       content: sequence(:message_content, &"Message #{&1}"),
       position: 0
+    }
+  end
+
+  def block_proposal_factory do
+    revision = build(:document_revision)
+
+    %BlockProposal{
+      document: revision.document,
+      base_revision: revision,
+      conversation: build(:conversation),
+      actor: build(:actor),
+      block_id: UUIDv7.generate(),
+      content: sequence(:block_proposal_content, &"Proposed text #{&1}"),
+      status: :live
     }
   end
 

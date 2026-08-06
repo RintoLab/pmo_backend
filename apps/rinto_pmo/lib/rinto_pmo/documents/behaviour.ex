@@ -1,10 +1,38 @@
 defmodule RintoPMO.Documents.Behaviour do
   @moduledoc false
 
+  alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
 
   @type filter :: :all | :unassigned | {:project, UUIDv7.t()}
+
+  @type proposal_filter :: %{
+          optional(:status) => BlockProposal.status(),
+          optional(:block_id) => UUIDv7.t(),
+          optional(:conversation_id) => UUIDv7.t()
+        }
+
+  @typedoc """
+  A proposal together with how many live proposals now stand on its block.
+  Two or more is a contention.
+  """
+  @type proposed :: %{proposal: BlockProposal.t(), live_proposals: pos_integer()}
+
+  @type contention :: %{block_id: UUIDv7.t(), proposals: [BlockProposal.t()]}
+
+  @typedoc """
+  One block as a single topic sees it: its own proposal standing in where it
+  has one, and only the count of anybody else's.
+  """
+  @type conversation_block :: %{
+          block_id: UUIDv7.t(),
+          position: non_neg_integer(),
+          content: String.t(),
+          proposal_id: UUIDv7.t() | nil,
+          proposed?: boolean(),
+          other_proposals: non_neg_integer()
+        }
 
   @callback list_documents(filter()) :: [Document.t()]
   @callback get_document!(UUIDv7.t()) :: Document.t()
@@ -16,6 +44,23 @@ defmodule RintoPMO.Documents.Behaviour do
   @callback list_revisions(Document.t()) :: [DocumentRevision.t()]
   @callback get_revision!(Document.t(), UUIDv7.t()) :: DocumentRevision.t()
   @callback create_revision(Document.t(), map()) ::
+              {:ok, DocumentRevision.t()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
+
+  @callback list_proposals(Document.t(), proposal_filter()) :: [BlockProposal.t()]
+  @callback get_proposal!(Document.t(), UUIDv7.t()) :: BlockProposal.t()
+  @callback propose_block(Document.t(), map()) ::
+              {:ok, proposed()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
+  @callback contentions(Document.t()) :: [contention()]
+  @callback blocks_for_conversation(Document.t(), UUIDv7.t()) :: [conversation_block()]
+  @callback decide_block(Document.t(), UUIDv7.t(), UUIDv7.t(), UUIDv7.t()) ::
+              {:ok, BlockProposal.t()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
+  @callback commit_proposals(Document.t(), map()) ::
               {:ok, DocumentRevision.t()}
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}

@@ -72,6 +72,74 @@ defmodule RintoPMOWeb.V1.DocumentRevisionControllerTest do
            } = json_response(conn, 409)
   end
 
+  test "POST commit turns the proposals into a revision", %{conn: conn} do
+    document = expect_document()
+    conversation = insert(:conversation)
+    annotation = insert(:annotation, document: document)
+    actor = insert(:actor)
+
+    revision =
+      insert(:document_revision,
+        document: document,
+        change_summary: "Tightened §3",
+        source_conversation: conversation
+      )
+
+    revision_id = revision.id
+    conversation_id = conversation.id
+
+    params = %{
+      "actor_id" => actor.id,
+      "base_revision_id" => document.latest_revision.id,
+      "source_conversation_id" => conversation.id,
+      "resolve_annotation_ids" => [annotation.id],
+      "change_summary" => "Tightened §3"
+    }
+
+    expect(DocumentsMock, :commit_proposals, fn ^document, ^params ->
+      {:ok, %{revision | blocks: []}}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/commit", params)
+
+    assert %{
+             "id" => ^revision_id,
+             "change_summary" => "Tightened §3",
+             "source_conversation_id" => ^conversation_id
+           } = json_response(conn, 201)["data"]
+  end
+
+  test "POST commit refuses a block nobody has decided", %{conn: conn} do
+    document = expect_document()
+    block_id = UUIDv7.generate()
+    params = %{"actor_id" => insert(:actor).id, "base_revision_id" => UUIDv7.generate()}
+
+    expect(DocumentsMock, :commit_proposals, fn ^document, ^params ->
+      {:error, :unresolved_contention, %{block_ids: [block_id]}}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/commit", params)
+
+    # A contention is a question for a person, not something to retry.
+    assert %{
+             "error" => "unresolved_contention",
+             "details" => %{"block_ids" => [^block_id]}
+           } = json_response(conn, 409)
+  end
+
+  test "POST commit reports having nothing to commit", %{conn: conn} do
+    document = expect_document()
+    params = %{"actor_id" => insert(:actor).id, "base_revision_id" => UUIDv7.generate()}
+
+    expect(DocumentsMock, :commit_proposals, fn ^document, ^params ->
+      {:error, :nothing_to_commit, %{}}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/commit", params)
+
+    assert %{"error" => "nothing_to_commit"} = json_response(conn, 422)
+  end
+
   defp expect_document do
     document = insert(:document)
     revision = insert(:document_revision, document: document, title: "Draft")

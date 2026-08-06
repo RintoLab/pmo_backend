@@ -18,6 +18,7 @@ defmodule RintoPMO.Application do
       RintoPMO.OSProcess.Supervisor,
       RintoPMO.Agent.PiSession.Supervisor,
       RintoPMO.Conversations.Recorder.Supervisor,
+      RintoPMO.Documents.Session.Supervisor,
       RintoPMO.Agent.ModelCatalog
     ]
 

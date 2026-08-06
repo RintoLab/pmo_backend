@@ -19,7 +19,21 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {409, "The task is no longer in the expected state.", %{current_status: "in_progress"}},
     dependency_cycle:
       {409, "The task dependency would create a cycle.", %{cycle: ["task-1", "task-2"]}},
+    unresolved_contention:
+      {409, "The block has competing proposals that nobody has decided.",
+       %{block_ids: ["block-1"]}},
     validation_error: {422, "Request validation failed.", %{name: ["can't be blank"]}},
+    unknown_block:
+      {422, "The block is not part of the document's latest revision.", %{block_id: "block-1"}},
+    no_live_proposal: {422, "The block has no proposal to commit.", %{block_id: "block-1"}},
+    nothing_to_commit: {422, "No block has a proposal ready to commit.", %{}},
+    invalid_block_ids:
+      {422, "The selected blocks are invalid.", %{reason: "block_ids must be an array"}},
+    proposal_not_found:
+      {422, "The proposal is not live on that block.",
+       %{proposal_id: "proposal-1", block_id: "block-1"}},
+    annotation_not_found:
+      {422, "The annotation does not belong to this document.", %{annotation_id: "annotation-1"}},
     task_blocked:
       {422, "The task is blocked by unfinished dependencies.", %{blocking_tasks: ["task-1"]}},
     review_round_open:

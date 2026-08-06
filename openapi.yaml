@@ -21,6 +21,12 @@ tags:
     description: Top-level, block-based documents and their immutable revision history.
   - name: Annotations
     description: Document annotations and flat follow-up replies (not review workflow, not AI chat logs).
+  - name: Proposals
+    description: >
+      Proposed block changes and the decisions taken about them. An agent
+      writes here rather than straight to a revision, because a revision is
+      what a person agreed to. Two live proposals on one block is a contention:
+      a question for a human, never a merge.
   - name: Conversations
     description: >
       Topics: the process layer of collaborative review, as opposed to the
@@ -731,6 +737,221 @@ paths:
           description: Reply deleted
         "404":
           $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/commit:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Proposals]
+      operationId: commitDocument
+      summary: Turn the chosen proposals into a revision
+      description: >
+        One call, three things, one transaction: the revision is written, the
+        annotations named in `resolve_annotation_ids` are resolved against it,
+        and the proposals it used become `accepted`. Commit is the only moment
+        at which somebody has both decided and changed the document, so it is
+        the only natural place to resolve an annotation -- and a revision
+        written without its resolutions, or resolutions pointing at a revision
+        that failed to write, would each leave the record lying.
+
+
+        Omit `block_ids` to take every block holding exactly one live proposal.
+        A block with an undecided contention is refused, but only that block:
+        the rest of the selection goes through.
+
+
+        A commit spanning several documents is several revisions, one per
+        document. There is no cross-document commit record; `source_conversation_id`
+        makes "what did that discussion change?" a query instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommitInput"
+      responses:
+        "201":
+          description: Revision created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRevisionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The base revision is stale, or a selected block has a contention
+            nobody has decided.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/proposals:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [Proposals]
+      operationId: listProposals
+      summary: List a document's proposals
+      description: >
+        Includes decided ones. Nothing is ever deleted -- "why A and not B" is
+        the record this system exists to keep -- so filter by `status` to see
+        only what is still standing.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [live, accepted, rejected, superseded]
+        - name: block_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: conversation_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Proposals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockProposalListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Proposals]
+      operationId: proposeBlock
+      summary: Record what a topic wants a block to say
+      description: >
+        A topic already holding a live proposal on the block has it rewritten
+        in place rather than gaining a second one: five rounds of "tighten
+        this" are one intent iterating. `status` and the decision fields are
+        ignored if sent -- a proposal moves only by being decided or committed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlockProposalCreateInput"
+      responses:
+        "201":
+          description: >
+            The proposal, with the number of live proposals now on that block.
+            Two or more means the topic has walked into a contention.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProposedResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/proposals/{id}:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/BlockProposalId"
+    get:
+      tags: [Proposals]
+      operationId: getProposal
+      summary: Get one proposal
+      responses:
+        "200":
+          description: Proposal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockProposalResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/proposals/{id}/decide:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/BlockProposalId"
+    post:
+      tags: [Proposals]
+      operationId: decideProposal
+      summary: Settle a contended block in favour of this proposal
+      description: >
+        Every other live proposal on the block becomes `rejected`. This one
+        stays `live`: deciding a contention is not committing it, and it still
+        has to go through commit like any other pending change.
+
+
+        The only other way out of a contention is to open a topic about it.
+        There is no manual merge -- a third version nobody asked for is exactly
+        what this refuses to produce.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideInput"
+      responses:
+        "200":
+          description: The adopted proposal, still live
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockProposalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/contentions:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [Proposals]
+      operationId: listContentions
+      summary: List the blocks carrying more than one live proposal
+      description: >
+        A contention has a place -- it is on a block -- so unlike a topic it
+        can be marked on the document itself.
+      responses:
+        "200":
+          description: Contended blocks and their competing proposals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContentionListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/conversations/{conversation_id}/blocks:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/ConversationNestedId"
+    get:
+      tags: [Proposals]
+      operationId: listConversationBlocks
+      summary: Read the document as one topic sees it
+      description: >
+        The latest revision, with this topic's own proposals standing in, plus
+        a count of anybody else's. The rival text is deliberately withheld:
+        reconciling versions is the human's decision, and the count exists only
+        so a topic knows it is not alone in the block.
+      responses:
+        "200":
+          description: Blocks as this topic sees them
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationBlockListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /conversations:
     get:
       tags: [Conversations]
@@ -1325,6 +1546,14 @@ components:
       schema:
         type: string
         format: uuid
+    BlockProposalId:
+      name: id
+      in: path
+      required: true
+      description: Block proposal UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
     ConversationId:
       name: id
       in: path
@@ -1865,7 +2094,8 @@ components:
       additionalProperties: false
     DocumentRevisionSummary:
       type: object
-      required: [id, document_id, parent_id, title, change_summary, inserted_at]
+      required:
+        [id, document_id, parent_id, title, change_summary, source_conversation_id, inserted_at]
       properties:
         id:
           type: string
@@ -1883,6 +2113,13 @@ components:
         change_summary:
           type: string
           nullable: true
+        source_conversation_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Which discussion produced this revision. Makes "what did that
+            discussion change?" a query rather than a stored entity.
         inserted_at:
           type: string
           format: date-time
@@ -2266,6 +2503,236 @@ components:
         content:
           type: string
           minLength: 1
+      additionalProperties: false
+    BlockProposal:
+      type: object
+      required:
+        [
+          id,
+          document_id,
+          block_id,
+          conversation_id,
+          actor_id,
+          content,
+          base_revision_id,
+          status,
+          decided_by_actor_id,
+          decided_at,
+          inserted_at,
+          updated_at
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        document_id:
+          type: string
+          format: uuid
+        block_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The topic that made it. A proposal's identity is (block,
+            conversation); this is nullable only so that losing a topic does
+            not take the proposal with it.
+        actor_id:
+          type: string
+          format: uuid
+          description: >
+            Who wrote the proposed text. The committed block is attributed to
+            this actor, not to whoever approved it.
+        content:
+          type: string
+        base_revision_id:
+          type: string
+          format: uuid
+          description: >
+            The revision this was written against. Recorded, but not a conflict
+            test: a working copy is loaded per document from the latest
+            revision, so every topic's base is identical by construction.
+        status:
+          type: string
+          enum: [live, accepted, rejected, superseded]
+          description: >
+            `live` is standing but uncommitted, `accepted` landed in a
+            revision, `rejected` lost a contention. Rows are never deleted.
+        decided_by_actor_id:
+          type: string
+          format: uuid
+          nullable: true
+        decided_at:
+          type: string
+          format: date-time
+          nullable: true
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    BlockProposalResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/BlockProposal"
+      additionalProperties: false
+    BlockProposalListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/BlockProposal"
+      additionalProperties: false
+    ProposedResponse:
+      type: object
+      required: [data, live_proposals, contended]
+      properties:
+        data:
+          $ref: "#/components/schemas/BlockProposal"
+        live_proposals:
+          type: integer
+          minimum: 1
+          description: Live proposals now standing on this block.
+        contended:
+          type: boolean
+          description: >
+            True once a second topic has proposed on the same block. Returned
+            here so a topic learns it before building further on the assumption
+            that its version is the one that will land.
+      additionalProperties: false
+    BlockProposalCreateInput:
+      type: object
+      required: [block_id, conversation_id, actor_id, content]
+      properties:
+        block_id:
+          type: string
+          format: uuid
+          description: Must be a block of the document's latest revision.
+        conversation_id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    DecideInput:
+      type: object
+      required: [actor_id]
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+          description: Who ended the argument. Recorded on the rejected proposals.
+      additionalProperties: false
+    Contention:
+      type: object
+      required: [block_id, proposals]
+      properties:
+        block_id:
+          type: string
+          format: uuid
+        proposals:
+          type: array
+          minItems: 2
+          items:
+            $ref: "#/components/schemas/BlockProposal"
+      additionalProperties: false
+    ContentionListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Contention"
+      additionalProperties: false
+    ConversationBlock:
+      type: object
+      required: [block_id, position, content, proposal_id, proposed, other_proposals]
+      properties:
+        block_id:
+          type: string
+          format: uuid
+        position:
+          type: integer
+          minimum: 0
+        content:
+          type: string
+          description: This topic's proposed text where it has one, otherwise the committed text.
+        proposal_id:
+          type: string
+          format: uuid
+          nullable: true
+        proposed:
+          type: boolean
+        other_proposals:
+          type: integer
+          minimum: 0
+          description: >
+            How many other topics have proposed on this block. A count, never
+            their text.
+      additionalProperties: false
+    ConversationBlockListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationBlock"
+      additionalProperties: false
+    CommitInput:
+      type: object
+      required: [actor_id, base_revision_id]
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+          description: Who is committing. Recorded on the accepted proposals.
+        base_revision_id:
+          type: string
+          format: uuid
+          description: The revision this commit was prepared against; a stale one is a 409.
+        block_ids:
+          type: array
+          description: >
+            Which blocks to commit. Omit to take every block holding exactly
+            one live proposal.
+          items:
+            type: string
+            format: uuid
+        resolve_annotation_ids:
+          type: array
+          description: >
+            Annotations this commit settles. Each is resolved with
+            `resolved_by_revision_id` pointing at the new revision. One
+            discussion may touch three annotations and settle two, so these are
+            named rather than inferred.
+          items:
+            type: string
+            format: uuid
+        source_conversation_id:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+          minLength: 1
+          description: Defaults to the parent revision's title.
+        change_summary:
+          type: string
+          nullable: true
       additionalProperties: false
     Conversation:
       type: object
