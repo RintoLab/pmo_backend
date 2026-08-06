@@ -117,7 +117,14 @@ defmodule RintoPMO.Annotations do
   end
 
   @doc """
-  Marks an annotation dismissed: decided against, without a document change.
+  Marks an annotation dismissed: considered and declined.
+
+  This is the "no" that is not a deletion. The opinion stood, the answer was
+  no, and the record of both survives -- deleting instead would take the
+  replies with it and leave the topics that discussed it pointing at nothing.
+
+  Clears `resolved_by_revision_id`: nothing was changed in the document, so no
+  revision settled this.
   """
   @impl true
   def dismiss_annotation(%Annotation{} = annotation) do

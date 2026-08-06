@@ -13,6 +13,9 @@ defmodule RintoPMO.Annotations.Annotation do
   of `changeset/2` and `update_changeset/2` entirely and can only travel through
   `status_changeset/3`. Editing an annotation's wording must not be able to
   silently close it.
+
+  `resolved_by_revision_id` is meaningful only while `status` is `:resolved`;
+  every other transition clears it.
   """
 
   use RintoPMO, :schema
@@ -84,18 +87,16 @@ defmodule RintoPMO.Annotations.Annotation do
     |> foreign_key_constraint(:resolved_by_revision_id)
   end
 
-  def status_changeset(%__MODULE__{} = annotation, :dismissed, _attrs) do
+  # Everything other than `:resolved` drops the pointer, because only
+  # `:resolved` can honestly carry one: it names the revision that settled this
+  # annotation. Reopening means nothing settles it any more, and dismissing
+  # means it was declined without the document changing at all -- in both cases
+  # a revision left there would be a claim that never happened.
+  def status_changeset(%__MODULE__{} = annotation, status, _attrs)
+      when status in [:open, :dismissed] do
     annotation
     |> change()
-    |> put_change(:status, :dismissed)
-  end
-
-  def status_changeset(%__MODULE__{} = annotation, :open, _attrs) do
-    # Reopening drops the pointer as well: it named the revision that settled
-    # this annotation, and nothing settles it any more.
-    annotation
-    |> change()
-    |> put_change(:status, :open)
+    |> put_change(:status, status)
     |> put_change(:resolved_by_revision_id, nil)
   end
 end

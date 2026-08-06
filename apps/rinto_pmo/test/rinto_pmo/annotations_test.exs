@@ -154,6 +154,36 @@ defmodule RintoPMO.AnnotationsTest do
       assert reopened.status == :open
     end
 
+    test "dismissing clears the resolving revision" do
+      annotation = insert(:annotation)
+      revision = insert(:document_revision, document: annotation.document)
+
+      {:ok, resolved} =
+        Annotations.resolve_annotation(annotation, %{resolved_by_revision_id: revision.id})
+
+      # Dismissed means declined without the document changing, so a revision
+      # left here would claim a change that never happened.
+      assert {:ok, dismissed} = Annotations.dismiss_annotation(resolved)
+      assert dismissed.status == :dismissed
+      assert dismissed.resolved_by_revision_id == nil
+      assert Repo.get!(Annotation, annotation.id).resolved_by_revision_id == nil
+    end
+
+    test "only resolved ever carries a resolving revision" do
+      annotation = insert(:annotation)
+      revision = insert(:document_revision, document: annotation.document)
+
+      for terminal <- [&Annotations.dismiss_annotation/1, &Annotations.reopen_annotation/1] do
+        {:ok, resolved} =
+          Annotations.resolve_annotation(annotation, %{resolved_by_revision_id: revision.id})
+
+        assert resolved.resolved_by_revision_id == revision.id
+
+        assert {:ok, moved} = terminal.(resolved)
+        assert moved.resolved_by_revision_id == nil
+      end
+    end
+
     test "rejects a resolving revision that does not exist" do
       annotation = insert(:annotation)
 

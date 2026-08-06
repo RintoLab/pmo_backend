@@ -600,7 +600,11 @@ paths:
       tags: [Annotations]
       operationId: dismissAnnotation
       summary: Mark an annotation dismissed
-      description: Decided against without a document change.
+      description: >
+        Considered and declined: the "no" that is not a deletion. The opinion
+        and its replies survive, and the topics that discussed it keep pointing
+        at something real. Clears `resolved_by_revision_id`, since no revision
+        settled an annotation nobody acted on.
       responses:
         "200":
           description: Annotation dismissed
