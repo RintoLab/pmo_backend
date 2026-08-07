@@ -45,10 +45,7 @@ defmodule RintoPMO.Conversations.Sessions do
 
   @type state :: :hot | :revived
 
-  @type ensure_opt ::
-          {:assistant_actor_id, UUIDv7.t()}
-          | {:session_opts, keyword()}
-          | {:pubsub, atom()}
+  @type ensure_opt :: {:session_opts, keyword()} | {:pubsub, atom()}
 
   @doc """
   Returns whether a conversation currently has a live pi process.
@@ -62,21 +59,25 @@ defmodule RintoPMO.Conversations.Sessions do
 
   Returns `{:ok, conversation, :hot}` when one was already running, and
   `{:ok, conversation, :revived}` when a new process was started -- in which
-  case the caller should put a `conversation` reference on its next prompt so
-  the model gets the recent turns back.
+  case `replay_pending` is set, and the next prompt hands the recent turns to
+  the empty process it found.
 
-  Requires `:assistant_actor_id`: the AI actor that replies are attributed to.
+  Nobody is expected to call this deliberately. You cannot talk to a cold
+  topic, so the topic somebody is talking to is hot by definition: heating is
+  what sending a message does, not a step before it. This is why there is no
+  endpoint for it.
   """
   @spec ensure_hot(Conversation.t(), [ensure_opt()]) ::
           {:ok, Conversation.t(), state()}
           | {:error, :session_limit_reached}
+          | {:error, :assistant_actor_required}
           | {:error, Ecto.Changeset.t()}
           | {:error, atom(), map()}
-  def ensure_hot(%Conversation{} = conversation, opts) do
-    if hot?(conversation) do
-      {:ok, conversation, :hot}
-    else
-      revive(conversation, opts)
+  def ensure_hot(%Conversation{} = conversation, opts \\ []) do
+    cond do
+      hot?(conversation) -> {:ok, conversation, :hot}
+      is_nil(conversation.assistant_actor_id) -> {:error, :assistant_actor_required}
+      true -> revive(conversation, opts)
     end
   end
 
@@ -144,7 +145,7 @@ defmodule RintoPMO.Conversations.Sessions do
   end
 
   defp revive(conversation, opts) do
-    actor_id = Keyword.fetch!(opts, :assistant_actor_id)
+    actor_id = conversation.assistant_actor_id
     pubsub = Keyword.get(opts, :pubsub, RintoPMO.PubSub)
 
     with {:ok, _room} <- room(),

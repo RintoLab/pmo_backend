@@ -10,22 +10,14 @@ defmodule RintoPMOWeb.V1.ConversationJSON do
     %{data: data(conversation)}
   end
 
-  def opened(%{conversation: conversation, state: state}) do
-    %{
-      data: data(conversation),
-      # `revived` means a fresh, empty pi process. The backend hands the recent
-      # turns back on the next prompt; the client only needs to know that the
-      # first reply may take longer.
-      state: state
-    }
-  end
-
   @doc false
   def data(%Conversation{} = conversation) do
     %{
       id: conversation.id,
       title: conversation.title,
       actor_id: conversation.actor_id,
+      # Whose replies these are. A property of the topic, not of each message.
+      assistant_actor_id: conversation.assistant_actor_id,
       pi_session_id: conversation.pi_session_id,
       # Derived rather than stored: a pi session can die without anything
       # getting a chance to clear the column, so a non-null pi_session_id is a

@@ -51,10 +51,14 @@ config :rinto_pmo, RintoPMO.Agent.PromptBuilder,
   max_document_chars: 20_000,
   # Documents listed in a project reference's index.
   max_project_documents: 50,
-  # Turns expanded by a conversation reference. This is the replay depth for a
-  # cold topic: enough for the model to pick the thread back up, far short of
-  # re-feeding a month of discussion.
-  max_conversation_turns: 10
+  # Turns handed back when a cold topic is revived. This is a safety valve, not
+  # a budget: a hundred turns of chat is a few thousand tokens and the
+  # documents they cite are deduplicated across them, which lands an order of
+  # magnitude inside any current context window. It is set high enough that
+  # reaching it should not happen, because the alternative to degrading here is
+  # a request that overflows the window and fails outright -- a topic that
+  # cannot be opened at all.
+  max_conversation_turns: 200
 
 config :rinto_pmo, RintoPMO.OSProcess,
   # Seconds between SIGTERM and SIGKILL when stopping a child.
