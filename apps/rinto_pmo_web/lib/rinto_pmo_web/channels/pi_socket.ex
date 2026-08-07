@@ -1,6 +1,6 @@
 defmodule RintoPMOWeb.PiSocket do
   @moduledoc """
-  WebSocket carrying `RintoPMOWeb.PiSessionChannel`.
+  WebSocket carrying `RintoPMOWeb.ConversationChannel`.
 
   ## Authentication
 
@@ -17,13 +17,13 @@ defmodule RintoPMOWeb.PiSocket do
 
   use Phoenix.Socket
 
-  channel "pi_session:*", RintoPMOWeb.PiSessionChannel
+  channel "conversation:*", RintoPMOWeb.ConversationChannel
 
   @impl true
   def connect(_params, socket, _connect_info), do: {:ok, socket}
 
-  # Anonymous sockets cannot be targeted by `Endpoint.broadcast/3`. Sessions are
-  # addressed by topic, so nothing needs to.
+  # Anonymous sockets cannot be targeted by `Endpoint.broadcast/3`. Topics are
+  # addressed by conversation id, so nothing needs to.
   @impl true
   def id(_socket), do: nil
 end

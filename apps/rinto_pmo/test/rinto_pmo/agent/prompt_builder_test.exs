@@ -252,7 +252,8 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
       ]
 
       expect(ConversationsMock, :recent_messages, fn ^conversation, limit ->
-        assert limit == 10
+        # A safety valve set high enough not to be reached, not a budget.
+        assert limit == 200
         messages
       end)
 

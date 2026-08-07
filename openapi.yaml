@@ -1049,60 +1049,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
-  /conversations/{id}/open:
-    parameters:
-      - $ref: "#/components/parameters/ConversationId"
-    post:
-      tags: [Conversations]
-      operationId: openConversation
-      summary: Make sure a topic has a live agent process
-      description: >
-        Answers with `state`: `hot` if one was already running, `revived` if a
-        fresh process was started. Join `pi_session:{pi_session_id}` afterwards
-        to talk to it.
-
-
-        A revived process is empty -- the agent runs without session
-        persistence -- so the server hands the recent turns back on the next
-        prompt. The client neither arranges that nor should try to: the replay
-        is context being restored, not something the human cited, and recording
-        it as a citation would make the topic reference itself.
-
-
-        Refused with `session_limit_reached` when every running session is
-        parked on a question. Those are never evicted: each is waiting on a
-        specific person for a specific answer, and closing one throws the
-        question away without telling anybody. Close one explicitly to make
-        room.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ConversationOpenInput"
-      responses:
-        "200":
-          description: The topic is hot
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConversationOpenedResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          description: Every running session is waiting on a person
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIError"
-        "503":
-          description: The agent runtime could not be started
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIError"
   /conversations/{id}/close:
     parameters:
       - $ref: "#/components/parameters/ConversationId"
@@ -2796,6 +2742,7 @@ components:
           title,
           actor_id,
           pi_session_id,
+          assistant_actor_id,
           hot,
           replay_pending,
           inserted_at,
@@ -2813,6 +2760,16 @@ components:
           format: uuid
           nullable: true
           description: Who started the topic.
+        assistant_actor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The AI persona this topic is a conversation *with*. Replies are
+            attributed to it, and sending a message to a topic that has none is
+            refused rather than guessed at. A property of the topic rather than
+            of each message: a client that could vary it per message could make
+            one topic's history look like two actors talking.
         pi_session_id:
           type: string
           nullable: true
@@ -2829,10 +2786,9 @@ components:
         replay_pending:
           type: boolean
           description: >
-            The topic has been given a fresh agent process and the next prompt
-            still owes it the recent turns. The server handles that itself; the
-            flag is exposed only because it explains why one reply may take
-            longer than the rest.
+            A fresh agent process was started and the next message still owes
+            it the recent turns. Entirely server-side; exposed only because it
+            explains why one reply may take longer than the rest.
         inserted_at:
           type: string
           format: date-time
@@ -2856,29 +2812,6 @@ components:
           items:
             $ref: "#/components/schemas/Conversation"
       additionalProperties: false
-    ConversationOpenInput:
-      type: object
-      required: [assistant_actor_id]
-      properties:
-        assistant_actor_id:
-          type: string
-          format: uuid
-          description: The AI actor a revived topic's replies are attributed to.
-      additionalProperties: false
-    ConversationOpenedResponse:
-      type: object
-      required: [data, state]
-      properties:
-        data:
-          $ref: "#/components/schemas/Conversation"
-        state:
-          type: string
-          enum: [hot, revived]
-          description: >
-            `hot` means a process was already running. `revived` means a fresh
-            one was started and the next reply may take longer, because the
-            server has to hand it the recent turns first.
-      additionalProperties: false
     ConversationCreateInput:
       type: object
       properties:
@@ -2890,6 +2823,14 @@ components:
           type: string
           format: uuid
           nullable: true
+          description: Who is starting the topic.
+        assistant_actor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The AI persona to talk to. Required before the topic can be sent a
+            message, so set it here unless the user has yet to choose one.
       additionalProperties: false
     ConversationUpdateInput:
       type: object
@@ -2897,6 +2838,10 @@ components:
         title:
           type: string
           maxLength: 255
+          nullable: true
+        assistant_actor_id:
+          type: string
+          format: uuid
           nullable: true
       additionalProperties: false
     MessageRef:

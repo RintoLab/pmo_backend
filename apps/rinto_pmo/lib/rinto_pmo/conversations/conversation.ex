@@ -28,6 +28,7 @@ defmodule RintoPMO.Conversations.Conversation do
     field :replay_pending, :boolean, default: false
 
     belongs_to :actor, Actor
+    belongs_to :assistant_actor, Actor
 
     has_many :messages, Message, preload_order: [asc: :position]
 
@@ -37,16 +38,18 @@ defmodule RintoPMO.Conversations.Conversation do
   @doc false
   def changeset(%__MODULE__{} = conversation \\ %__MODULE__{}, attrs) do
     conversation
-    |> cast(attrs, [:title, :actor_id])
+    |> cast(attrs, [:title, :actor_id, :assistant_actor_id])
     |> validate_length(:title, max: 255)
     |> foreign_key_constraint(:actor_id)
+    |> foreign_key_constraint(:assistant_actor_id)
   end
 
   @doc false
   def update_changeset(%__MODULE__{} = conversation, attrs) do
     conversation
-    |> cast(attrs, [:title])
+    |> cast(attrs, [:title, :assistant_actor_id])
     |> validate_length(:title, max: 255)
+    |> foreign_key_constraint(:assistant_actor_id)
   end
 
   @doc false

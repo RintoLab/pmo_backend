@@ -50,15 +50,13 @@ defmodule RintoPMO.Conversations.SessionsTest do
     Application.put_env(:rinto_pmo, RintoPMO.Conversations, max_active_sessions: limit)
   end
 
+  # The AI persona a topic talks to lives on the topic, so heating needs
+  # nothing from the caller but a stand-in for pi.
   defp hot_conversation!(tmp_dir, session_opts \\ nil) do
-    conversation = insert(:conversation)
-    actor = insert(:actor)
+    conversation = insert(:conversation, assistant_actor: build(:actor, kind: :ai))
 
     {:ok, conversation, :revived} =
-      Sessions.ensure_hot(conversation,
-        assistant_actor_id: actor.id,
-        session_opts: session_opts || idle_pi(tmp_dir)
-      )
+      Sessions.ensure_hot(conversation, session_opts: session_opts || idle_pi(tmp_dir))
 
     conversation
   end
@@ -67,16 +65,12 @@ defmodule RintoPMO.Conversations.SessionsTest do
     test "revives a cold topic and records the session on it", %{tmp_dir: tmp_dir} do
       set_limit(4)
 
-      conversation = insert(:conversation)
-      actor = insert(:actor)
+      conversation = insert(:conversation, assistant_actor: build(:actor, kind: :ai))
 
       refute Sessions.hot?(conversation)
 
       assert {:ok, hot, :revived} =
-               Sessions.ensure_hot(conversation,
-                 assistant_actor_id: actor.id,
-                 session_opts: idle_pi(tmp_dir)
-               )
+               Sessions.ensure_hot(conversation, session_opts: idle_pi(tmp_dir))
 
       assert hot.pi_session_id != nil
       assert Sessions.hot?(hot)
@@ -93,10 +87,8 @@ defmodule RintoPMO.Conversations.SessionsTest do
       set_limit(4)
 
       hot = hot_conversation!(tmp_dir)
-      actor = insert(:actor)
 
-      assert {:ok, same, :hot} =
-               Sessions.ensure_hot(hot, assistant_actor_id: actor.id)
+      assert {:ok, same, :hot} = Sessions.ensure_hot(hot)
 
       assert same.pi_session_id == hot.pi_session_id
     end
@@ -195,14 +187,10 @@ defmodule RintoPMO.Conversations.SessionsTest do
       asking = hot_conversation!(tmp_dir, asking_pi(tmp_dir))
       wait_for_pending_ui(asking.pi_session_id)
 
-      conversation = insert(:conversation)
-      actor = insert(:actor)
+      conversation = insert(:conversation, assistant_actor: build(:actor, kind: :ai))
 
       assert {:error, :session_limit_reached} =
-               Sessions.ensure_hot(conversation,
-                 assistant_actor_id: actor.id,
-                 session_opts: idle_pi(tmp_dir)
-               )
+               Sessions.ensure_hot(conversation, session_opts: idle_pi(tmp_dir))
 
       assert Conversations.get_conversation!(conversation.id).pi_session_id == nil
     end
@@ -221,6 +209,12 @@ defmodule RintoPMO.Conversations.SessionsTest do
       refute PiSession.alive?(session_id)
       refute Recorder.recording?(cold.id)
       assert Conversations.get_conversation!(hot.id).id == hot.id
+    end
+
+    test "refuses to heat a topic with no AI persona to answer as" do
+      conversation = insert(:conversation, assistant_actor_id: nil)
+
+      assert {:error, :assistant_actor_required} = Sessions.ensure_hot(conversation)
     end
 
     test "is a no-op on an already cold topic" do
