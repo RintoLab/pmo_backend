@@ -17,6 +17,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
        %{base_version: 2, current_version: 3, diff: []}},
     task_state_conflict:
       {409, "The task is no longer in the expected state.", %{current_status: "in_progress"}},
+    task_already_claimed:
+      {409, "The task has already been claimed by someone else.",
+       %{assignee_id: "actor-1", status: "open"}},
     dependency_cycle:
       {409, "The task dependency would create a cycle.", %{cycle: ["task-1", "task-2"]}},
     unresolved_contention:

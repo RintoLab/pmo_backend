@@ -16,6 +16,13 @@ defmodule RintoPMOWeb.Router do
       only: [:index, :show, :create, :update, :delete],
       param: "slug" do
       resources "/repos", ProjectRepoController, only: [:index, :show, :create, :update, :delete]
+
+      # The backlog is a property of a project, so filing and browsing happen
+      # here. Everything done *to* one task lives at `/tasks/:id` -- an agent
+      # that pulled a task out of the pool holds its id and not the slug it
+      # came from.
+      get "/tasks/stats", TaskController, :stats
+      resources "/tasks", TaskController, only: [:index, :create]
     end
 
     resources "/documents", DocumentController, only: [:index, :show, :create, :delete] do
@@ -67,6 +74,32 @@ defmodule RintoPMOWeb.Router do
     # no matching "open" -- you cannot talk to a cold topic, so sending a
     # message is what heats one.
     post "/conversations/:id/close", ConversationController, :close
+
+    # Delete is not the opposite of create here -- `cancel` is what records
+    # that work was dropped. This is for rows that should never have existed,
+    # such as a breakdown an agent got wrong. Emptying a cover of its last
+    # child turns the cover back into a job.
+    resources "/tasks", TaskController, only: [:show, :update, :delete]
+
+    # Distribution: a PM pushes with `assign`, an actor pulls with `claim`.
+    # Both write the same assignee, so nothing downstream has to know which
+    # happened. `release` is the way back to the pool, and is not a cancel --
+    # the work still needs doing.
+    post "/tasks/:id/assign", TaskController, :assign
+    post "/tasks/:id/claim", TaskController, :claim
+    post "/tasks/:id/release", TaskController, :release
+
+    # The one thing that moves `kind`, and an operation rather than a field:
+    # promoting a job to a cover drops its assignee and its clocks, which must
+    # not be able to ride along with an edit of the title.
+    post "/tasks/:id/split", TaskController, :split
+
+    # One endpoint per event rather than a settable `status`: the machine is
+    # the API, so a client cannot invent a transition the domain refuses.
+    post "/tasks/:id/start", TaskController, :start
+    post "/tasks/:id/complete", TaskController, :complete
+    post "/tasks/:id/cancel", TaskController, :cancel
+    post "/tasks/:id/reopen", TaskController, :reopen
 
     resources "/attachments", AttachmentController, only: [:show, :create, :delete]
     get "/attachments/:id/content", AttachmentController, :content

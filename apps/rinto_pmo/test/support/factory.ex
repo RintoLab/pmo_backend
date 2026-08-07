@@ -17,6 +17,7 @@ defmodule RintoPMO.Factory do
   alias RintoPMO.Projects.Project
   alias RintoPMO.Projects.ProjectRepo
   alias RintoPMO.RepoCredentials.RepoCredential
+  alias RintoPMO.Tasks.Task
 
   def actor_factory do
     %Actor{
@@ -129,6 +130,24 @@ defmodule RintoPMO.Factory do
       block_id: UUIDv7.generate(),
       content: sequence(:block_proposal_content, &"Proposed text #{&1}"),
       status: :live
+    }
+  end
+
+  def task_factory do
+    %Task{
+      project: build(:project),
+      kind: :work,
+      title: sequence(:task_title, &"Task #{&1}"),
+      status: :open
+    }
+  end
+
+  def summary_task_factory do
+    %Task{
+      project: build(:project),
+      kind: :summary,
+      title: sequence(:task_title, &"Chunk #{&1}"),
+      status: :open
     }
   end
 

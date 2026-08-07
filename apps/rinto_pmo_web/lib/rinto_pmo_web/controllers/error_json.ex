@@ -8,6 +8,9 @@ defmodule RintoPMOWeb.ErrorJSON do
     unsupported_image: {415, "The file is not an image format that can be sent to a model."},
     stale_document: {409, "The document has changed since the provided base revision."},
     task_state_conflict: {409, "The task is no longer in the expected state."},
+    # Losing a claim race is not a validation failure and not a retry: the task
+    # has an owner now, and the answer is to pick a different one.
+    task_already_claimed: {409, "The task has already been claimed by someone else."},
     dependency_cycle: {409, "The task dependency would create a cycle."},
     # A contention is a question for a person, not a failure to retry, so it is
     # a conflict rather than a validation error.

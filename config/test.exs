@@ -21,6 +21,7 @@ config :rinto_pmo, :injectors,
   documents: RintoPMO.DocumentsMock,
   projects: RintoPMO.ProjectsMock,
   repo_credentials: RintoPMO.RepoCredentialsMock,
+  tasks: RintoPMO.TasksMock,
   rpc: RintoPMO.Agent.RpcMock,
   os_process: RintoPMO.OSProcessMock
 
