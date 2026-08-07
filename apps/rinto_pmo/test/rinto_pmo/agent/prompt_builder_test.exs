@@ -4,6 +4,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
   alias RintoPMO.Agent.PromptBuilder
   alias RintoPMO.AnnotationsMock
   alias RintoPMO.AttachmentsMock
+  alias RintoPMO.ConversationsMock
   alias RintoPMO.DocumentsMock
   alias RintoPMO.ProjectsMock
 
@@ -178,6 +179,162 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
     end
   end
 
+  describe "build/3 with a proposal ref" do
+    test "renders the proposed text and names its topic without expanding it" do
+      conversation = insert(:conversation, title: "Tighten §3")
+      document = document_with_blocks(["Original"])
+
+      proposal =
+        insert(:block_proposal,
+          document: document,
+          conversation: conversation,
+          content: "Rewritten paragraph.",
+          status: :live
+        )
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      expect(DocumentsMock, :get_proposal!, fn ^document, id ->
+        assert id == proposal.id
+        proposal
+      end)
+
+      expect(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("which reads better?", [
+                 %{"type" => "proposal", "id" => proposal.id, "document_id" => document.id}
+               ])
+
+      assert message =~ ~s(<proposal id="#{proposal.id}")
+      assert message =~ ~s(block_id="#{proposal.block_id}")
+      assert message =~ ~s(status="live")
+      # The topic is a label. Expanding it would be a conversation reference by
+      # another name, and the whole point is that this expansion terminates.
+      assert message =~ ~s(conversation="Tighten §3")
+      assert message =~ "Rewritten paragraph."
+      refute message =~ "<turn"
+      refute message =~ "Original"
+    end
+
+    test "renders a rejected proposal, which is useful context in an adjudication" do
+      document = document_with_blocks(["Original"])
+      proposal = insert(:block_proposal, document: document, status: :rejected)
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+      expect(DocumentsMock, :get_proposal!, fn _document, _id -> proposal end)
+      expect(ConversationsMock, :get_conversation!, fn _id -> proposal.conversation end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("why was this dropped?", [
+                 %{"type" => "proposal", "id" => proposal.id, "document_id" => document.id}
+               ])
+
+      assert message =~ ~s(status="rejected")
+    end
+
+    test "refuses a proposal ref with no document to scope it" do
+      assert {:error, :invalid_ref, _details} =
+               PromptBuilder.build("hi", [%{"type" => "proposal", "id" => UUIDv7.generate()}])
+    end
+  end
+
+  describe "build/3 replay" do
+    test "hands back the tail with each turn naming what it referenced" do
+      conversation = insert(:conversation, title: "Tighten §3")
+      document = document_with_blocks(["The current text"])
+
+      messages = [
+        replayed_message(conversation, :user, 0, "tighten this", [
+          message_ref_for(document)
+        ]),
+        replayed_message(conversation, :assistant, 1, "how about this?", [])
+      ]
+
+      expect(ConversationsMock, :recent_messages, fn ^conversation, limit ->
+        # A safety valve set high enough not to be reached, not a budget.
+        assert limit == 200
+        messages
+      end)
+
+      # Re-expanded against the document as it stands now, not as it was.
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("carry on", [], replay: conversation)
+
+      assert message =~ ~s(<conversation id="#{conversation.id}" title="Tighten §3" turns="2">)
+      assert message =~ ~s(<turn role="user" position="0" refs="document:#{document.id}">)
+      assert message =~ "tighten this"
+      assert message =~ ~s(<turn role="assistant" position="1">)
+      assert message =~ "<document id=\"#{document.id}\""
+      assert message =~ "The current text"
+      assert String.ends_with?(message, "\n\ncarry on")
+    end
+
+    test "expands a document once when replay and the prompt both cite it" do
+      conversation = insert(:conversation)
+      document = document_with_blocks(["The current text"])
+
+      expect(ConversationsMock, :recent_messages, fn _conversation, _limit ->
+        [replayed_message(conversation, :user, 0, "tighten this", [message_ref_for(document)])]
+      end)
+
+      # One lookup, one expansion, however many times it was cited.
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build(
+                 "and again",
+                 [%{"type" => "document", "id" => document.id}],
+                 replay: conversation
+               )
+
+      assert length(String.split(message, "<document id=")) == 2
+    end
+
+    test "does not follow a conversation reference inside the replayed turns" do
+      conversation = insert(:conversation)
+      other = insert(:conversation)
+
+      nested = %{"type" => "conversation", "id" => other.id}
+
+      expect(ConversationsMock, :recent_messages, fn _conversation, _limit ->
+        [
+          replayed_message(conversation, :user, 0, "compare with the other topic", [
+            build(:message_ref,
+              message: nil,
+              ref_type: "conversation",
+              ref_id: other.id,
+              payload: nested
+            )
+          ])
+        ]
+      end)
+
+      # No `get_conversation!` expectation: reaching for the nested topic would
+      # fail the test, which is the point -- one level only.
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("carry on", [], replay: conversation)
+
+      assert message =~ "compare with the other topic"
+      # The nested topic is not even named on the turn.
+      refute message =~ other.id
+    end
+
+    test "passes the message through when the topic has no turns yet" do
+      conversation = insert(:conversation)
+
+      expect(ConversationsMock, :recent_messages, fn _conversation, _limit -> [] end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("first thing", [], replay: conversation)
+
+      assert message =~ ~s(turns="0")
+      assert String.ends_with?(message, "\n\nfirst thing")
+    end
+  end
+
   describe "build/2 with several refs" do
     test "renders them in the order given, ahead of the message" do
       first = document_with_blocks(["One"], "First")
@@ -227,19 +384,65 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
     end
   end
 
-  describe "build/2 failures" do
-    test "names the reference that no longer exists" do
-      id = UUIDv7.generate()
+  describe "build/3 failures" do
+    test "names every reference that no longer exists, not just the first" do
+      gone = UUIDv7.generate()
+      also_gone = UUIDv7.generate()
 
-      expect(DocumentsMock, :get_document!, fn _id ->
+      expect(DocumentsMock, :get_document!, 2, fn _id ->
         raise Ecto.NoResultsError, queryable: RintoPMO.Documents.Document
       end)
 
-      assert {:error, :ref_not_found, %{"type" => "document", "id" => ^id}} =
-               PromptBuilder.build("hi", [%{"type" => "document", "id" => id}])
+      # Being asked once per broken reference is not a choice, it is an
+      # interrogation, so the caller gets the whole list at once.
+      assert {:error, :ref_not_found, %{"refs" => refs}} =
+               PromptBuilder.build("hi", [
+                 %{"type" => "document", "id" => gone},
+                 %{"type" => "document", "id" => also_gone}
+               ])
+
+      assert Enum.map(refs, & &1["id"]) == [gone, also_gone]
     end
 
-    test "stops at the first bad reference rather than sending a partial prompt" do
+    test "sends the rest with a marker once a human has chosen to skip" do
+      good = document_with_blocks(["Content"])
+      gone = UUIDv7.generate()
+
+      expect(DocumentsMock, :get_document!, 2, fn id ->
+        if id == good.id do
+          good
+        else
+          raise Ecto.NoResultsError, queryable: RintoPMO.Documents.Document
+        end
+      end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build(
+                 "hi",
+                 [
+                   %{"type" => "document", "id" => good.id},
+                   %{"type" => "document", "id" => gone}
+                 ],
+                 on_missing_refs: :skip
+               )
+
+      assert message =~ "Content"
+      # Not removed outright: the model would otherwise face "tighten this
+      # paragraph" with no paragraph and no sign one was ever meant to be there.
+      assert message =~ ~s(<reference status="unavailable" type="document" id="#{gone}">)
+      assert message =~ "No longer available."
+    end
+
+    test "refuses a malformed ref even when skipping is allowed" do
+      # A reference whose target has gone is ordinary; one the client built
+      # wrong is a bug, and skipping it would hide it.
+      assert {:error, :invalid_ref, _details} =
+               PromptBuilder.build("hi", [%{"type" => "wormhole", "id" => "whatever"}],
+                 on_missing_refs: :skip
+               )
+    end
+
+    test "stops on a malformed ref rather than sending a partial prompt" do
       good = document_with_blocks(["Content"])
 
       expect(DocumentsMock, :get_document!, fn _id -> good end)
@@ -280,6 +483,25 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
   defp assert_ids(actual, expected) do
     assert Enum.sort(actual) == Enum.sort(expected)
     :ok
+  end
+
+  defp replayed_message(conversation, role, position, content, refs) do
+    build(:message,
+      conversation: conversation,
+      role: role,
+      position: position,
+      content: content,
+      refs: refs
+    )
+  end
+
+  defp message_ref_for(document) do
+    build(:message_ref,
+      message: nil,
+      ref_type: "document",
+      ref_id: document.id,
+      payload: %{"type" => "document", "id" => document.id}
+    )
   end
 
   defp document_with_blocks(contents, title \\ "Doc") do

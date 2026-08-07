@@ -103,6 +103,185 @@ defmodule RintoPMO.AnnotationsTest do
     end
   end
 
+  describe "status" do
+    test "starts open" do
+      document = insert(:document)
+      actor = insert(:actor)
+
+      assert {:ok, annotation} =
+               Annotations.create_annotation(document, %{actor_id: actor.id, content: "Note"})
+
+      assert annotation.status == :open
+      assert annotation.resolved_by_revision_id == nil
+    end
+
+    test "round-trips resolve, reopen, resolve and clears the revision on reopen" do
+      annotation = insert(:annotation)
+      revision = insert(:document_revision, document: annotation.document)
+
+      assert {:ok, resolved} =
+               Annotations.resolve_annotation(annotation, %{
+                 resolved_by_revision_id: revision.id
+               })
+
+      assert resolved.status == :resolved
+      assert resolved.resolved_by_revision_id == revision.id
+
+      assert {:ok, reopened} = Annotations.reopen_annotation(resolved)
+      assert reopened.status == :open
+      assert reopened.resolved_by_revision_id == nil
+
+      assert {:ok, resolved_again} = Annotations.resolve_annotation(reopened, %{})
+      assert resolved_again.status == :resolved
+      assert resolved_again.resolved_by_revision_id == nil
+    end
+
+    test "resolves without naming a revision" do
+      annotation = insert(:annotation)
+
+      assert {:ok, resolved} = Annotations.resolve_annotation(annotation, %{})
+      assert resolved.status == :resolved
+      assert resolved.resolved_by_revision_id == nil
+    end
+
+    test "dismisses an annotation" do
+      annotation = insert(:annotation)
+
+      assert {:ok, dismissed} = Annotations.dismiss_annotation(annotation)
+      assert dismissed.status == :dismissed
+
+      assert {:ok, reopened} = Annotations.reopen_annotation(dismissed)
+      assert reopened.status == :open
+    end
+
+    test "dismissing clears the resolving revision" do
+      annotation = insert(:annotation)
+      revision = insert(:document_revision, document: annotation.document)
+
+      {:ok, resolved} =
+        Annotations.resolve_annotation(annotation, %{resolved_by_revision_id: revision.id})
+
+      # Dismissed means declined without the document changing, so a revision
+      # left here would claim a change that never happened.
+      assert {:ok, dismissed} = Annotations.dismiss_annotation(resolved)
+      assert dismissed.status == :dismissed
+      assert dismissed.resolved_by_revision_id == nil
+      assert Repo.get!(Annotation, annotation.id).resolved_by_revision_id == nil
+    end
+
+    test "only resolved ever carries a resolving revision" do
+      annotation = insert(:annotation)
+      revision = insert(:document_revision, document: annotation.document)
+
+      for terminal <- [&Annotations.dismiss_annotation/1, &Annotations.reopen_annotation/1] do
+        {:ok, resolved} =
+          Annotations.resolve_annotation(annotation, %{resolved_by_revision_id: revision.id})
+
+        assert resolved.resolved_by_revision_id == revision.id
+
+        assert {:ok, moved} = terminal.(resolved)
+        assert moved.resolved_by_revision_id == nil
+      end
+    end
+
+    test "rejects a resolving revision that does not exist" do
+      annotation = insert(:annotation)
+
+      assert {:error, changeset} =
+               Annotations.resolve_annotation(annotation, %{
+                 resolved_by_revision_id: UUIDv7.generate()
+               })
+
+      assert "does not exist" in errors_on(changeset).resolved_by_revision_id
+    end
+
+    test "update_annotation cannot change status" do
+      annotation = insert(:annotation)
+
+      assert {:ok, updated} =
+               Annotations.update_annotation(annotation, %{
+                 "content" => "New",
+                 "status" => "resolved"
+               })
+
+      assert updated.content == "New"
+      assert updated.status == :open
+      assert Repo.get!(Annotation, annotation.id).status == :open
+    end
+
+    test "create_annotation cannot set a status other than open" do
+      document = insert(:document)
+      actor = insert(:actor)
+
+      assert {:ok, annotation} =
+               Annotations.create_annotation(document, %{
+                 "actor_id" => actor.id,
+                 "content" => "Note",
+                 "status" => "resolved"
+               })
+
+      assert annotation.status == :open
+    end
+
+    test "filters the list by status" do
+      document = insert(:document)
+      actor = insert(:actor)
+
+      {:ok, open} =
+        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Open"})
+
+      {:ok, to_resolve} =
+        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Resolved"})
+
+      {:ok, to_dismiss} =
+        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Dismissed"})
+
+      {:ok, resolved} = Annotations.resolve_annotation(to_resolve, %{})
+      {:ok, dismissed} = Annotations.dismiss_annotation(to_dismiss)
+
+      assert annotation_ids(Annotations.list_annotations(document, %{status: :open})) ==
+               MapSet.new([open.id])
+
+      assert annotation_ids(Annotations.list_annotations(document, %{status: :resolved})) ==
+               MapSet.new([resolved.id])
+
+      assert annotation_ids(Annotations.list_annotations(document, %{status: :dismissed})) ==
+               MapSet.new([dismissed.id])
+
+      assert annotation_ids(Annotations.list_annotations(document, %{})) ==
+               MapSet.new([open.id, resolved.id, dismissed.id])
+    end
+
+    test "combines the status and block_id filters" do
+      document = insert(:document)
+      actor = insert(:actor)
+      block_id = UUIDv7.generate()
+
+      {:ok, anchored_open} =
+        Annotations.create_annotation(document, %{
+          actor_id: actor.id,
+          block_id: block_id,
+          content: "Anchored open"
+        })
+
+      {:ok, anchored_other} =
+        Annotations.create_annotation(document, %{
+          actor_id: actor.id,
+          block_id: block_id,
+          content: "Anchored resolved"
+        })
+
+      {:ok, _resolved} = Annotations.resolve_annotation(anchored_other, %{})
+
+      {:ok, _unanchored} =
+        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Unanchored"})
+
+      assert annotation_ids(
+               Annotations.list_annotations(document, %{block_id: block_id, status: :open})
+             ) == MapSet.new([anchored_open.id])
+    end
+  end
+
   describe "replies" do
     test "appends monotonic positions and does not renumber after delete" do
       annotation = insert(:annotation)
@@ -179,6 +358,96 @@ defmodule RintoPMO.AnnotationsTest do
       assert_raise Ecto.NoResultsError, fn ->
         Annotations.get_reply!(other, reply.id)
       end
+    end
+  end
+
+  describe "conclusions from a conversation" do
+    test "a reply can point back at the message it came from" do
+      annotation = insert(:annotation)
+      actor = insert(:actor)
+      message = insert(:message)
+
+      assert {:ok, reply} =
+               Annotations.create_reply(annotation, %{
+                 actor_id: actor.id,
+                 content: "§3 contradicts §1; rewrite the second clause.",
+                 source_message_id: message.id
+               })
+
+      assert reply.source_message_id == message.id
+    end
+
+    test "a reply without a source is still fine" do
+      annotation = insert(:annotation)
+      actor = insert(:actor)
+
+      assert {:ok, reply} =
+               Annotations.create_reply(annotation, %{actor_id: actor.id, content: "Mine"})
+
+      assert reply.source_message_id == nil
+    end
+
+    test "rejects a source message that does not exist" do
+      annotation = insert(:annotation)
+      actor = insert(:actor)
+
+      assert {:error, changeset} =
+               Annotations.create_reply(annotation, %{
+                 actor_id: actor.id,
+                 content: "From nowhere",
+                 source_message_id: UUIDv7.generate()
+               })
+
+      assert "does not exist" in errors_on(changeset).source_message_id
+    end
+
+    test "filters to the annotations with a conclusion waiting on a decision" do
+      document = insert(:document)
+      actor = insert(:actor)
+
+      waiting = insert(:annotation, document: document, status: :open)
+      quiet = insert(:annotation, document: document, status: :open)
+      decided = insert(:annotation, document: document, status: :resolved)
+
+      for annotation <- [waiting, decided] do
+        {:ok, _reply} =
+          Annotations.create_reply(annotation, %{
+            actor_id: actor.id,
+            content: "Concluded",
+            source_message_id: insert(:message).id
+          })
+      end
+
+      # A reply with no conversation behind it is somebody's own opinion, not
+      # a conclusion the AI is handing over.
+      {:ok, _reply} =
+        Annotations.create_reply(quiet, %{actor_id: actor.id, content: "Just a thought"})
+
+      assert annotation_ids(Annotations.list_annotations(document, %{pending_conclusion: true})) ==
+               MapSet.new([waiting.id])
+
+      assert annotation_ids(Annotations.list_annotations(document, %{pending_conclusion: false})) ==
+               MapSet.new([quiet.id, decided.id])
+    end
+
+    test "resolving clears the pending marker without anything being read" do
+      document = insert(:document)
+      actor = insert(:actor)
+      annotation = insert(:annotation, document: document, status: :open)
+
+      {:ok, _reply} =
+        Annotations.create_reply(annotation, %{
+          actor_id: actor.id,
+          content: "Concluded",
+          source_message_id: insert(:message).id
+        })
+
+      assert annotation_ids(Annotations.list_annotations(document, %{pending_conclusion: true})) ==
+               MapSet.new([annotation.id])
+
+      {:ok, _resolved} = Annotations.resolve_annotation(annotation, %{})
+
+      assert Annotations.list_annotations(document, %{pending_conclusion: true}) == []
     end
   end
 

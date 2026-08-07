@@ -18,6 +18,7 @@ config :rinto_pmo,
     actors: RintoPMO.Actors,
     annotations: RintoPMO.Annotations,
     attachments: RintoPMO.Attachments,
+    conversations: RintoPMO.Conversations,
     documents: RintoPMO.Documents,
     projects: RintoPMO.Projects,
     repo_credentials: RintoPMO.RepoCredentials,
@@ -39,12 +40,25 @@ config :rinto_pmo, RintoPMO.Attachments,
   # sizes providers reject outright; clients should downscale for cost.
   max_dimension: 8_000
 
+config :rinto_pmo, RintoPMO.Conversations,
+  # Simultaneously running pi processes. Topics are unlimited; processes are
+  # not, and nothing else in the system stops one from being started.
+  max_active_sessions: 8
+
 config :rinto_pmo, RintoPMO.Agent.PromptBuilder,
   # Characters of block content inlined per referenced document before the rest
   # is elided.
   max_document_chars: 20_000,
   # Documents listed in a project reference's index.
-  max_project_documents: 50
+  max_project_documents: 50,
+  # Turns handed back when a cold topic is revived. This is a safety valve, not
+  # a budget: a hundred turns of chat is a few thousand tokens and the
+  # documents they cite are deduplicated across them, which lands an order of
+  # magnitude inside any current context window. It is set high enough that
+  # reaching it should not happen, because the alternative to degrading here is
+  # a request that overflows the window and fails outright -- a topic that
+  # cannot be opened at all.
+  max_conversation_turns: 200
 
 config :rinto_pmo, RintoPMO.OSProcess,
   # Seconds between SIGTERM and SIGKILL when stopping a child.

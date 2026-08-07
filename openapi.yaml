@@ -21,6 +21,18 @@ tags:
     description: Top-level, block-based documents and their immutable revision history.
   - name: Annotations
     description: Document annotations and flat follow-up replies (not review workflow, not AI chat logs).
+  - name: Proposals
+    description: >
+      Proposed block changes and the decisions taken about them. An agent
+      writes here rather than straight to a revision, because a revision is
+      what a person agreed to. Two live proposals on one block is a contention:
+      a question for a human, never a merge.
+  - name: Conversations
+    description: >
+      Topics: the process layer of collaborative review, as opposed to the
+      conclusions annotations carry. A conversation belongs to no document --
+      a topic can span several -- and what it touches is derived from the refs
+      on its messages.
   - name: Repo Credentials
     description: Reusable HTTPS username and token credentials.
   - name: Attachments
@@ -451,6 +463,24 @@ paths:
                 format: uuid
               - type: string
                 enum: [none]
+        - name: status
+          in: query
+          required: false
+          description: Filter by lifecycle status. Combines with `block_id`.
+          schema:
+            type: string
+            enum: [open, resolved, dismissed]
+        - name: pending_conclusion
+          in: query
+          required: false
+          description: >
+            When true, returns only annotations still `open` that carry a reply
+            drawn from a conversation -- the AI has finished and a human has
+            not decided. Deliberately not keyed on whether anyone has read it:
+            clearing the marker on read would hide it at exactly the moment
+            intervention matters most.
+          schema:
+            type: boolean
       responses:
         "200":
           description: Annotation summaries
@@ -540,6 +570,100 @@ paths:
           description: Annotation deleted
         "404":
           $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/annotations/{id}/resolve:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationId"
+    post:
+      tags: [Annotations]
+      operationId: resolveAnnotation
+      summary: Mark an annotation resolved
+      description: >
+        Status lives behind its own actions rather than the update payload, so
+        that editing an annotation's wording cannot silently close it.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnnotationResolveInput"
+      responses:
+        "200":
+          description: Annotation resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/annotations/{id}/dismiss:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationId"
+    post:
+      tags: [Annotations]
+      operationId: dismissAnnotation
+      summary: Mark an annotation dismissed
+      description: >
+        Considered and declined: the "no" that is not a deletion. The opinion
+        and its replies survive, and the topics that discussed it keep pointing
+        at something real. Clears `resolved_by_revision_id`, since no revision
+        settled an annotation nobody acted on.
+      responses:
+        "200":
+          description: Annotation dismissed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/annotations/{id}/reopen:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationId"
+    post:
+      tags: [Annotations]
+      operationId: reopenAnnotation
+      summary: Return an annotation to open
+      description: Clears `resolved_by_revision_id`; nothing settles the annotation any more.
+      responses:
+        "200":
+          description: Annotation reopened
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnotationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/annotations/{id}/conversations:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationId"
+    get:
+      tags: [Annotations]
+      operationId: listAnnotationConversations
+      summary: List the topics that discussed this annotation
+      description: >
+        Derived from message references, not from a join table. That is why an
+        annotation can be under discussion in several topics at once without
+        anything having to record the fact, and why the moment each topic
+        pulled it into context is recoverable.
+      responses:
+        "200":
+          description: Conversations that referenced this annotation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /documents/{document_id}/annotations/{annotation_id}/replies:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -611,6 +735,420 @@ paths:
       responses:
         "204":
           description: Reply deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/commit:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Proposals]
+      operationId: commitDocument
+      summary: Turn the chosen proposals into a revision
+      description: >
+        One call, three things, one transaction: the revision is written, the
+        annotations named in `resolve_annotation_ids` are resolved against it,
+        and the proposals it used become `accepted`. Commit is the only moment
+        at which somebody has both decided and changed the document, so it is
+        the only natural place to resolve an annotation -- and a revision
+        written without its resolutions, or resolutions pointing at a revision
+        that failed to write, would each leave the record lying.
+
+
+        Omit `block_ids` to take every block holding exactly one live proposal.
+        A block with an undecided contention is refused, but only that block:
+        the rest of the selection goes through.
+
+
+        A commit spanning several documents is several revisions, one per
+        document. There is no cross-document commit record; `source_conversation_id`
+        makes "what did that discussion change?" a query instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommitInput"
+      responses:
+        "201":
+          description: Revision created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRevisionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The base revision is stale, or a selected block has a contention
+            nobody has decided.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/proposals:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [Proposals]
+      operationId: listProposals
+      summary: List a document's proposals
+      description: >
+        Includes decided ones. Nothing is ever deleted -- "why A and not B" is
+        the record this system exists to keep -- so filter by `status` to see
+        only what is still standing.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [live, accepted, rejected, superseded]
+        - name: block_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: conversation_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Proposals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockProposalListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Proposals]
+      operationId: proposeBlock
+      summary: Record what a topic wants a block to say
+      description: >
+        A topic already holding a live proposal on the block has it rewritten
+        in place rather than gaining a second one: five rounds of "tighten
+        this" are one intent iterating. `status` and the decision fields are
+        ignored if sent -- a proposal moves only by being decided or committed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlockProposalCreateInput"
+      responses:
+        "201":
+          description: >
+            The proposal, with the number of live proposals now on that block.
+            Two or more means the topic has walked into a contention.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProposedResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/proposals/{id}:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/BlockProposalId"
+    get:
+      tags: [Proposals]
+      operationId: getProposal
+      summary: Get one proposal
+      responses:
+        "200":
+          description: Proposal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockProposalResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/proposals/{id}/decide:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/BlockProposalId"
+    post:
+      tags: [Proposals]
+      operationId: decideProposal
+      summary: Settle a contended block in favour of this proposal
+      description: >
+        Every other live proposal on the block becomes `rejected`. This one
+        stays `live`: deciding a contention is not committing it, and it still
+        has to go through commit like any other pending change.
+
+
+        The only other way out of a contention is to open a topic about it.
+        There is no manual merge -- a third version nobody asked for is exactly
+        what this refuses to produce.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideInput"
+      responses:
+        "200":
+          description: The adopted proposal, still live
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockProposalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/contentions:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [Proposals]
+      operationId: listContentions
+      summary: List the blocks carrying more than one live proposal
+      description: >
+        A contention has a place -- it is on a block -- so unlike a topic it
+        can be marked on the document itself.
+      responses:
+        "200":
+          description: Contended blocks and their competing proposals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContentionListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/conversations/{conversation_id}/blocks:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/ConversationNestedId"
+    get:
+      tags: [Proposals]
+      operationId: listConversationBlocks
+      summary: Read the document as one topic sees it
+      description: >
+        The latest revision, with this topic's own proposals standing in, plus
+        a count of anybody else's. The rival text is deliberately withheld:
+        reconciling versions is the human's decision, and the count exists only
+        so a topic knows it is not alone in the block.
+      responses:
+        "200":
+          description: Blocks as this topic sees them
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationBlockListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /conversations:
+    get:
+      tags: [Conversations]
+      operationId: listConversations
+      summary: List topics
+      parameters:
+        - name: actor_id
+          in: query
+          required: false
+          description: Filter to the topics a given actor started.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Conversation list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      tags: [Conversations]
+      operationId: createConversation
+      summary: Start a topic
+      description: >
+        Created cold: no pi process is implied. A topic is not attached to any
+        document, since one topic can span several.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationCreateInput"
+      responses:
+        "201":
+          description: Conversation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /conversations/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    get:
+      tags: [Conversations]
+      operationId: getConversation
+      summary: Get a topic
+      description: Messages are not included; read them from the messages collection.
+      responses:
+        "200":
+          description: Conversation details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Conversations]
+      operationId: updateConversation
+      summary: Rename a topic
+      description: Only the title is mutable. There is no delete -- a topic is kept permanently.
+      requestBody:
+        $ref: "#/components/requestBodies/ConversationUpdate"
+      responses:
+        "200":
+          description: Conversation updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Conversations]
+      operationId: replaceConversation
+      summary: Rename a topic
+      description: Alias of PATCH.
+      requestBody:
+        $ref: "#/components/requestBodies/ConversationUpdate"
+      responses:
+        "200":
+          description: Conversation updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /conversations/{id}/close:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    post:
+      tags: [Conversations]
+      operationId: closeConversation
+      summary: Cool a topic
+      description: >
+        Closes the pi process carrying the topic and clears `pi_session_id`.
+        Nothing is lost: every message stays, and the topic can be revived from
+        them. This is also what happens when a topic is evicted to free a
+        process slot.
+      responses:
+        "200":
+          description: Conversation cooled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /conversations/{conversation_id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/ConversationNestedId"
+    get:
+      tags: [Conversations]
+      operationId: listMessages
+      summary: List a topic's turns, oldest first
+      parameters:
+        - name: after_position
+          in: query
+          required: false
+          description: Return only turns after this position, for forward paging.
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Messages with their references
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Conversations]
+      operationId: createMessage
+      summary: Append a turn
+      description: >
+        Assigns the next monotonic position. `content` must be the raw text,
+        never a prelude expanded from the references -- replay re-expands them
+        against the documents as they stand then, rather than feeding back an
+        old snapshot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MessageCreateInput"
+      responses:
+        "201":
+          description: Message appended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /conversations/{conversation_id}/messages/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ConversationNestedId"
+      - $ref: "#/components/parameters/MessageId"
+    get:
+      tags: [Conversations]
+      operationId: getMessage
+      summary: Get one turn
+      description: >
+        There is no update and no delete for a message. A conversation is a
+        record of what happened.
+      responses:
+        "200":
+          description: Message details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
         "404":
           $ref: "#/components/responses/NotFound"
   /ai_models:
@@ -908,6 +1446,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/AnnotationUpdateInput"
+    ConversationUpdate:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConversationUpdateInput"
     AnnotationReplyCreate:
       required: true
       content:
@@ -999,6 +1543,38 @@ components:
       in: path
       required: true
       description: Annotation reply UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
+    BlockProposalId:
+      name: id
+      in: path
+      required: true
+      description: Block proposal UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
+    ConversationId:
+      name: id
+      in: path
+      required: true
+      description: Conversation UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
+    ConversationNestedId:
+      name: conversation_id
+      in: path
+      required: true
+      description: Parent conversation UUIDv7 identifier.
+      schema:
+        type: string
+        format: uuid
+    MessageId:
+      name: id
+      in: path
+      required: true
+      description: Message UUIDv7 identifier.
       schema:
         type: string
         format: uuid
@@ -1380,7 +1956,7 @@ components:
           format: uuid
         content:
           type: string
-          description: A complete Markdown fragment, normally beginning with an H2 heading.
+          description: A complete Markdown fragment, normally beginning with an H2 or H3 heading.
       additionalProperties: false
     InsertAfterBlockOperation:
       type: object
@@ -1518,7 +2094,8 @@ components:
       additionalProperties: false
     DocumentRevisionSummary:
       type: object
-      required: [id, document_id, parent_id, title, change_summary, inserted_at]
+      required:
+        [id, document_id, parent_id, title, change_summary, source_conversation_id, inserted_at]
       properties:
         id:
           type: string
@@ -1536,6 +2113,13 @@ components:
         change_summary:
           type: string
           nullable: true
+        source_conversation_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Which discussion produced this revision. Makes "what did that
+            discussion change?" a query rather than a stored entity.
         inserted_at:
           type: string
           format: date-time
@@ -1813,6 +2397,8 @@ components:
           block_text,
           selected_text,
           content,
+          status,
+          resolved_by_revision_id,
           inserted_at,
           updated_at
         ]
@@ -1841,12 +2427,33 @@ components:
         content:
           type: string
           description: Opening opinion for the annotation thread.
+        status:
+          type: string
+          enum: [open, resolved, dismissed]
+          description: >
+            Lifecycle of the annotation. Only an explicit human decision moves
+            it, via the resolve, dismiss, and reopen actions; being discussed
+            never changes it, and it is ignored on create and update.
+        resolved_by_revision_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The revision that settled this annotation, when one is named.
         inserted_at:
           type: string
           format: date-time
         updated_at:
           type: string
           format: date-time
+      additionalProperties: false
+    AnnotationResolveInput:
+      type: object
+      properties:
+        resolved_by_revision_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The revision that settled this annotation, when the caller knows it.
       additionalProperties: false
     Annotation:
       allOf:
@@ -1897,10 +2504,498 @@ components:
           type: string
           minLength: 1
       additionalProperties: false
+    BlockProposal:
+      type: object
+      required:
+        [
+          id,
+          document_id,
+          block_id,
+          conversation_id,
+          actor_id,
+          content,
+          base_revision_id,
+          status,
+          decided_by_actor_id,
+          decided_at,
+          inserted_at,
+          updated_at
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        document_id:
+          type: string
+          format: uuid
+        block_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The topic that made it. A proposal's identity is (block,
+            conversation); this is nullable only so that losing a topic does
+            not take the proposal with it.
+        actor_id:
+          type: string
+          format: uuid
+          description: >
+            Who wrote the proposed text. The committed block is attributed to
+            this actor, not to whoever approved it.
+        content:
+          type: string
+        base_revision_id:
+          type: string
+          format: uuid
+          description: >
+            The revision this was written against. Recorded, but not a conflict
+            test: a working copy is loaded per document from the latest
+            revision, so every topic's base is identical by construction.
+        status:
+          type: string
+          enum: [live, accepted, rejected, superseded]
+          description: >
+            `live` is standing but uncommitted, `accepted` landed in a
+            revision, `rejected` lost a contention. Rows are never deleted.
+        decided_by_actor_id:
+          type: string
+          format: uuid
+          nullable: true
+        decided_at:
+          type: string
+          format: date-time
+          nullable: true
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    BlockProposalResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/BlockProposal"
+      additionalProperties: false
+    BlockProposalListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/BlockProposal"
+      additionalProperties: false
+    ProposedResponse:
+      type: object
+      required: [data, live_proposals, contended]
+      properties:
+        data:
+          $ref: "#/components/schemas/BlockProposal"
+        live_proposals:
+          type: integer
+          minimum: 1
+          description: Live proposals now standing on this block.
+        contended:
+          type: boolean
+          description: >
+            True once a second topic has proposed on the same block. Returned
+            here so a topic learns it before building further on the assumption
+            that its version is the one that will land.
+      additionalProperties: false
+    BlockProposalCreateInput:
+      type: object
+      required: [block_id, conversation_id, actor_id, content]
+      properties:
+        block_id:
+          type: string
+          format: uuid
+          description: Must be a block of the document's latest revision.
+        conversation_id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    DecideInput:
+      type: object
+      required: [actor_id]
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+          description: Who ended the argument. Recorded on the rejected proposals.
+      additionalProperties: false
+    Contention:
+      type: object
+      required: [block_id, proposals]
+      properties:
+        block_id:
+          type: string
+          format: uuid
+        proposals:
+          type: array
+          minItems: 2
+          items:
+            $ref: "#/components/schemas/BlockProposal"
+      additionalProperties: false
+    ContentionListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Contention"
+      additionalProperties: false
+    ConversationBlock:
+      type: object
+      required: [block_id, position, content, proposal_id, proposed, other_proposals]
+      properties:
+        block_id:
+          type: string
+          format: uuid
+        position:
+          type: integer
+          minimum: 0
+        content:
+          type: string
+          description: This topic's proposed text where it has one, otherwise the committed text.
+        proposal_id:
+          type: string
+          format: uuid
+          nullable: true
+        proposed:
+          type: boolean
+        other_proposals:
+          type: integer
+          minimum: 0
+          description: >
+            How many other topics have proposed on this block. A count, never
+            their text.
+      additionalProperties: false
+    ConversationBlockListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationBlock"
+      additionalProperties: false
+    CommitInput:
+      type: object
+      required: [actor_id, base_revision_id]
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+          description: Who is committing. Recorded on the accepted proposals.
+        base_revision_id:
+          type: string
+          format: uuid
+          description: The revision this commit was prepared against; a stale one is a 409.
+        block_ids:
+          type: array
+          description: >
+            Which blocks to commit. Omit to take every block holding exactly
+            one live proposal.
+          items:
+            type: string
+            format: uuid
+        resolve_annotation_ids:
+          type: array
+          description: >
+            Annotations this commit settles. Each is resolved with
+            `resolved_by_revision_id` pointing at the new revision. One
+            discussion may touch three annotations and settle two, so these are
+            named rather than inferred.
+          items:
+            type: string
+            format: uuid
+        source_conversation_id:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+          minLength: 1
+          description: Defaults to the parent revision's title.
+        change_summary:
+          type: string
+          nullable: true
+      additionalProperties: false
+    Conversation:
+      type: object
+      required:
+        [
+          id,
+          title,
+          actor_id,
+          pi_session_id,
+          assistant_actor_id,
+          hot,
+          replay_pending,
+          inserted_at,
+          updated_at
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          nullable: true
+        actor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Who started the topic.
+        assistant_actor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The AI persona this topic is a conversation *with*. Replies are
+            attributed to it, and sending a message to a topic that has none is
+            refused rather than guessed at. A property of the topic rather than
+            of each message: a client that could vary it per message could make
+            one topic's history look like two actors talking.
+        pi_session_id:
+          type: string
+          nullable: true
+          description: >
+            The pi session claimed to be carrying this topic. Non-null is a
+            claim, not a guarantee -- see `hot`.
+        hot:
+          type: boolean
+          description: >
+            Whether a live pi process is actually carrying the topic. Derived
+            rather than stored, because a session can die with nothing left to
+            clear the column. Cold is the resting state, not a failure: the
+            messages are enough to revive the topic.
+        replay_pending:
+          type: boolean
+          description: >
+            A fresh agent process was started and the next message still owes
+            it the recent turns. Entirely server-side; exposed only because it
+            explains why one reply may take longer than the rest.
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    ConversationResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Conversation"
+      additionalProperties: false
+    ConversationListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Conversation"
+      additionalProperties: false
+    ConversationCreateInput:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          nullable: true
+        actor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Who is starting the topic.
+        assistant_actor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The AI persona to talk to. Required before the topic can be sent a
+            message, so set it here unless the user has yet to choose one.
+      additionalProperties: false
+    ConversationUpdateInput:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          nullable: true
+        assistant_actor_id:
+          type: string
+          format: uuid
+          nullable: true
+      additionalProperties: false
+    MessageRef:
+      type: object
+      required: [id, ref_type, position, ref_id, ref_document_id, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        position:
+          type: integer
+          minimum: 0
+          description: >
+            The order the references were given in, which is the order they
+            expand into the prelude, and so part of what a replay reproduces.
+        ref_type:
+          type: string
+          description: >
+            `document`, `annotation`, `project`, `attachment` or `proposal`.
+            Not a closed enum: the set grows, and an unknown type is stored and
+            ignored rather than rejecting the turn.
+
+
+            `conversation` is deliberately absent. Expanding a reference
+            renders the thing itself and never follows its pointers, and a
+            conversation is the one shape that cannot obey that -- its messages
+            carry references of their own. Handing a topic's recent turns back
+            to a revived agent is done by the server at send time and is never
+            recorded here; see `POST /conversations/{id}/open`.
+        ref_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The normalised, indexed identity, which answers "which topics
+            discussed this?". Null when it could not be resolved -- a project
+            slug whose project is gone, say -- which costs this reference its
+            reverse lookup and nothing else.
+        ref_document_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Annotations only, which are reachable solely through their document.
+        payload:
+          type: object
+          additionalProperties: true
+          description: >
+            The reference map exactly as the client sent it, and what a replay
+            re-expands. Kept alongside the normalised columns because neither
+            can be derived from the other: a project reference is keyed by
+            `slug` rather than `id`.
+      additionalProperties: false
+    Message:
+      type: object
+      required:
+        [
+          id,
+          conversation_id,
+          actor_id,
+          role,
+          content,
+          position,
+          refs,
+          inserted_at,
+          updated_at
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [user, assistant]
+          description: >
+            Kept even though the actor's kind implies it: a replay needs what
+            the agent was given, not our attribution of who gave it.
+        content:
+          type: string
+          description: >
+            The raw text, never the prelude expanded from the references.
+        position:
+          type: integer
+          minimum: 0
+          description: Monotonic order within the conversation.
+        refs:
+          type: array
+          items:
+            $ref: "#/components/schemas/MessageRef"
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    MessageResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Message"
+      additionalProperties: false
+    MessageListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Message"
+      additionalProperties: false
+    MessageCreateInput:
+      type: object
+      required: [actor_id, role, content]
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+          minLength: 1
+        refs:
+          type: array
+          description: >
+            What this turn put in front of the model. One of
+            `{type: document, id}`, `{type: annotation, id, document_id}`,
+            `{type: proposal, id, document_id}`, `{type: project, slug}` or
+            `{type: attachment, id}`.
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: false
     AnnotationReply:
       type: object
       required:
-        [id, annotation_id, actor_id, content, position, inserted_at, updated_at]
+        [
+          id,
+          annotation_id,
+          actor_id,
+          content,
+          position,
+          source_message_id,
+          inserted_at,
+          updated_at
+        ]
       properties:
         id:
           type: string
@@ -1917,6 +3012,11 @@ components:
           type: integer
           minimum: 0
           description: Monotonic order within the annotation. Gaps remain after deletions.
+        source_message_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The conversation message this conclusion was drawn from, when it came from one.
         inserted_at:
           type: string
           format: date-time
@@ -1934,6 +3034,11 @@ components:
         content:
           type: string
           minLength: 1
+        source_message_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The conversation message this conclusion was drawn from.
       additionalProperties: false
     AnnotationReplyUpdateInput:
       type: object

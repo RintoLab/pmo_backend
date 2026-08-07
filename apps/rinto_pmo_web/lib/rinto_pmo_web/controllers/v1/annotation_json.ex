@@ -19,6 +19,8 @@ defmodule RintoPMOWeb.V1.AnnotationJSON do
       block_text: annotation.block_text,
       selected_text: annotation.selected_text,
       content: annotation.content,
+      status: annotation.status,
+      resolved_by_revision_id: annotation.resolved_by_revision_id,
       inserted_at: annotation.inserted_at,
       updated_at: annotation.updated_at
     }

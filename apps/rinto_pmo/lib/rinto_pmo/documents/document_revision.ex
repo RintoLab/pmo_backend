@@ -1,10 +1,17 @@
 defmodule RintoPMO.Documents.DocumentRevision do
   @moduledoc """
   An immutable commit in a document's linear revision history.
+
+  `source_conversation_id` records which discussion produced it. With it,
+  "what did that discussion change?" is a query rather than a stored entity --
+  the same choice `RintoPMO.Conversations.MessageRef` makes, and the reason
+  there is no cross-document commit record: one discussion touching N documents
+  is N revisions, written in one transaction by the layer above.
   """
 
   use RintoPMO, :schema
 
+  alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
 
@@ -17,6 +24,7 @@ defmodule RintoPMO.Documents.DocumentRevision do
 
     belongs_to :document, Document
     belongs_to :parent, __MODULE__
+    belongs_to :source_conversation, Conversation
 
     has_many :blocks, DocumentBlock,
       foreign_key: :revision_id,
@@ -39,11 +47,12 @@ defmodule RintoPMO.Documents.DocumentRevision do
   @doc false
   def next_changeset(%__MODULE__{} = revision, %__MODULE__{} = parent, attrs) do
     revision
-    |> cast(attrs, [:title, :change_summary, :base_revision_id])
+    |> cast(attrs, [:title, :change_summary, :base_revision_id, :source_conversation_id])
     |> inherit_title(parent, attrs)
     |> validate_required([:title, :base_revision_id])
     |> validate_length(:title, min: 1)
     |> foreign_key_constraint(:document_id)
+    |> foreign_key_constraint(:source_conversation_id)
     |> foreign_key_constraint(:parent_id)
     |> unique_constraint(:parent_id)
     |> check_constraint(:parent_id, name: :document_revisions_parent_differs_from_id)

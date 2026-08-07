@@ -6,6 +6,16 @@ defmodule RintoPMO.Annotations.Annotation do
   opinion lives in `content`; subsequent opinions are append-only replies with
   monotonic positions. Optional `block_id`, `block_text`, and `selected_text`
   capture anchor context without positional offsets inside a block.
+
+  `status` is what lets collaborative review converge: without it there is no
+  way to say "the AI is done talking, a human still has to decide". Only a
+  human decision moves it — being discussed changes nothing — so it is kept out
+  of `changeset/2` and `update_changeset/2` entirely and can only travel through
+  `status_changeset/3`. Editing an annotation's wording must not be able to
+  silently close it.
+
+  `resolved_by_revision_id` is meaningful only while `status` is `:resolved`;
+  every other transition clears it.
   """
 
   use RintoPMO, :schema
@@ -13,22 +23,34 @@ defmodule RintoPMO.Annotations.Annotation do
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Documents.DocumentRevision
 
   @type t :: %__MODULE__{}
+  @type status :: :open | :resolved | :dismissed
+
+  @statuses [:open, :resolved, :dismissed]
 
   schema "annotations" do
     field :block_id, UUIDv7
     field :block_text, :string
     field :selected_text, :string
     field :content, :string
+    field :status, Ecto.Enum, values: @statuses, default: :open
 
     belongs_to :document, Document
     belongs_to :actor, Actor
+    belongs_to :resolved_by_revision, DocumentRevision
 
     has_many :replies, AnnotationReply, preload_order: [asc: :position]
 
     timestamps()
   end
+
+  @doc """
+  The statuses an annotation can hold.
+  """
+  @spec statuses() :: [status()]
+  def statuses, do: @statuses
 
   @doc false
   def changeset(%__MODULE__{} = annotation \\ %__MODULE__{}, attrs) do
@@ -53,5 +75,28 @@ defmodule RintoPMO.Annotations.Annotation do
     |> cast(attrs, [:content, :block_id, :block_text, :selected_text])
     |> validate_required([:content])
     |> validate_length(:content, min: 1)
+  end
+
+  @doc false
+  def status_changeset(annotation, status, attrs \\ %{})
+
+  def status_changeset(%__MODULE__{} = annotation, :resolved, attrs) do
+    annotation
+    |> cast(attrs, [:resolved_by_revision_id])
+    |> put_change(:status, :resolved)
+    |> foreign_key_constraint(:resolved_by_revision_id)
+  end
+
+  # Everything other than `:resolved` drops the pointer, because only
+  # `:resolved` can honestly carry one: it names the revision that settled this
+  # annotation. Reopening means nothing settles it any more, and dismissing
+  # means it was declined without the document changing at all -- in both cases
+  # a revision left there would be a claim that never happened.
+  def status_changeset(%__MODULE__{} = annotation, status, _attrs)
+      when status in [:open, :dismissed] do
+    annotation
+    |> change()
+    |> put_change(:status, status)
+    |> put_change(:resolved_by_revision_id, nil)
   end
 end
