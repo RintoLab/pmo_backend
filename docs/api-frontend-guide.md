@@ -251,6 +251,7 @@ PATCH|PUT|DELETE /documents/{document_id}/annotations/{annotation_id}/replies/{r
 ```
 GET|POST      /conversations
 GET|PATCH|PUT /conversations/{id}
+POST          /conversations/{id}/open
 POST          /conversations/{id}/close
 GET|POST      /conversations/{conversation_id}/messages
 GET           /conversations/{conversation_id}/messages/{id}
@@ -270,9 +271,24 @@ GET           /conversations/{conversation_id}/messages/{id}
 |---|---|
 | `pi_session_id` | 声称在承载这个话题的 pi 进程。**非空只是声称** |
 | `hot` | **真的有活进程在跑**。派生字段，请用这个判断 |
+| `replay_pending` | 刚起了新进程，下一条 prompt 还欠它最近的对话。后端自理，前端只需知道这解释了为什么某次回复会慢 |
 
 冷是**常态不是故障**：消息都还在，足以重建话题。
 进程有数量上限（默认 8），最闲的会被驱逐转冷 —— **但正在等人回答的永不驱逐**。
+
+`POST /conversations/{id}/open` = **转热**。body `{"assistant_actor_id": "..."}`，
+即 AI 回复要归属到哪个 actor。响应除 `data` 外带一个 `state`：
+
+| `state` | 含义 | 前端要做什么 |
+|---|---|---|
+| `hot` | 本来就有进程在跑 | 直接 join `pi_session:{pi_session_id}` |
+| `revived` | 起了一个**空的**新进程 | 同上，但**第一条回复会更慢** —— 后端要先把最近的对话喂回去 |
+
+**重放完全由后端处理，前端不要插手**，也没有能插手的接口：它是系统在恢复上下文，
+不是人在引用，记成引用会让话题每次醒来都引用自己一次。
+
+失败：`409 session_limit_reached` —— 所有运行中的会话都卡在等人回答，而这些永不驱逐。
+UI 应提示用户去关掉一个。`503 agent_unavailable` —— pi 起不来。
 
 `POST /conversations/{id}/close` = **转冷不是删除**：关掉进程，消息一条不少。
 **话题没有删除接口**，因为它是唯一能回答「这段为什么改成这样」的东西。
@@ -291,17 +307,20 @@ GET           /conversations/{conversation_id}/messages/{id}
   "refs": [
     { "type": "document",   "id": "0193..." },
     { "type": "annotation", "id": "0193...", "document_id": "0193..." },
+    { "type": "proposal",   "id": "0193...", "document_id": "0193..." },
     { "type": "project",    "slug": "my-project" },
-    { "type": "attachment", "id": "0193..." },
-    { "type": "conversation", "id": "0193..." }
+    { "type": "attachment", "id": "0193..." }
   ]
 }
 ```
 
 - `role` 只能是 `user` | `assistant`
-- `content` 存**原始文本**，不要传拼接好的上下文。重放时会按**当时**的文档状态重新展开 refs，
+- `content` 存**原始文本**，不要传拼接好的上下文。重放时会按**当前**文档状态重新展开 refs，
   存展开结果等于三周后把旧快照喂回模型
 - `position` 由后端分配，单调递增
+- **没有 `conversation` 类型。** 展开一条 ref 只渲染它自身，不跟随它的指针 ——
+  而对话是唯一做不到这点的形状（它的每条消息又带 refs）。话题之间要传递信息，
+  引用的是**结论**（批注）和**提案**，不是聊天流水
 
 响应里每个 ref 有两组信息，**用途不同，别只用一组**：
 
@@ -515,17 +534,30 @@ channel.join()
 
 | 事件 | payload | 说明 |
 |---|---|---|
-| `prompt` | `{message, refs?, images?, actor_id?, streamingBehavior?}` | 正常对话 |
+| `prompt` | `{message, refs?, images?, actor_id?, on_missing_refs?, streamingBehavior?}` | 正常对话 |
 | `command` | `{type: "get_state", ...}` | 原始 RPC 命令 |
 | `answer` | `{ui_id, value \| confirmed \| cancelled}` | 回答 AI 的提问 |
 | `pending_ui` | `{}` | 重新拉取待回答的问题 |
 | `close` | `{}` | 结束会话和 pi 进程 |
 
-`prompt` 的 `refs` 与 §6 消息的 refs 同构。**任何一个 ref 解析失败，整条 prompt 被拒**
-（`ref_not_found` / `invalid_ref`），不会「悄悄丢掉引用后照发」——
-半个问题比没有问题更糟，模型会自信地回答一份它根本没看到的文档。
+`prompt` 的 `refs` 与 §6 消息的 refs 同构。**任何一个 ref 解析失败，整条 prompt 被拒**，
+不会「悄悄丢掉引用后照发」—— 半个问题比没有问题更糟，模型会自信地回答一份它根本没看到的文档。
 
-带 `actor_id` 时，这条用户消息会被**自动落库**到该 pi 会话绑定的话题（见 §11 缺口）。
+失败分两种，处理方式不同：
+
+| `reason` | 含义 | 前端该做什么 |
+|---|---|---|
+| `ref_not_found` | 引用的东西**没了**（文档归档、附件删除）。`details.refs` 列出**全部**失效项 | 弹窗列出来问「忽略并发送？」；用户确认后带 `"on_missing_refs": "skip"` 重发 |
+| `invalid_ref` | 引用**格式错**（缺 `document_id`、未知 type） | 这是前端 bug，不要提供「忽略」，直接报错 |
+
+`skip` 时失效的引用不会凭空消失，而是渲染成 `<reference status="unavailable">` 标记 ——
+否则模型面对「精简这段」却没有「这段」，还完全不知道本该有东西，跟悄悄丢掉没区别。
+
+> **为什么需要这个开关**：失效的引用**可能来自重放的历史消息**，前端删不掉它们。
+> 没有这个开关，一个三周前引用过、现已归档的文档会让整个话题**永远打不开**。
+
+带 `actor_id` 时，这条用户消息会**自动落库**到该 pi 会话绑定的话题。
+没带就是「这个会话没人认领」—— 照样能聊，只是不算一个话题、不落库。
 
 ### 服务端 → 客户端
 
@@ -553,21 +585,11 @@ AI 会把取消当作「用户拒绝回答」并继续往下走。
 
 按对前端的影响排序：
 
-### 🔴 无法把话题「开热」（阻断性）
+### 🟢 已修复：话题开热（原阻断性缺口）
 
-后端有完整的冷热机制（`Conversations.Sessions.ensure_hot/2`：建 pi 进程、绑定话题、
-启动落库进程、处理进程上限与驱逐），但**没有任何 HTTP 或 WebSocket 入口调用它**。
-
-后果：
-
-- 前端可以建话题、可以 `close` 转冷，但**没法启动一个绑定到话题的 pi 会话**
-- 直接用 `pi_session:xxx` + `{create: true}` 能聊，但那个会话**没有绑定任何话题**，
-  于是 `prompt` 的 `actor_id` 落库路径查不到话题，**AI 的回复不会自动入库**
-- 变通：聊天照常走 WebSocket，两侧消息用 `POST /conversations/{id}/messages` **手动补写**
-
-建议补一个 `POST /conversations/{id}/open`，返回 `pi_session_id` 以及本次是新建还是复用
-（新建时前端需要在下一条 prompt 里带上 `{"type":"conversation","id":...}` 让模型接回上下文）。
-**这个接口尚未实现**，需要先确认设计。
+早先版本没有任何入口能启动一个绑定到话题的 pi 会话，导致消息自动落库整条链路是死的。
+现在由 `POST /conversations/{id}/open` 接通，重放也由后端在发送时注入。
+如果你看到旧文档提到「手动补写消息」的变通方案，那已经不需要了。
 
 ### 🟡 其他
 
@@ -577,6 +599,9 @@ AI 会把取消当作「用户拒绝回答」并继续往下走。
 | **无分页** | 所有列表一次返回全部。`messages` 有 `after_position`/`limit`，但没有 `next_cursor`。文档、批注、提案多了会变慢 |
 | **提案不能增删块** | 只能改已有 block 的内容。要插入/删除/移动段落，目前只能走 `POST /revisions` |
 | **`superseded` 无人产生** | 提案状态枚举里有，但当前没有任何路径会产生它。前端可以先不处理 |
+| **重放只有最近 10 轮** | 固定轮数截断，第 11 轮之前的内容在冷话题重开后全丢。这是我们自己的「压缩」策略，最笨的一种 |
+| **被截断的回答不带标记** | `stopReason: length` 的回复会照常入库，但读起来是半句话，库里看不出它被截断过 |
+| **「开个话题决定」需要前端组装** | 后端提供了 `proposal` ref 类型，但没有一键创建裁决话题的接口。前端自己建话题 + 塞 refs |
 | **批注快照会过期** | `block_text` / `selected_text` 是创建时的快照，正文改了就对不上。UI 需要能表达「原文已改」 |
 | **`messages` 无保留策略** | 永久存储，将来按需加 |
 | **落选提案会累积** | 同上，等有量了再定清理策略 |
@@ -590,11 +615,12 @@ AI 会把取消当作「用户拒绝回答」并继续往下走。
 ① 人选中正文 → POST /documents/{id}/annotations          （○ 待办）
 ② 选中 N 条批注开话题 → POST /conversations
    → 首条消息的 refs 就是这 N 条批注
-③ 聊起来（WebSocket）                                     （● 讨论中）
+③ 开热 → POST /conversations/{id}/open → join pi_session （● 讨论中）
+   聊起来（WebSocket）
    AI 想改文档 → POST /documents/{id}/proposals
    若返回 contended=true → 文档上标出争用
 ④ 争用裁决 → POST /proposals/{id}/decide                  （赢家仍是 live）
-   或开新话题把两条提案喂进去
+   或新建空话题，把两条提案作为 proposal ref 喂进去（中立，不从任一方 fork）
 ⑤ AI 写回结论 → POST .../replies（带 source_message_id）  （❗ 待你处理）
 ⑥ 人审阅 → POST /documents/{id}/commit
    带 resolve_annotation_ids 勾选本次解决的批注

@@ -82,6 +82,8 @@ defmodule RintoPMO.Conversations.SessionsTest do
       assert Sessions.hot?(hot)
       assert PiSession.alive?(hot.pi_session_id)
       assert Recorder.recording?(hot.id)
+      # The new process is empty, so the next prompt owes it the recent turns.
+      assert hot.replay_pending
 
       assert Conversations.get_conversation!(conversation.id).pi_session_id ==
                hot.pi_session_id

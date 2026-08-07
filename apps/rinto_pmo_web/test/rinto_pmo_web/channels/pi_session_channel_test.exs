@@ -102,6 +102,14 @@ defmodule RintoPMOWeb.PiSessionChannelTest do
     socket
   end
 
+  # Every prompt now asks whether the session belongs to a topic, because the
+  # replay decision does not depend on the payload. Sessions that no test
+  # claimed belong to none.
+  setup do
+    stub(ConversationsMock, :get_conversation_by_session, fn _session_id -> nil end)
+    :ok
+  end
+
   defp join!(session_id, params \\ %{}) do
     {:ok, _reply, socket} =
       subscribe_and_join(connect_socket(), "pi_session:#{session_id}", params)
@@ -294,6 +302,9 @@ defmodule RintoPMOWeb.PiSessionChannelTest do
         conversation
       end)
 
+      # Nothing owed: this session was not just revived.
+      expect_in_channel(socket, ConversationsMock, :claim_replay, fn ^conversation -> false end)
+
       expect_in_channel(socket, ConversationsMock, :append_message, fn ^conversation, attrs ->
         send(test_pid, {:appended, attrs})
         {:ok, insert(:message, conversation: conversation, actor: actor)}
@@ -318,12 +329,63 @@ defmodule RintoPMOWeb.PiSessionChannelTest do
       assert attrs.refs == [document_ref(document)]
     end
 
+    test "the first prompt after a revive carries the history back", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "sent.jsonl")
+      session_id = start_session!(capturing_pi(tmp_dir, capture))
+      socket = join!(session_id)
+      conversation = insert(:conversation, title: "Tighten §3")
+
+      expect_in_channel(socket, ConversationsMock, :get_conversation_by_session, fn _id ->
+        conversation
+      end)
+
+      # Claimed, so this prompt is the one that owes the replay.
+      expect_in_channel(socket, ConversationsMock, :claim_replay, fn ^conversation -> true end)
+
+      expect_in_channel(socket, ConversationsMock, :recent_messages, fn ^conversation, _limit ->
+        [build(:message, conversation: conversation, content: "earlier turn", refs: [])]
+      end)
+
+      ref = push(socket, "prompt", %{"message" => "carry on"})
+      assert_reply ref, :ok, _payload, 5_000
+
+      assert %{"message" => message} = last_command(capture)
+      assert message =~ ~s(<conversation id="#{conversation.id}")
+      assert message =~ "earlier turn"
+      assert String.ends_with?(message, "\n\ncarry on")
+    end
+
+    test "a prompt that owes nothing sends no history", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "sent.jsonl")
+      socket = join!(start_session!(capturing_pi(tmp_dir, capture)))
+      conversation = insert(:conversation)
+
+      expect_in_channel(socket, ConversationsMock, :get_conversation_by_session, fn _id ->
+        conversation
+      end)
+
+      expect_in_channel(socket, ConversationsMock, :claim_replay, fn ^conversation -> false end)
+      # No `recent_messages` expectation: reaching for the transcript when
+      # nothing was claimed would fail the test.
+
+      ref = push(socket, "prompt", %{"message" => "carry on"})
+      assert_reply ref, :ok, _payload, 5_000
+
+      assert %{"message" => "carry on"} = last_command(capture)
+    end
+
     test "a prompt naming no actor is not recorded", %{tmp_dir: tmp_dir} do
       socket = join!(start_session!(echo_pi(tmp_dir)))
+      conversation = insert(:conversation)
 
-      # No expectation on ConversationsMock: a session nobody claimed is still
-      # usable, it simply is not a topic. The strict mock fails the test if the
-      # channel reaches for the context anyway.
+      expect_in_channel(socket, ConversationsMock, :get_conversation_by_session, fn _id ->
+        conversation
+      end)
+
+      expect_in_channel(socket, ConversationsMock, :claim_replay, fn _conversation -> false end)
+      # No `append_message` expectation: without an actor there is nobody to
+      # attribute the turn to, so it is not recorded.
+
       ref = push(socket, "prompt", %{"message" => "hello"})
       assert_reply ref, :ok, _payload, 5_000
     end

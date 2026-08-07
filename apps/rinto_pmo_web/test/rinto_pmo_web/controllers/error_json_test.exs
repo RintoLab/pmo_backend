@@ -46,6 +46,10 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {422, "The task cannot be split in its current state.", %{current_status: "done"}},
     corrupt_image: {422, "The image header could not be read.", %{}},
     internal_server_error: {500, "An internal server error occurred.", %{}},
+    agent_unavailable:
+      {503, "The agent runtime could not be started.", %{reason: ":pi_not_found"}},
+    session_limit_reached:
+      {409, "Every running agent session is waiting on a person. Close one to make room.", %{}},
     attachment_unwritable: {500, "The attachment could not be stored.", %{reason: "enospc"}},
     attachment_unreadable:
       {500, "The attachment bytes are missing or unreadable.", %{reason: "enoent"}}

@@ -25,6 +25,7 @@ defmodule RintoPMO.Conversations.RecorderTest do
       "type" => "message_end",
       "message" => %{
         "role" => "assistant",
+        "stopReason" => "stop",
         "content" => [%{"type" => "text", "text" => "Section 3 contradicts section 1."}]
       }
     })
@@ -43,10 +44,10 @@ defmodule RintoPMO.Conversations.RecorderTest do
       "type" => "message_end",
       "message" => %{
         "role" => "assistant",
+        "stopReason" => "stop",
         "content" => [
           %{"type" => "thinking", "thinking" => "the user wants..."},
           %{"type" => "text", "text" => "First. "},
-          %{"type" => "toolCall", "id" => "call_1", "name" => "bash", "arguments" => %{}},
           %{"type" => "text", "text" => "Second."}
         ]
       }
@@ -60,10 +61,26 @@ defmodule RintoPMO.Conversations.RecorderTest do
 
     emit(context, %{
       "type" => "message_end",
-      "message" => %{"role" => "assistant", "content" => "Plain text"}
+      "message" => %{"role" => "assistant", "stopReason" => "stop", "content" => "Plain text"}
     })
 
     assert_receive {:appended, _conversation_id, %{content: "Plain text"}}
+  end
+
+  test "keeps an answer the output cap truncated", context do
+    expect_append(start_recorder(context))
+
+    emit(context, %{
+      "type" => "message_end",
+      "message" => %{
+        "role" => "assistant",
+        "stopReason" => "length",
+        "content" => [%{"type" => "text", "text" => "It contradicts section 1 because th"}]
+      }
+    })
+
+    assert_receive {:appended, _conversation_id,
+                    %{content: "It contradicts section 1 because th"}}
   end
 
   test "skips the user turn, which the prompt path already wrote", context do
@@ -71,7 +88,11 @@ defmodule RintoPMO.Conversations.RecorderTest do
 
     emit(context, %{
       "type" => "message_end",
-      "message" => %{"role" => "user", "content" => "Please review this"}
+      "message" => %{
+        "role" => "user",
+        "stopReason" => "stop",
+        "content" => "Please review this"
+      }
     })
 
     assert_handled(recorder)
@@ -83,25 +104,80 @@ defmodule RintoPMO.Conversations.RecorderTest do
     for role <- ~w(toolResult bashExecution) do
       emit(context, %{
         "type" => "message_end",
-        "message" => %{"role" => role, "content" => [%{"type" => "text", "text" => "output"}]}
+        "message" => %{
+          "role" => role,
+          "stopReason" => "stop",
+          "content" => [%{"type" => "text", "text" => "output"}]
+        }
       })
     end
 
     assert_handled(recorder)
   end
 
-  test "skips a turn that produced only tool calls", context do
+  test "skips the narration that comes with a tool call", context do
     recorder = start_recorder(context)
+
+    # Every turn of an agentic run but the last stops to call a tool. Its text
+    # is narration, and the final answer restates whatever it concluded.
+    emit(context, %{
+      "type" => "message_end",
+      "message" => %{
+        "role" => "assistant",
+        "stopReason" => "toolUse",
+        "content" => [
+          %{"type" => "text", "text" => "让我看一下文档"},
+          %{"type" => "toolCall", "id" => "call_1", "name" => "read"}
+        ]
+      }
+    })
+
+    assert_handled(recorder)
+  end
+
+  test "skips errored and aborted turns", context do
+    recorder = start_recorder(context)
+
+    for reason <- ["error", "aborted"] do
+      emit(context, %{
+        "type" => "message_end",
+        "message" => %{
+          "role" => "assistant",
+          "stopReason" => reason,
+          "content" => [%{"type" => "text", "text" => "half a sen"}]
+        }
+      })
+    end
+
+    assert_handled(recorder)
+  end
+
+  test "falls back to the tool-call test when stopReason is missing", context do
+    recorder = start_recorder(context)
+
+    # A shape we have not seen should not cost us a turn, so the fallback is
+    # the same test the agent loop uses to decide whether to keep going.
+    emit(context, %{
+      "type" => "message_end",
+      "message" => %{
+        "role" => "assistant",
+        "content" => [%{"type" => "toolCall", "id" => "call_1", "name" => "read"}]
+      }
+    })
+
+    assert_handled(recorder)
+
+    expect_append(recorder)
 
     emit(context, %{
       "type" => "message_end",
       "message" => %{
         "role" => "assistant",
-        "content" => [%{"type" => "toolCall", "id" => "call_1", "name" => "bash"}]
+        "content" => [%{"type" => "text", "text" => "No tool call here"}]
       }
     })
 
-    assert_handled(recorder)
+    assert_receive {:appended, _conversation_id, %{content: "No tool call here"}}
   end
 
   test "ignores streaming deltas and turn boundaries", context do
@@ -109,7 +185,11 @@ defmodule RintoPMO.Conversations.RecorderTest do
 
     emit(context, %{
       "type" => "message_update",
-      "message" => %{"role" => "assistant", "content" => [%{"type" => "text", "text" => "par"}]},
+      "message" => %{
+        "role" => "assistant",
+        "stopReason" => "stop",
+        "content" => [%{"type" => "text", "text" => "par"}]
+      },
       "assistantMessageEvent" => %{"type" => "text_delta", "delta" => "par"}
     })
 
@@ -144,7 +224,7 @@ defmodule RintoPMO.Conversations.RecorderTest do
 
     emit(context, %{
       "type" => "message_end",
-      "message" => %{"role" => "assistant", "content" => "Something"}
+      "message" => %{"role" => "assistant", "stopReason" => "stop", "content" => "Something"}
     })
 
     assert_handled(recorder)

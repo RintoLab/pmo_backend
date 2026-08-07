@@ -33,8 +33,12 @@ API 见 `docs/api-frontend-guide.md`。
 - conversation 与 annotation 是**多对多**，且一个话题里的 annotation 会随聊天陆续加入
 - 该关系由 `message_refs` 派生，**不建 `conversation_annotations` 关联表** ——
   那是 `message_refs` 的退化子集，还丢掉「何时被拉进上下文」，而重建 prompt 需要这个时间点
-- refs 沿用 `PromptBuilder` 已有的类型：`document` / `annotation` / `project` / `attachment`，
-  annotation 不特殊对待
+- refs 沿用 `PromptBuilder` 已有的类型：`document` / `annotation` / `project` /
+  `attachment` / `proposal`，annotation 不特殊对待
+- **`conversation` 不是对外的 ref 类型**（实现时拍板）。展开一条 ref 只渲染它自身及其
+  从属部分、不跟随指向其他实体的指针，而对话是唯一无法遵守这条规则的形状 ——
+  它的每条消息又带 refs。冷话题重开时的重放改为**后端在发送时注入、不写进 `message_refs`**：
+  那是系统在恢复上下文，不是人在引用，记成引用会让话题每次醒来都引用自己一次
 
 ### 留档
 
@@ -102,7 +106,10 @@ pi 进程内只有**一条**对话历史。docstring 说的「命令并发、按
 `PiSession.Supervisor.snapshot/0` 已按 `idle_ms` 倒序返回，正是 LRU 淘汰的输入。
 超限就 close 最闲的，话题转冷。**话题数无上限，进程数有上限。**
 
-replay 全量重放很贵：只重放最近 K 轮 + 重新展开该话题的 refs。
+replay 全量重放很贵：只重放最近 K 轮 + 重新展开该话题的 refs
+（按**当前**文档状态展开，不是把旧快照喂回去 —— 在一个输出为整块替换的系统里，
+基于陈旧文本写出的提案会静默覆盖掉期间的全部修改）。
+重放中的 `conversation` ref 直接跳过，只展开一层。
 
 ## UI
 

@@ -35,6 +35,31 @@ defmodule RintoPMOWeb.V1.ConversationController do
   end
 
   @doc """
+  Makes sure a topic has a live pi process, starting one if it had none.
+
+  Answers with `state`: `hot` if one was already running, `revived` if a fresh
+  process was started. A revived process is empty -- pi runs with
+  `--no-session` and keeps no history -- so the backend hands the recent turns
+  back on the next prompt. The client does not have to arrange that and must
+  not: the replay is context being restored, not something the human cited, and
+  recording it as a citation would make the topic reference itself.
+
+  Refused with `session_limit_reached` when every running session is parked on
+  a question. Those are never evicted -- each is waiting on a specific person
+  for a specific answer, and closing one throws the question away without
+  telling anybody.
+  """
+  def open(conn, %{"id" => id} = params) do
+    conversation = conversations_context().get_conversation!(id)
+
+    with {:ok, actor_id} <- assistant_actor_id(params),
+         {:ok, conversation, state} <-
+           Sessions.ensure_hot(conversation, assistant_actor_id: actor_id) do
+      render(conn, :opened, conversation: conversation, state: state)
+    end
+  end
+
+  @doc """
   Cools a topic: closes its pi process and keeps everything it said.
 
   There is no delete. A conversation is the only thing that can answer why a
@@ -47,6 +72,14 @@ defmodule RintoPMOWeb.V1.ConversationController do
 
     with {:ok, conversation} <- Sessions.cool(conversation) do
       render(conn, :show, conversation: conversation)
+    end
+  end
+
+  # The AI actor a revived topic's replies are attributed to.
+  defp assistant_actor_id(params) do
+    case UUIDv7.cast(params["assistant_actor_id"] || "") do
+      {:ok, actor_id} -> {:ok, actor_id}
+      :error -> {:error, :bad_request, %{"assistant_actor_id" => ["is required"]}}
     end
   end
 

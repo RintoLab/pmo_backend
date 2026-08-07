@@ -12,6 +12,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     # A contention is a question for a person, not a failure to retry, so it is
     # a conflict rather than a validation error.
     unresolved_contention: {409, "The block has competing proposals that nobody has decided."},
+    # Never resolved by retrying: a session parked on a question is waiting on
+    # a person, and is never evicted to make room.
+    session_limit_reached:
+      {409, "Every running agent session is waiting on a person. Close one to make room."},
     validation_error: {422, "Request validation failed."},
     unknown_block: {422, "The block is not part of the document's latest revision."},
     no_live_proposal: {422, "The block has no proposal to commit."},
@@ -26,6 +30,7 @@ defmodule RintoPMOWeb.ErrorJSON do
     task_not_splittable: {422, "The task cannot be split in its current state."},
     corrupt_image: {422, "The image header could not be read."},
     internal_server_error: {500, "An internal server error occurred."},
+    agent_unavailable: {503, "The agent runtime could not be started."},
     attachment_unwritable: {500, "The attachment could not be stored."},
     attachment_unreadable: {500, "The attachment bytes are missing or unreadable."}
   }

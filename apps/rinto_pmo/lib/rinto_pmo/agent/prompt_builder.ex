@@ -30,16 +30,44 @@ defmodule RintoPMO.Agent.PromptBuilder do
   | `annotation` | `id` + `document_id` | `<annotation>` and its replies |
   | `project` | `slug` | `<project>` and an index of its documents |
   | `attachment` | `id` | `<attachment>` marker plus an inline image |
-  | `conversation` | `id` | `<conversation>` holding its most recent turns |
+  | `proposal` | `id` + `document_id` | `<proposal>` holding the proposed block text |
 
   Projects are keyed by `slug` because that is how they are addressed
-  everywhere else here; an annotation needs `document_id` because it is only
-  ever reachable through its document.
+  everywhere else here; annotations and proposals need `document_id` because
+  they are only ever reachable through their document.
 
-  A `conversation` ref is how a cold topic comes back to life. pi runs with
-  `--no-session` and keeps no history of its own, so reviving a topic means
-  handing its recent turns to a fresh process. Only the tail is expanded --
-  replaying an entire topic is expensive and rarely worth more than its end.
+  ## Expansion terminates
+
+  **Expanding a reference renders the thing itself and the parts belonging to
+  it, and never follows a pointer to another entity.** Other entities appear as
+  attributes -- an id, a title -- which are labels, not doorways. A document
+  renders its blocks but not its annotations; an annotation renders its replies
+  but not its document; a proposal renders its text but neither its document
+  nor the topic that made it.
+
+  That rule is what keeps every expansion a leaf. There is one shape that
+  cannot obey it -- a conversation, whose messages carry references of their
+  own -- and it is precisely the one that is not offered here.
+
+  ## Replay
+
+  A conversation is therefore not a reference a client may send. It is the
+  `:replay` option, used in one situation: pi runs with `--no-session` and
+  keeps no history, so a topic that has just been given a fresh process needs
+  its recent turns handed back.
+
+  Replay is assembled at send time and never stored, which is what keeps it out
+  of `message_refs` -- it is the system restoring context, not the human citing
+  something, and recording it as a citation would make a topic reference itself
+  every time it woke up.
+
+  What it renders is the tail of the transcript with each turn naming what it
+  referenced, plus those references expanded once each **against the documents
+  as they stand now**. Handing back the original expansion instead would feed a
+  three-week-old snapshot to a model whose output is whole-block replacements,
+  and a proposal written against stale text silently reverts everything that
+  happened in between. Only one level is expanded: conversation references
+  inside the replayed turns are dropped rather than followed.
 
   Attachments are the one type producing something other than text: the marker
   goes in the message so the model knows what the picture is called, and the
@@ -57,6 +85,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
   alias RintoPMO.Attachments.Attachment
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Conversations.Message
+  alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Projects.Project
@@ -64,31 +93,58 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   @type built :: %{message: String.t(), images: [map()]}
 
+  @type option ::
+          {:replay, RintoPMO.Conversations.Conversation.t() | nil}
+          | {:on_missing_refs, :fail | :skip}
+
   @doc """
   Expands `refs` and prepends them to `message`.
 
   Returns the message pi should receive and the images that go with it. With no
-  references the message passes through untouched, so this is safe to call
-  unconditionally.
-  """
-  @spec build(String.t(), [map()]) :: {:ok, built()} | {:error, atom(), map()}
-  def build(message, refs \\ [])
+  references and no replay the message passes through untouched, so this is
+  safe to call unconditionally.
 
-  def build(message, []) when is_binary(message) do
-    {:ok, %{message: message, images: []}}
+  ## Options
+
+    * `:replay` -- a conversation whose recent turns should be handed back to a
+      pi process that has just been started. See "Replay" above.
+    * `:on_missing_refs` -- `:fail` (the default) refuses the whole prompt and
+      names every reference that could not be resolved; `:skip` renders those
+      as unavailable and sends the rest. A caller offers `:skip` only after a
+      human has seen the list and chosen to go ahead.
+
+  A malformed reference is refused either way: `:skip` is for a reference whose
+  target has since gone, which is ordinary, not for one the client built wrong.
+  """
+  @spec build(String.t(), [map()], [option()]) ::
+          {:ok, built()} | {:error, atom(), map()}
+  def build(message, refs \\ [], opts \\ [])
+
+  def build(message, refs, opts) when is_binary(message) and is_list(refs) do
+    replay = replay_turns(Keyword.get(opts, :replay))
+    assemble(message, refs, replay, Keyword.get(opts, :on_missing_refs, :fail))
   end
 
-  def build(message, refs) when is_binary(message) and is_list(refs) do
-    case resolve_all(refs) do
+  def build(_message, _refs, _opts), do: {:error, :invalid_ref, %{"refs" => ["must be a list"]}}
+
+  defp assemble(message, refs, replay, on_missing) do
+    # Replay's own references go first so that a document referenced three
+    # weeks ago and again just now is expanded once, at its current state,
+    # rather than twice.
+    all_refs = dedupe_refs(replay_refs(replay) ++ refs)
+
+    case resolve_all(all_refs, on_missing) do
       {:ok, resolved} ->
         # Stamped here rather than inside the attachment branch, so one query
         # covers a prompt however many images it carries, and so a prompt that
         # died on a later reference is not recorded as a use.
         resolved |> Enum.flat_map(& &1.attachment_ids) |> record_use()
 
+        texts = Enum.map(resolved, & &1.text) ++ transcript(replay)
+
         {:ok,
          %{
-           message: prepend_prelude(message, Enum.map(resolved, & &1.text)),
+           message: prepend_prelude(message, texts),
            images: Enum.flat_map(resolved, & &1.images)
          }}
 
@@ -97,23 +153,104 @@ defmodule RintoPMO.Agent.PromptBuilder do
     end
   end
 
-  def build(_message, _refs), do: {:error, :invalid_ref, %{"refs" => ["must be a list"]}}
+  # Every failure is collected rather than halting at the first, because the
+  # caller's next move is to show a human the list and ask whether to go
+  # ahead -- and being asked once per broken reference is not a choice, it is
+  # an interrogation.
+  defp resolve_all(refs, on_missing) do
+    {resolved, missing, hard} =
+      Enum.reduce(refs, {[], [], []}, fn ref, {resolved, missing, hard} ->
+        case resolve(ref) do
+          {:ok, expansion} ->
+            {[expansion | resolved], missing, hard}
 
-  defp resolve_all(refs) do
-    Enum.reduce_while(refs, {:ok, []}, fn ref, {:ok, acc} ->
-      case resolve(ref) do
-        {:ok, resolved} -> {:cont, {:ok, [resolved | acc]}}
-        {:error, _code, _details} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, resolved} -> {:ok, Enum.reverse(resolved)}
-      error -> error
+          {:error, :ref_not_found, details} ->
+            {[unavailable(details) | resolved], [details | missing], hard}
+
+          # Anything else -- a malformed ref, unreadable attachment bytes -- is
+          # not a target that has since gone, so it is neither collected nor
+          # skippable. It is reported as itself.
+          {:error, _code, _details} = error ->
+            {resolved, missing, [error | hard]}
+        end
+      end)
+
+    cond do
+      hard != [] ->
+        hard |> Enum.reverse() |> hd()
+
+      missing != [] and on_missing == :fail ->
+        {:error, :ref_not_found, %{"refs" => Enum.reverse(missing)}}
+
+      true ->
+        {:ok, Enum.reverse(resolved)}
     end
   end
 
+  # A skipped reference still leaves a marker. Removing it outright would put
+  # the model in front of "tighten this paragraph" with no paragraph and no
+  # sign that one was ever meant to be there -- which is the silent loss the
+  # whole strict-by-default rule exists to prevent.
+  defp unavailable(details) do
+    attributes =
+      [{"status", "unavailable"}] ++
+        for key <- ["type", "id", "document_id"],
+            value = Map.get(details, key),
+            do: {key, value}
+
+    text_only(element("reference", attributes, "[No longer available.]"))
+  end
+
   defp prepend_prelude(message, []), do: message
-  defp prepend_prelude(message, texts), do: Enum.join(texts, "\n") <> "\n\n" <> message
+
+  defp prepend_prelude(message, texts) do
+    texts |> Enum.reject(&(&1 in [nil, ""])) |> Enum.join("\n") |> join_message(message)
+  end
+
+  defp join_message("", message), do: message
+  defp join_message(prelude, message), do: prelude <> "\n\n" <> message
+
+  # Replay
+
+  defp replay_turns(nil), do: nil
+
+  defp replay_turns(%Conversation{} = conversation) do
+    messages = conversations().recent_messages(conversation, setting(:max_conversation_turns))
+    %{conversation: conversation, messages: messages}
+  end
+
+  # The refs the replayed turns carried, re-expanded against the documents as
+  # they stand *now*. Storing the expansion instead would hand a three-week-old
+  # snapshot back to the model, and in a system whose whole output is
+  # whole-block replacements, a proposal written against stale text silently
+  # reverts whatever happened in between.
+  #
+  # Conversation refs are dropped rather than followed: one level only. A
+  # transcript that expanded the transcripts it mentions has no bottom.
+  defp replay_refs(nil), do: []
+
+  defp replay_refs(%{messages: messages}) do
+    messages
+    |> Enum.flat_map(fn message -> Enum.map(message.refs, & &1.payload) end)
+    |> Enum.reject(&(ref_type(&1) == "conversation"))
+  end
+
+  defp transcript(nil), do: []
+
+  defp transcript(%{conversation: conversation, messages: messages}) do
+    [render_conversation(conversation, messages)]
+  end
+
+  # Deduplicated by identity, keeping the first occurrence. A project is keyed
+  # by slug and everything else by id, matching how each is addressed.
+  defp dedupe_refs(refs), do: Enum.uniq_by(refs, &ref_key/1)
+
+  defp ref_key(%{"type" => "project", "slug" => slug}), do: {"project", slug}
+  defp ref_key(%{"type" => type, "id" => id}), do: {type, id}
+  defp ref_key(ref), do: ref
+
+  defp ref_type(%{"type" => type}) when is_binary(type), do: type
+  defp ref_type(_ref), do: nil
 
   defp resolve(%{"type" => "document", "id" => id}) when is_binary(id) do
     with {:ok, document} <- fetch(fn -> documents().get_document!(id) end, "document", id) do
@@ -137,11 +274,13 @@ defmodule RintoPMO.Agent.PromptBuilder do
     end
   end
 
-  defp resolve(%{"type" => "conversation", "id" => id}) when is_binary(id) do
-    with {:ok, conversation} <-
-           fetch(fn -> conversations().get_conversation!(id) end, "conversation", id) do
-      messages = conversations().recent_messages(conversation, setting(:max_conversation_turns))
-      {:ok, text_only(render_conversation(conversation, messages))}
+  defp resolve(%{"type" => "proposal", "id" => id, "document_id" => document_id})
+       when is_binary(id) and is_binary(document_id) do
+    with {:ok, document} <-
+           fetch(fn -> documents().get_document!(document_id) end, "document", document_id),
+         {:ok, proposal} <-
+           fetch(fn -> documents().get_proposal!(document, id) end, "proposal", id) do
+      {:ok, text_only(render_proposal(proposal))}
     end
   end
 
@@ -233,6 +372,10 @@ defmodule RintoPMO.Agent.PromptBuilder do
     )
   end
 
+  # Each turn names what it referenced but does not repeat it: the expansions
+  # are above, once each, and the model correlates them by id. That is the same
+  # bargain the rest of this module strikes -- the message keeps the label, the
+  # prelude holds the content.
   defp render_conversation(%Conversation{} = conversation, messages) do
     attributes =
       [{"id", conversation.id}] ++
@@ -241,11 +384,44 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
     body =
       Enum.map_join(messages, "\n", fn %Message{} = message ->
-        ~s(<turn role="#{message.role}" position="#{message.position}">\n) <>
-          message.content <> "\n</turn>"
+        turn_attributes =
+          [{"role", message.role}, {"position", message.position}] ++
+            optional_attribute("refs", turn_refs(message))
+
+        element("turn", turn_attributes, message.content)
       end)
 
     element("conversation", attributes, body)
+  end
+
+  defp turn_refs(%Message{refs: refs}) when is_list(refs) do
+    refs
+    |> Enum.reject(&(&1.ref_type == "conversation"))
+    |> Enum.map_join(",", fn ref -> "#{ref.ref_type}:#{ref.ref_id || "?"}" end)
+  end
+
+  defp turn_refs(%Message{}), do: nil
+
+  defp render_proposal(%BlockProposal{} = proposal) do
+    attributes =
+      [
+        {"id", proposal.id},
+        {"block_id", proposal.block_id},
+        {"status", proposal.status}
+      ] ++ optional_attribute("conversation", proposal_topic(proposal))
+
+    element("proposal", attributes, proposal.content)
+  end
+
+  # The source topic appears as its title -- a label, like `document_id` on an
+  # annotation. Expanding the topic itself is exactly what a proposal reference
+  # exists to avoid: the text is self-contained, so this expansion terminates.
+  defp proposal_topic(%BlockProposal{conversation_id: nil}), do: nil
+
+  defp proposal_topic(%BlockProposal{conversation_id: conversation_id}) do
+    conversations().get_conversation!(conversation_id).title
+  rescue
+    Ecto.NoResultsError -> nil
   end
 
   defp render_attachment(%Attachment{} = attachment) do
