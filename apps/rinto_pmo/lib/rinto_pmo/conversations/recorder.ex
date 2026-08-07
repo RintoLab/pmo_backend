@@ -15,10 +15,16 @@ defmodule RintoPMO.Conversations.Recorder do
 
   ## What it writes
 
-  Assistant turns only, and only when they are complete. `message_end` carries
-  the whole finalised message, so there is nothing to accumulate from the
+  Answers only, and only when they are complete. `message_end` carries the
+  whole finalised message, so there is nothing to accumulate from the
   `message_update` deltas -- those are a high-frequency stream that would cost
   a great deal to store and answer no question later.
+
+  A conversation here is meant to read as what was asked and what was
+  answered. Everything else pi emits is working: thinking is its private
+  reasoning, tool calls and their results are how it went and looked, and the
+  narration that accompanies a tool call ("let me check the document") is not
+  an answer either. All of it is dropped; see `role/1` and `text/1`.
 
   User messages are written by whoever sent the prompt, not here. The refs that
   came with a prompt are known only at that point, and a message without its
@@ -131,6 +137,31 @@ defmodule RintoPMO.Conversations.Recorder do
 
   # `user` is skipped here on purpose: the prompt path already wrote it, with
   # the refs this side never sees.
+  #
+  # Among assistant messages, only the ones that finished *answering* are kept.
+  # An agentic run emits one assistant message per turn, and every turn but the
+  # last stops in order to call a tool -- those messages carry narration ("let
+  # me look at the document") rather than an answer, and the final message
+  # restates whatever they concluded anyway. `stopReason` is the model's own
+  # statement of why it stopped, so it says this directly:
+  #
+  #   toolUse          -> stopped to use a tool; narration
+  #   stop             -> said its piece; the answer
+  #   length           -> the answer, cut off by the output cap
+  #   error, aborted   -> nothing worth keeping
+  defp role(%{"role" => "assistant", "stopReason" => reason}) do
+    if reason in ["stop", "length"], do: {:ok, :assistant}, else: :skip
+  end
+
+  # No `stopReason` at all -- a shape we have not seen. Fall back to the same
+  # test the agent loop itself uses to decide whether to keep going, rather
+  # than dropping a turn because a field was missing.
+  defp role(%{"role" => "assistant", "content" => blocks}) when is_list(blocks) do
+    if Enum.any?(blocks, &match?(%{"type" => "toolCall"}, &1)),
+      do: :skip,
+      else: {:ok, :assistant}
+  end
+
   defp role(%{"role" => "assistant"}), do: {:ok, :assistant}
   defp role(_message), do: :skip
 

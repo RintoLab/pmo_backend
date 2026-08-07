@@ -63,7 +63,9 @@ defmodule RintoPMOWeb.Router do
       resources "/messages", MessageController, only: [:index, :show, :create]
     end
 
-    # Cooling is not deleting: the process goes, every message stays.
+    # Heating and cooling. Neither creates nor destroys a topic -- they only
+    # decide whether it currently costs a pi process.
+    post "/conversations/:id/open", ConversationController, :open
     post "/conversations/:id/close", ConversationController, :close
 
     resources "/attachments", AttachmentController, only: [:show, :create, :delete]

@@ -68,7 +68,10 @@ defmodule RintoPMO.Conversations.Sessions do
   Requires `:assistant_actor_id`: the AI actor that replies are attributed to.
   """
   @spec ensure_hot(Conversation.t(), [ensure_opt()]) ::
-          {:ok, Conversation.t(), state()} | {:error, term()}
+          {:ok, Conversation.t(), state()}
+          | {:error, :session_limit_reached}
+          | {:error, Ecto.Changeset.t()}
+          | {:error, atom(), map()}
   def ensure_hot(%Conversation{} = conversation, opts) do
     if hot?(conversation) do
       {:ok, conversation, :hot}
@@ -175,9 +178,16 @@ defmodule RintoPMO.Conversations.Sessions do
     session_opts = Keyword.get(opts, :session_opts, [])
 
     case PiSession.Supervisor.start_session(Keyword.put(session_opts, :id, session_id)) do
-      {:ok, _pid} -> {:ok, session_id}
-      {:error, {:already_started, _pid}} -> {:ok, session_id}
-      {:error, reason} -> {:error, reason}
+      {:ok, _pid} ->
+        {:ok, session_id}
+
+      {:error, {:already_started, _pid}} ->
+        {:ok, session_id}
+
+      # pi missing, or refusing to spawn. The reason is an arbitrary term, so
+      # it is carried as diagnostic text under one code the caller can act on.
+      {:error, reason} ->
+        {:error, :agent_unavailable, %{reason: inspect(reason)}}
     end
   end
 

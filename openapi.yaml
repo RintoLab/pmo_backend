@@ -1049,6 +1049,60 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /conversations/{id}/open:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    post:
+      tags: [Conversations]
+      operationId: openConversation
+      summary: Make sure a topic has a live agent process
+      description: >
+        Answers with `state`: `hot` if one was already running, `revived` if a
+        fresh process was started. Join `pi_session:{pi_session_id}` afterwards
+        to talk to it.
+
+
+        A revived process is empty -- the agent runs without session
+        persistence -- so the server hands the recent turns back on the next
+        prompt. The client neither arranges that nor should try to: the replay
+        is context being restored, not something the human cited, and recording
+        it as a citation would make the topic reference itself.
+
+
+        Refused with `session_limit_reached` when every running session is
+        parked on a question. Those are never evicted: each is waiting on a
+        specific person for a specific answer, and closing one throws the
+        question away without telling anybody. Close one explicitly to make
+        room.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationOpenInput"
+      responses:
+        "200":
+          description: The topic is hot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationOpenedResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Every running session is waiting on a person
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "503":
+          description: The agent runtime could not be started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /conversations/{id}/close:
     parameters:
       - $ref: "#/components/parameters/ConversationId"
@@ -2737,7 +2791,16 @@ components:
     Conversation:
       type: object
       required:
-        [id, title, actor_id, pi_session_id, hot, inserted_at, updated_at]
+        [
+          id,
+          title,
+          actor_id,
+          pi_session_id,
+          hot,
+          replay_pending,
+          inserted_at,
+          updated_at
+        ]
       properties:
         id:
           type: string
@@ -2763,6 +2826,13 @@ components:
             rather than stored, because a session can die with nothing left to
             clear the column. Cold is the resting state, not a failure: the
             messages are enough to revive the topic.
+        replay_pending:
+          type: boolean
+          description: >
+            The topic has been given a fresh agent process and the next prompt
+            still owes it the recent turns. The server handles that itself; the
+            flag is exposed only because it explains why one reply may take
+            longer than the rest.
         inserted_at:
           type: string
           format: date-time
@@ -2785,6 +2855,29 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Conversation"
+      additionalProperties: false
+    ConversationOpenInput:
+      type: object
+      required: [assistant_actor_id]
+      properties:
+        assistant_actor_id:
+          type: string
+          format: uuid
+          description: The AI actor a revived topic's replies are attributed to.
+      additionalProperties: false
+    ConversationOpenedResponse:
+      type: object
+      required: [data, state]
+      properties:
+        data:
+          $ref: "#/components/schemas/Conversation"
+        state:
+          type: string
+          enum: [hot, revived]
+          description: >
+            `hot` means a process was already running. `revived` means a fresh
+            one was started and the next reply may take longer, because the
+            server has to hand it the recent turns first.
       additionalProperties: false
     ConversationCreateInput:
       type: object
@@ -2822,9 +2915,17 @@ components:
         ref_type:
           type: string
           description: >
-            `document`, `annotation`, `project`, `attachment` or
-            `conversation`. Not a closed enum: the set grows, and an unknown
-            type is stored and ignored rather than rejecting the turn.
+            `document`, `annotation`, `project`, `attachment` or `proposal`.
+            Not a closed enum: the set grows, and an unknown type is stored and
+            ignored rather than rejecting the turn.
+
+
+            `conversation` is deliberately absent. Expanding a reference
+            renders the thing itself and never follows its pointers, and a
+            conversation is the one shape that cannot obey that -- its messages
+            carry references of their own. Handing a topic's recent turns back
+            to a revived agent is done by the server at send time and is never
+            recorded here; see `POST /conversations/{id}/open`.
         ref_id:
           type: string
           format: uuid
@@ -2928,7 +3029,11 @@ components:
           minLength: 1
         refs:
           type: array
-          description: Reference maps in the form RintoPMO.Agent.PromptBuilder accepts.
+          description: >
+            What this turn put in front of the model. One of
+            `{type: document, id}`, `{type: annotation, id, document_id}`,
+            `{type: proposal, id, document_id}`, `{type: project, slug}` or
+            `{type: attachment, id}`.
           items:
             type: object
             additionalProperties: true

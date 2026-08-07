@@ -52,6 +52,7 @@ defmodule RintoPMOWeb.PiSessionChannel do
 
   alias RintoPMO.Agent.PiSession
   alias RintoPMO.Agent.PromptBuilder
+  alias RintoPMO.Conversations.Conversation
 
   @impl true
   def join("pi_session:" <> session_id, params, socket) do
@@ -126,11 +127,22 @@ defmodule RintoPMOWeb.PiSessionChannel do
   def handle_in("prompt", %{"message" => message} = payload, socket) do
     refs = Map.get(payload, "refs", [])
 
-    case PromptBuilder.build(message, refs) do
+    conversation = conversation_for(socket)
+
+    build_opts = [
+      # Only the first prompt after a revive carries the history, and the claim
+      # is atomic so two tabs cannot both pay it.
+      replay: replay_for(conversation),
+      on_missing_refs: on_missing_refs(payload)
+    ]
+
+    case PromptBuilder.build(message, refs, build_opts) do
       {:ok, built} ->
         # Written before the command goes out, so the human's turn is at a
-        # lower position than the reply the recorder writes for it.
-        record_prompt(socket, message, refs, payload)
+        # lower position than the reply the recorder writes for it. The replay
+        # is deliberately not among the refs recorded: the system restored that
+        # context, the human did not cite it.
+        record_prompt(conversation, message, refs, payload)
 
         command =
           payload
@@ -206,28 +218,36 @@ defmodule RintoPMOWeb.PiSessionChannel do
   # `actor_id` is what opts a prompt into being recorded. A session nobody
   # claimed is still perfectly usable; it simply is not a topic, and there is
   # no honest actor to attribute its turns to.
-  defp record_prompt(socket, message, refs, %{"actor_id" => actor_id})
+  defp record_prompt(%Conversation{} = conversation, message, refs, %{"actor_id" => actor_id})
        when is_binary(actor_id) do
-    context = conversations()
+    _result =
+      conversations().append_message(conversation, %{
+        actor_id: actor_id,
+        role: :user,
+        content: message,
+        refs: refs
+      })
 
-    case context.get_conversation_by_session(socket.assigns.session_id) do
-      nil ->
-        :ok
-
-      conversation ->
-        _result =
-          context.append_message(conversation, %{
-            actor_id: actor_id,
-            role: :user,
-            content: message,
-            refs: refs
-          })
-
-        :ok
-    end
+    :ok
   end
 
-  defp record_prompt(_socket, _message, _refs, _payload), do: :ok
+  defp record_prompt(_conversation, _message, _refs, _payload), do: :ok
+
+  # A session nobody claimed is still perfectly usable; it simply is not a
+  # topic, so there is nothing to record against and nothing to replay.
+  defp conversation_for(socket) do
+    conversations().get_conversation_by_session(socket.assigns.session_id)
+  end
+
+  defp replay_for(nil), do: nil
+
+  defp replay_for(%Conversation{} = conversation) do
+    if conversations().claim_replay(conversation), do: conversation
+  end
+
+  # Strict unless a human has already been shown the list and said go ahead.
+  defp on_missing_refs(%{"on_missing_refs" => "skip"}), do: :skip
+  defp on_missing_refs(_payload), do: :fail
 
   defp conversations, do: RintoPMO.Utils.module(:conversations)
 

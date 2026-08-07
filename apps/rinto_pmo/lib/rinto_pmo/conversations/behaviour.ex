@@ -29,6 +29,7 @@ defmodule RintoPMO.Conversations.Behaviour do
   @callback detach_session(Conversation.t()) ::
               {:ok, Conversation.t()} | {:error, Ecto.Changeset.t()}
   @callback get_conversation_by_session(String.t()) :: Conversation.t() | nil
+  @callback claim_replay(Conversation.t()) :: boolean()
 
   @callback list_conversations_for_ref(String.t(), UUIDv7.t()) :: [Conversation.t()]
 end

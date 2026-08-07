@@ -195,6 +195,25 @@ defmodule RintoPMO.Conversations do
   end
 
   @doc """
+  Claims the obligation to replay this topic's recent turns, once.
+
+  A revived topic has a pi process that starts empty, so the next prompt owes
+  it the history. Claiming is a conditional update rather than a read followed
+  by a write, so two browser tabs prompting at the same moment do not both
+  decide they are the one to pay it.
+  """
+  @impl true
+  def claim_replay(%Conversation{} = conversation) do
+    {claimed, _} =
+      Conversation
+      |> where([candidate], candidate.id == ^conversation.id)
+      |> where([candidate], candidate.replay_pending == true)
+      |> Repo.update_all(set: [replay_pending: false])
+
+    claimed == 1
+  end
+
+  @doc """
   Lists the conversations that ever put a given thing in front of the model.
 
   This is the derived many-to-many the design leans on instead of a join

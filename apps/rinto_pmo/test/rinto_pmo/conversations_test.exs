@@ -338,6 +338,32 @@ defmodule RintoPMO.ConversationsTest do
                ["Said while hot"]
     end
 
+    test "attaching a session leaves a replay owing, and only one caller pays it" do
+      conversation = insert(:conversation)
+
+      refute conversation.replay_pending
+
+      {:ok, hot} = Conversations.attach_session(conversation, "pi-4")
+      # A fresh pi process starts empty, so the next prompt owes it the history.
+      assert hot.replay_pending
+
+      # Two tabs prompting at once must not both decide they are the one.
+      assert Conversations.claim_replay(hot)
+      refute Conversations.claim_replay(hot)
+      refute Conversations.get_conversation!(hot.id).replay_pending
+    end
+
+    test "cooling clears the debt with the session" do
+      conversation = insert(:conversation)
+
+      {:ok, hot} = Conversations.attach_session(conversation, "pi-5")
+      {:ok, cold} = Conversations.detach_session(hot)
+
+      # There is no process left to owe anything to.
+      refute cold.replay_pending
+      refute Conversations.claim_replay(cold)
+    end
+
     test "one pi session cannot carry two topics" do
       first = insert(:conversation)
       second = insert(:conversation)

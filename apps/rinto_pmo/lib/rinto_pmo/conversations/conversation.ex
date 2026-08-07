@@ -25,6 +25,7 @@ defmodule RintoPMO.Conversations.Conversation do
   schema "conversations" do
     field :title, :string
     field :pi_session_id, :string
+    field :replay_pending, :boolean, default: false
 
     belongs_to :actor, Actor
 
@@ -53,6 +54,10 @@ defmodule RintoPMO.Conversations.Conversation do
     conversation
     |> change()
     |> put_change(:pi_session_id, pi_session_id)
+    # A fresh pi process starts empty, so the next prompt owes it the recent
+    # turns. Cooling clears the flag with the session: there is no process left
+    # to owe anything to.
+    |> put_change(:replay_pending, pi_session_id != nil)
     |> unique_constraint(:pi_session_id)
   end
 end

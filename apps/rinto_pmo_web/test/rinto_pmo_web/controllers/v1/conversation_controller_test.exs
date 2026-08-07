@@ -113,6 +113,17 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
     assert %{"pi_session_id" => nil, "hot" => false} = json_response(conn, 200)["data"]
   end
 
+  test "POST conversations/:id/open requires the assistant actor", %{conn: conn} do
+    conversation = insert(:conversation)
+
+    expect(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+
+    conn = post(conn, ~p"/api/v1/conversations/#{conversation.id}/open", %{})
+
+    assert %{"error" => "bad_request", "details" => %{"assistant_actor_id" => _messages}} =
+             json_response(conn, 400)
+  end
+
   test "there is no delete route for a conversation", %{conn: conn} do
     conversation = insert(:conversation)
 
