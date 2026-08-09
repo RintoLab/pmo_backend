@@ -48,6 +48,12 @@ tags:
     description: >
       Uploaded images, referenced from AI chat messages. Validated once at
       upload so that expanding a reference later is a plain read.
+  - name: Settings
+    description: >
+      Which actor does a job that belongs to the system rather than to any one
+      topic -- naming conversations, so far. Deliberately runtime state rather
+      than configuration: it is chosen while looking at the actor list, and
+      changed again after seeing a few of the results.
 paths:
   /actors:
     get:
@@ -136,6 +142,57 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ActorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /settings:
+    get:
+      tags: [Settings]
+      operationId: listSettings
+      summary: Who does each system-wide job
+      description: >
+        Answers with every role the system has, including the empty ones, so a
+        client renders the same list whether or not anybody has chosen
+        anything. Each role carries the actor whole rather than an id.
+      responses:
+        "200":
+          description: Every role and the actor in it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsResponse"
+  /settings/{key}:
+    parameters:
+      - $ref: "#/components/parameters/SettingKey"
+    put:
+      tags: [Settings]
+      operationId: putSetting
+      summary: Put an actor in a role
+      description: >
+        Replaces whoever was in the role; send `"actor_id": null` to empty it.
+        The actor must be an enabled AI actor -- a human has no model to ask.
+        Disabling or deleting the actor later is not an error: the role reads
+        as empty and its reader falls back (for `title_actor`, to the topic's
+        own assistant actor).
+
+
+        Roles are defined by the system, so an unknown `key` is a 404 rather
+        than the creation of a new one. The response is the full set, the same
+        shape `GET /settings` returns.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingUpdateInput"
+      responses:
+        "200":
+          description: Every role and the actor in it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsResponse"
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
@@ -1165,7 +1222,10 @@ paths:
       tags: [Conversations]
       operationId: updateConversation
       summary: Rename a topic
-      description: Only the title is mutable. There is no delete -- a topic is kept permanently.
+      description: >
+        Only the title is mutable. There is no delete -- a topic is kept
+        permanently. Naming a topic here marks it as named by a person, which
+        stops the automatic namer from ever replacing it.
       requestBody:
         $ref: "#/components/requestBodies/ConversationUpdate"
       responses:
@@ -1947,6 +2007,14 @@ components:
           schema:
             $ref: "#/components/schemas/AnnotationReplyUpdateInput"
   parameters:
+    SettingKey:
+      name: key
+      in: path
+      required: true
+      description: The system-wide role. Only `title_actor` exists today.
+      schema:
+        type: string
+        enum: [title_actor]
     ActorId:
       name: id
       in: path
@@ -3661,6 +3729,7 @@ components:
         [
           id,
           title,
+          title_source,
           actor_id,
           pi_session_id,
           assistant_actor_id,
@@ -3676,6 +3745,21 @@ components:
         title:
           type: string
           nullable: true
+          description: >
+            Null until the topic is named. A topic is created unnamed and is
+            named automatically from its first user message, in the background,
+            so a client may see this fill in shortly after sending -- watch for
+            `conversation_updated` on the topic's channel.
+        title_source:
+          type: string
+          enum: [auto, manual]
+          nullable: true
+          description: >
+            Who named the topic. `manual` is a person's words and is never
+            overwritten; `auto` is the system's, generated from the first user
+            message; `null` means nobody has named it yet and the system still
+            may. `title: null` with `title_source: manual` is a topic somebody
+            deliberately cleared, and it stays nameless.
         actor_id:
           type: string
           format: uuid
@@ -3717,6 +3801,37 @@ components:
           type: string
           format: date-time
       additionalProperties: false
+    Settings:
+      type: object
+      required: [title_actor]
+      properties:
+        title_actor:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: >
+            The actor that names conversations from their first user message.
+            Null means nobody has been chosen, or the chosen one has since been
+            disabled or deleted -- in which case each topic is named by its own
+            `assistant_actor_id` instead.
+      additionalProperties: false
+    SettingsResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Settings"
+      additionalProperties: false
+    SettingUpdateInput:
+      type: object
+      required: [actor_id]
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: An enabled AI actor, or null to empty the role.
+      additionalProperties: false
     ConversationResponse:
       type: object
       required: [data]
@@ -3740,6 +3855,11 @@ components:
           type: string
           maxLength: 255
           nullable: true
+          description: >
+            Optional. A title given here is a person's choice of words
+            (`title_source: manual`) and is never replaced by the automatic
+            one. Omit it, or send null, to have the topic named from its first
+            message.
         actor_id:
           type: string
           format: uuid
@@ -3760,6 +3880,11 @@ components:
           type: string
           maxLength: 255
           nullable: true
+          description: >
+            Sending this at all marks the title as a person's
+            (`title_source: manual`), including when it is null: clearing a
+            title is a decision, and the topic is not named automatically
+            afterwards. A blank string is stored as null.
         assistant_actor_id:
           type: string
           format: uuid

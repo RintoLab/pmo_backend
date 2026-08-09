@@ -54,8 +54,18 @@ defmodule RintoPMOWeb.ConversationChannel do
     * `"event"` -- a conversation frame (`message_update`, `turn_end`, ...)
     * `"ui_request"` -- the agent is waiting on a human
     * `"ui_resolved"` -- `%{"ui_id" => id}`, that question is answered
+    * `"conversation_updated"` -- `%{"data" => conversation}`, the topic's own
+      row changed. Today that means it has just been named (see
+      `RintoPMO.Conversations.Titles`), which happens in the background and may
+      well land after the answer to the message that triggered it. The payload
+      is the same shape `GET /conversations/{id}` returns, so a client renders
+      it the same way
     * `"exit"` -- the agent process ended. The channel stays; prompt again to
       start a new one
+
+  `"conversation_updated"` goes to everyone joined to the topic, not to the
+  connection that prompted: a title arriving has to reach the other tab, and
+  the list beside it.
   """
 
   use RintoPMOWeb, :channel
@@ -63,8 +73,10 @@ defmodule RintoPMOWeb.ConversationChannel do
   alias RintoPMO.Agent.PiSession
   alias RintoPMO.Agent.PromptBuilder
   alias RintoPMO.Conversations.Conversation
+  alias RintoPMO.Conversations.Notifier
   alias RintoPMO.Conversations.Sessions
   alias RintoPMO.Utils
+  alias RintoPMOWeb.V1.ConversationJSON
 
   @impl true
   def join("conversation:" <> conversation_id, _params, socket) do
@@ -80,8 +92,29 @@ defmodule RintoPMOWeb.ConversationChannel do
 
   @impl true
   def handle_info(:after_join, socket) do
+    # Subscribed for as long as the channel is joined, and independently of any
+    # pi session: the row can change while the topic is cold, and a client
+    # reading a cold topic still wants to see it named.
+    :ok = Notifier.subscribe(socket.assigns.conversation.id)
+
     socket = follow_session(socket, socket.assigns.conversation.pi_session_id)
     push(socket, "pending_ui", %{pending_ui: pending_ui(socket)})
+    {:noreply, socket}
+  end
+
+  # Only the naming columns are taken from the broadcast. The rest of that row
+  # is a snapshot from whenever the writer read it, while this channel has
+  # watched the session it holds come and go.
+  def handle_info({:conversation_updated, updated}, socket) do
+    conversation = %{
+      socket.assigns.conversation
+      | title: updated.title,
+        title_source: updated.title_source,
+        title_generated_at: updated.title_generated_at
+    }
+
+    socket = assign(socket, :conversation, conversation)
+    push(socket, "conversation_updated", %{data: ConversationJSON.data(conversation)})
     {:noreply, socket}
   end
 

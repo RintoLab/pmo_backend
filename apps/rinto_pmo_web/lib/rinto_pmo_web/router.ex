@@ -9,6 +9,12 @@ defmodule RintoPMOWeb.Router do
     pipe_through :api
 
     resources "/actors", ActorController, only: [:index, :show, :create, :update]
+
+    # Which actor does a job that belongs to no single topic -- naming them, so
+    # far. A runtime choice rather than configuration: it is picked while
+    # looking at the actor list, and changed after seeing a few of the results.
+    get "/settings", SettingController, :index
+    put "/settings/:key", SettingController, :update
     get "/ai_models", AIModelController, :index
     post "/ai_models/refresh", AIModelController, :refresh
 

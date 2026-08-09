@@ -8,7 +8,9 @@ defmodule RintoPMO.Umbrella.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      dialyzer: [plt_add_apps: [:ex_unit]],
+      # `:mix` is here for the one-off tasks under `apps/*/lib/mix/tasks`, which
+      # call `Mix.shell/0` and would otherwise be all unknown functions.
+      dialyzer: [plt_add_apps: [:ex_unit, :mix]],
       listeners: [Phoenix.CodeReloader]
     ]
   end

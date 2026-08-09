@@ -32,6 +32,7 @@ defmodule RintoPMO.Conversations do
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Conversations.Message
   alias RintoPMO.Conversations.MessageRef
+  alias RintoPMO.Conversations.Titles
   alias RintoPMO.Utils
 
   @behaviour Behaviour
@@ -65,6 +66,10 @@ defmodule RintoPMO.Conversations do
 
   @doc """
   Renames a topic. Only the title is mutable.
+
+  Naming a topic here is a person's decision and is marked as such, so the
+  automatic namer will not touch it -- including when the new name is no name
+  at all. See `RintoPMO.Conversations.Titles`.
   """
   @impl true
   def update_conversation(%Conversation{} = conversation, attrs) do
@@ -136,6 +141,10 @@ defmodule RintoPMO.Conversations do
   `attrs` takes `actor_id`, `role`, `content` and an optional `refs` list of
   the raw ref maps the client sent. Each is stored verbatim as `payload` and
   additionally normalised into indexed columns.
+
+  A user message on a still-unnamed topic queues
+  `RintoPMO.Conversations.Titles` to name it. Nothing waits for that, and
+  nothing here fails if it cannot be queued.
   """
   @impl true
   def append_message(%Conversation{} = conversation, attrs) do
@@ -163,6 +172,7 @@ defmodule RintoPMO.Conversations do
         {:ok, %{message | refs: stored_refs}}
       end
     end)
+    |> tap(&name_topic(conversation, &1))
   end
 
   @doc """
@@ -230,6 +240,21 @@ defmodule RintoPMO.Conversations do
     |> order_by([conversation], desc: conversation.id)
     |> Repo.all()
   end
+
+  # Naming
+
+  # Queued here rather than at each entry point, because there are two -- the
+  # channel's prompt and `POST /conversations/{id}/messages` -- and a topic
+  # opened from the document panel should end up named the same way as one
+  # opened from the global chat.
+  #
+  # After the transaction, never inside it: the job would otherwise be visible
+  # to a worker before the message it is meant to read had committed.
+  defp name_topic(%Conversation{id: conversation_id}, {:ok, %Message{role: :user}}) do
+    Titles.enqueue(conversation_id)
+  end
+
+  defp name_topic(_conversation, _result), do: :ignore
 
   # Refs
 

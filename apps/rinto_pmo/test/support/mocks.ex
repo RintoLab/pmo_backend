@@ -8,3 +8,4 @@ Hammox.defmock(RintoPMO.RepoCredentialsMock, for: RintoPMO.RepoCredentials.Behav
 Hammox.defmock(RintoPMO.TasksMock, for: RintoPMO.Tasks.Behaviour)
 Hammox.defmock(RintoPMO.OSProcessMock, for: RintoPMO.OSProcess.Behaviour)
 Hammox.defmock(RintoPMO.Agent.RpcMock, for: RintoPMO.Agent.Rpc.Behaviour)
+Hammox.defmock(RintoPMO.Agent.TitleGeneratorMock, for: RintoPMO.Agent.TitleGenerator.Behaviour)

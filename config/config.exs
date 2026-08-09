@@ -25,7 +25,11 @@ config :rinto_pmo,
     tasks: RintoPMO.Tasks,
     # Each layer of pi model discovery, so a test of one mocks the next.
     rpc: RintoPMO.Agent.Rpc,
-    os_process: RintoPMO.OSProcess
+    os_process: RintoPMO.OSProcess,
+    # Naming a topic is the one place a model is called outside a conversation,
+    # so it is swappable on its own: everything around it -- eligibility, the
+    # fallback, the conditional write -- is testable without a model.
+    title_generator: RintoPMO.Agent.TitleGenerator
   ]
 
 config :rinto_pmo, RintoPMO.Attachments,
@@ -45,6 +49,26 @@ config :rinto_pmo, RintoPMO.Conversations,
   # Simultaneously running pi processes. Topics are unlimited; processes are
   # not, and nothing else in the system stops one from being started.
   max_active_sessions: 8
+
+config :rinto_pmo, RintoPMO.Conversations.Titles,
+  # Automatic naming of topics from their first user message. Turning this off
+  # leaves conversations unnamed rather than failing anything.
+  enabled: true,
+  # Characters of the first message sent to the naming model. A title is a
+  # phrase; the rest of a long message says nothing more about the subject.
+  max_message_chars: 2_000,
+  # Characters per reference label. Enough to name the document, never enough
+  # to be a briefing -- the naming call never sees a document's contents.
+  max_summary_chars: 120
+
+config :rinto_pmo, RintoPMO.Agent.TitleGenerator,
+  # Which model names topics is *not* configured here: it is whichever actor
+  # was put in the `title_actor` role, which is a runtime choice -- see
+  # `RintoPMO.Settings` and `PUT /settings/title_actor`.
+  #
+  # Wall clock for the whole call. Nothing waits on it, but a naming job should
+  # not hold a queue slot for a provider that has stopped answering.
+  timeout: 20_000
 
 config :rinto_pmo, RintoPMO.Agent.PromptBuilder,
   # Characters of block content inlined per referenced document before the rest
@@ -97,6 +121,12 @@ config :logger, :default_formatter,
   metadata: [:request_id]
 
 config :phoenix, :json_library, JSON
+
+# Postgrex reaches for Jason by default, which is only here as a transitive
+# development dependency: a `jsonb` column -- `message_refs.payload`, an Oban
+# job's args -- would fail to encode wherever it is absent. Elixir's own JSON
+# is always present and satisfies the same two-function contract.
+config :postgrex, :json_library, JSON
 config :phoenix, :filter_parameters, ["token"]
 
 # of this file so it overrides the configuration defined above.

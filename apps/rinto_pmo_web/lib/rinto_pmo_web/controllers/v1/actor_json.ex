@@ -9,7 +9,8 @@ defmodule RintoPMOWeb.V1.ActorJSON do
     %{data: data(actor)}
   end
 
-  defp data(%Actor{} = actor) do
+  @doc false
+  def data(%Actor{} = actor) do
     %{
       id: actor.id,
       kind: actor.kind,

@@ -101,6 +101,26 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
     assert %{"title" => "New"} = json_response(conn, 200)["data"]
   end
 
+  test "a topic says who named it", %{conn: conn} do
+    conversation = insert(:conversation, title: "上线流程遗漏检查", title_source: :auto)
+
+    expect(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+
+    conn = get(conn, ~p"/api/v1/conversations/#{conversation.id}")
+
+    assert %{"title_source" => "auto"} = json_response(conn, 200)["data"]
+  end
+
+  test "an unnamed topic says nobody has named it", %{conn: conn} do
+    conversation = insert(:conversation, title: nil, title_source: nil)
+
+    expect(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+
+    conn = get(conn, ~p"/api/v1/conversations/#{conversation.id}")
+
+    assert %{"title" => nil, "title_source" => nil} = json_response(conn, 200)["data"]
+  end
+
   test "POST conversations/:id/close cools the topic and keeps it", %{conn: conn} do
     conversation = insert(:conversation, pi_session_id: nil)
     cooled = %{conversation | pi_session_id: nil}

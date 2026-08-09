@@ -5,9 +5,11 @@ defmodule RintoPMOWeb.ConversationChannelTest do
   use RintoPMOWeb.ChannelCase, async: false
 
   alias RintoPMO.Agent.PiSession
+  alias RintoPMO.Agent.TitleGeneratorMock
   alias RintoPMO.Attachments
   alias RintoPMO.AttachmentsMock
   alias RintoPMO.Conversations
+  alias RintoPMO.Conversations.Titles
   alias RintoPMO.ConversationsMock
   alias RintoPMO.DocumentsMock
   alias RintoPMOWeb.PiSocket
@@ -500,6 +502,33 @@ defmodule RintoPMOWeb.ConversationChannelTest do
       # Still joined, and prompting heats it again.
       ref = push(socket, "pending_ui", %{})
       assert_reply ref, :ok, %{pending_ui: []}, 5_000
+    end
+  end
+
+  describe "naming" do
+    test "pushes the topic to every client when it is named" do
+      conversation = insert(:conversation, title: nil, title_source: nil)
+      _one = join!(conversation)
+      _two = join!(conversation)
+      assert_push "pending_ui", %{pending_ui: []}, 5_000
+
+      insert(:message, conversation: conversation, role: :user, content: "上线流程有没有遗漏")
+
+      stub(TitleGeneratorMock, :generate, fn _input, _opts -> {:ok, "上线流程遗漏检查"} end)
+      # Hammox hands expectations to the process that set them, and naming runs
+      # here rather than in a worker, so the two joined channels are only
+      # receiving what the write broadcasts.
+      assert {:ok, _named, :model} = Titles.name(conversation.id)
+
+      # Once per joined client, not once per prompt: a title arriving has to
+      # reach the tab that did not ask for it.
+      assert_push "conversation_updated", %{data: first}, 5_000
+      assert_push "conversation_updated", %{data: second}, 5_000
+
+      assert first.title == "上线流程遗漏检查"
+      assert first.title_source == :auto
+      assert first.id == conversation.id
+      assert second.title == "上线流程遗漏检查"
     end
   end
 
