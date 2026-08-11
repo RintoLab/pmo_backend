@@ -59,6 +59,20 @@ impl Client {
         Self::send(self.agent.post(&self.url(path)).send_json(body))
     }
 
+    pub fn patch(&self, path: &str, body: Value) -> Result<Value> {
+        Self::send(self.agent.patch(&self.url(path)).send_json(body))
+    }
+
+    pub fn delete(&self, path: &str) -> Result<()> {
+        match self.agent.delete(&self.url(path)).call() {
+            Ok(_response) => Ok(()),
+            Err(ureq::Error::Status(status, response)) => {
+                Err(Self::response_error(status, response))
+            }
+            Err(ureq::Error::Transport(transport)) => Err(Error::Network(format!("{transport}"))),
+        }
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
     }
@@ -71,27 +85,29 @@ impl Client {
 
             // A non-2xx status. Surface the server's own wording verbatim.
             Err(ureq::Error::Status(status, response)) => {
-                let body = response.into_json::<Value>().unwrap_or(Value::Null);
-
-                let mut details = Vec::new();
-                if let Some(reported) = body.get("details") {
-                    crate::error::flatten_details(reported, "", &mut details);
-                }
-
-                Err(Error::Api {
-                    status,
-                    code: string_field(&body, "error"),
-                    message: match string_field(&body, "message") {
-                        message if message.is_empty() => {
-                            "no message supplied by the server".to_string()
-                        }
-                        message => message,
-                    },
-                    details,
-                })
+                Err(Self::response_error(status, response))
             }
 
             Err(ureq::Error::Transport(transport)) => Err(Error::Network(format!("{transport}"))),
+        }
+    }
+
+    fn response_error(status: u16, response: ureq::Response) -> Error {
+        let body = response.into_json::<Value>().unwrap_or(Value::Null);
+
+        let mut details = Vec::new();
+        if let Some(reported) = body.get("details") {
+            crate::error::flatten_details(reported, "", &mut details);
+        }
+
+        Error::Api {
+            status,
+            code: string_field(&body, "error"),
+            message: match string_field(&body, "message") {
+                message if message.is_empty() => "no message supplied by the server".to_string(),
+                message => message,
+            },
+            details,
         }
     }
 }

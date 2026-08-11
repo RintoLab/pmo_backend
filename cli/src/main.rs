@@ -15,6 +15,7 @@ mod client;
 mod doc;
 mod error;
 mod skill;
+mod task;
 
 use clap::{Parser, Subcommand};
 
@@ -30,6 +31,9 @@ enum Command {
     /// Read and write documents
     #[command(subcommand)]
     Doc(doc::DocCommand),
+    /// Find, claim, and update project tasks
+    #[command(subcommand)]
+    Task(task::TaskCommand),
     /// Install the agent skills this binary carries
     #[command(subcommand)]
     Skill(skill::SkillCommand),
@@ -40,6 +44,7 @@ fn main() {
 
     let outcome = match cli.command {
         Command::Doc(command) => doc::run(command),
+        Command::Task(command) => task::run(command),
         Command::Skill(command) => skill::run(command),
     };
 
