@@ -78,19 +78,34 @@ defmodule RintoPMOWeb.V1.BlockProposalController do
   the document itself, unlike a topic, which has none.
   """
   def contentions(conn, %{"document_id" => document_id}) do
+    context = documents_context()
     document = get_document!(document_id)
-    render(conn, :contentions, contentions: documents_context().contentions(document))
+
+    # Document-level arguments arrive beside the block ones rather than among
+    # them: they have no block to be marked on, and no per-block decision would
+    # settle them.
+    render(conn, :contentions,
+      contentions: context.contentions(document),
+      scope_contentions: context.scope_contentions(document)
+    )
   end
 
   @doc """
   Reads the document as one topic sees it.
   """
   def blocks(conn, %{"document_id" => document_id, "conversation_id" => conversation_id}) do
+    context = documents_context()
     document = get_document!(document_id)
 
     with {:ok, conversation_id} <- cast_id(conversation_id, "conversation_id") do
-      blocks = documents_context().blocks_for_conversation(document, conversation_id)
-      render(conn, :blocks, blocks: blocks)
+      # A whole-document rewrite is reported alongside the blocks rather than
+      # standing in for them: it is not a per-block overlay, and rendering it as
+      # one would mean inventing ids for text that has none yet. A client seeing
+      # one shows its diff instead of this list.
+      render(conn, :blocks,
+        blocks: context.blocks_for_conversation(document, conversation_id),
+        document_proposal: context.document_proposal_for_conversation(document, conversation_id)
+      )
     end
   end
 

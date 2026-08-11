@@ -812,6 +812,67 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  describe "scope_contentions/1" do
+    test "reports each document-level scope more than one topic is arguing over" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, _proposed} = propose_title(document, insert(:conversation), actor, "Mine")
+      assert {:ok, _proposed} = propose_title(document, insert(:conversation), actor, "Theirs")
+
+      assert {:ok, _proposed} =
+               propose_document(document, insert(:conversation), actor, "## Mine")
+
+      assert [%{scope: :title, proposals: proposals}] = Documents.scope_contentions(document)
+      assert length(proposals) == 2
+
+      # One rewrite is not an argument.
+      assert {:ok, _proposed} =
+               propose_document(document, insert(:conversation), actor, "## Theirs")
+
+      assert Enum.map(Documents.scope_contentions(document), & &1.scope) == [:document, :title]
+    end
+
+    # A per-block decision would not settle a whole-document argument, so it is
+    # not reported as one.
+    test "stays out of the block-level contention list" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, _proposed} = propose_title(document, insert(:conversation), actor, "Mine")
+      assert {:ok, _proposed} = propose_title(document, insert(:conversation), actor, "Theirs")
+
+      assert Documents.contentions(document) == []
+    end
+  end
+
+  describe "document_proposal_for_conversation/2" do
+    test "answers with the topic's own rewrite and nobody else's" do
+      %{document: document} = document_with_blocks(["One"])
+      mine = insert(:conversation)
+      theirs = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} = propose_document(document, mine, actor, "## Mine")
+      assert {:ok, _proposed} = propose_document(document, theirs, actor, "## Theirs")
+
+      assert Documents.document_proposal_for_conversation(document, mine.id).id == proposal.id
+      refute Documents.document_proposal_for_conversation(document, insert(:conversation).id)
+    end
+
+    test "answers with nothing once the rewrite has been committed" do
+      %{document: document} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, conversation, actor, "## Rewritten")
+
+      assert {:ok, _revision} = commit_document(document, actor, proposal)
+      refute Documents.document_proposal_for_conversation(document, conversation.id)
+    end
+  end
+
   describe "commit_proposals/2 with a document proposal" do
     test "writes every block the operations describe, in one revision" do
       %{document: document} = document_with_blocks(["One", "Two"])

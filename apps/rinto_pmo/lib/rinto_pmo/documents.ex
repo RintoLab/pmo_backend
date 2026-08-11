@@ -319,6 +319,36 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
+  Lists the document-level scopes more than one topic is arguing over.
+
+  Deliberately not folded into `contentions/1`. A block contention has a place
+  on the document and is settled per block; these have neither -- two topics
+  wanting different titles, or different rewrites, is one argument about the
+  whole document. Reporting them as contentions on every block they touch would
+  offer the reader a per-block decision that would not resolve anything.
+  """
+  @impl true
+  def scope_contentions(%Document{} = document) do
+    for scope <- [:document, :title],
+        proposals = live_proposals(document, scope),
+        length(proposals) > 1,
+        do: %{scope: scope, proposals: Enum.sort_by(proposals, & &1.id)}
+  end
+
+  @doc """
+  The whole-document rewrite a topic has standing, if it has one.
+
+  Read alongside `blocks_for_conversation/2` rather than through it: a rewrite is
+  not a per-block overlay, and rendering it as one would have to invent block ids
+  for text that has none yet. A caller holding one of these shows the diff in
+  `block_ops` instead of the block list.
+  """
+  @impl true
+  def document_proposal_for_conversation(%Document{} = document, conversation_id) do
+    live_scoped_proposal(Repo, document, :document, conversation_id)
+  end
+
+  @doc """
   Reads a document as one topic sees it: the latest revision, with that topic's
   own proposals standing in, plus the bare fact that others exist.
 

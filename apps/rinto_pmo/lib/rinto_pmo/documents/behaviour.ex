@@ -22,6 +22,11 @@ defmodule RintoPMO.Documents.Behaviour do
   @type contention :: %{block_id: UUIDv7.t(), proposals: [BlockProposal.t()]}
 
   @typedoc """
+  One document-level argument: a scope, and the proposals competing in it.
+  """
+  @type scope_contention :: %{scope: BlockProposal.scope(), proposals: [BlockProposal.t()]}
+
+  @typedoc """
   One block as a single topic sees it: its own proposal standing in where it
   has one, and only the count of anybody else's.
   """
@@ -64,6 +69,9 @@ defmodule RintoPMO.Documents.Behaviour do
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
   @callback contentions(Document.t()) :: [contention()]
+  @callback scope_contentions(Document.t()) :: [scope_contention()]
+  @callback document_proposal_for_conversation(Document.t(), UUIDv7.t()) ::
+              BlockProposal.t() | nil
   @callback blocks_for_conversation(Document.t(), UUIDv7.t()) :: [conversation_block()]
   @callback decide_block(Document.t(), UUIDv7.t(), UUIDv7.t(), UUIDv7.t()) ::
               {:ok, BlockProposal.t()}

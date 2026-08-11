@@ -20,17 +20,29 @@ defmodule RintoPMOWeb.V1.BlockProposalJSON do
     }
   end
 
-  def contentions(%{contentions: contentions}) do
+  def contentions(%{contentions: contentions, scope_contentions: scope_contentions}) do
     %{
       data:
         Enum.map(contentions, fn %{block_id: block_id, proposals: proposals} ->
           %{block_id: block_id, proposals: Enum.map(proposals, &data/1)}
+        end),
+      # A separate key, because these cannot be marked on a block and no
+      # per-block decision would settle them.
+      document_scopes:
+        Enum.map(scope_contentions, fn %{scope: scope, proposals: proposals} ->
+          %{scope: scope, proposals: Enum.map(proposals, &data/1)}
         end)
     }
   end
 
-  def blocks(%{blocks: blocks}) do
-    %{data: Enum.map(blocks, &block/1)}
+  def blocks(%{blocks: blocks, document_proposal: document_proposal}) do
+    %{
+      data: Enum.map(blocks, &block/1),
+      # Present when this topic has a whole-document rewrite standing. The block
+      # list above still describes the document without it; the rewrite is a
+      # different view of the same topic's intent, rendered from its `block_ops`.
+      document_proposal: document_proposal && data(document_proposal)
+    }
   end
 
   @doc false

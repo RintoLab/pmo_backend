@@ -144,6 +144,8 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
       [%{block_id: block_id, proposals: proposals}]
     end)
 
+    expect(DocumentsMock, :scope_contentions, fn ^document -> [] end)
+
     conn = get(conn, ~p"/api/v1/documents/#{document.id}/contentions")
 
     assert [%{"block_id" => ^block_id, "proposals" => [_first, _second]}] =
@@ -168,6 +170,10 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
       ]
     end)
 
+    expect(DocumentsMock, :document_proposal_for_conversation, fn ^document, ^conversation_id ->
+      nil
+    end)
+
     conn =
       get(conn, ~p"/api/v1/documents/#{document.id}/conversations/#{conversation.id}/blocks")
 
@@ -177,6 +183,60 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
     assert block["other_proposals"] == 2
     # The count is the whole point; the rival text is deliberately absent.
     refute Map.has_key?(block, "other_contents")
+  end
+
+  # Beside the blocks, not among them: a rewrite is not a per-block overlay, and
+  # rendering it as one would mean inventing ids for text that has none yet.
+  test "GET a topic's blocks reports its whole-document rewrite alongside them", %{
+    conn: conn,
+    document: document
+  } do
+    conversation = insert(:conversation)
+    conversation_id = conversation.id
+
+    proposal =
+      insert(:block_proposal,
+        document: document,
+        scope: :document,
+        block_id: nil,
+        block_ops: [%{"op" => "delete", "block_id" => UUIDv7.generate()}]
+      )
+
+    proposal_id = proposal.id
+
+    expect(DocumentsMock, :blocks_for_conversation, fn ^document, ^conversation_id -> [] end)
+
+    expect(DocumentsMock, :document_proposal_for_conversation, fn ^document, ^conversation_id ->
+      proposal
+    end)
+
+    conn =
+      get(conn, ~p"/api/v1/documents/#{document.id}/conversations/#{conversation.id}/blocks")
+
+    assert %{"id" => ^proposal_id, "scope" => "document", "block_ops" => [_only]} =
+             json_response(conn, 200)["document_proposal"]
+  end
+
+  test "GET contentions reports document-level arguments separately", %{
+    conn: conn,
+    document: document
+  } do
+    titles = insert_pair(:block_proposal, document: document, scope: :title, block_id: nil)
+
+    expect(DocumentsMock, :contentions, fn ^document -> [] end)
+
+    expect(DocumentsMock, :scope_contentions, fn ^document ->
+      [%{scope: :title, proposals: titles}]
+    end)
+
+    conn = get(conn, ~p"/api/v1/documents/#{document.id}/contentions")
+
+    # Not in `data`: these cannot be marked on a block, and no per-block
+    # decision would settle them.
+    assert json_response(conn, 200)["data"] == []
+
+    assert [%{"scope" => "title", "proposals" => [_first, _second]}] =
+             json_response(conn, 200)["document_scopes"]
   end
 
   test "POST decide adopts a proposal", %{conn: conn, document: document} do
