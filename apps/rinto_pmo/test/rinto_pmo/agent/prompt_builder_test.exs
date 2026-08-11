@@ -29,7 +29,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                  %{"type" => "document", "id" => document.id}
                ])
 
-      assert message =~ ~s(<document id="#{document.id}")
+      assert message =~ ~s(<document ref="1" id="#{document.id}")
       assert message =~ ~s(blocks="2")
       assert [_before, intro, body] = String.split(message, "[block:")
       assert intro =~ "## Intro"
@@ -97,7 +97,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                  }
                ])
 
-      assert message =~ ~s(<annotation id="#{annotation.id}")
+      assert message =~ ~s(<annotation ref="1" id="#{annotation.id}")
       assert message =~ "block: Claim"
       assert message =~ "Needs a citation"
       assert message =~ ~s(<reply position="0">Agreed</reply>)
@@ -129,7 +129,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                  %{"type" => "project", "slug" => project.slug}
                ])
 
-      assert message =~ ~s(<project slug="#{project.slug}" name="Alpha" status="active">)
+      assert message =~ ~s(<project ref="1" slug="#{project.slug}" name="Alpha" status="active">)
       assert message =~ "The alpha project"
       assert message =~ "- #{document.id} Charter"
     end
@@ -161,7 +161,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                  %{"type" => "attachment", "id" => attachment.id}
                ])
 
-      assert message =~ ~s(<attachment id="#{attachment.id}" mime="image/png")
+      assert message =~ ~s(<attachment ref="1" id="#{attachment.id}" mime="image/png")
       assert message =~ ~s(width="800" height="600" filename="chart.png")
     end
 
@@ -206,7 +206,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                  %{"type" => "proposal", "id" => proposal.id, "document_id" => document.id}
                ])
 
-      assert message =~ ~s(<proposal id="#{proposal.id}")
+      assert message =~ ~s(<proposal ref="1" id="#{proposal.id}")
       assert message =~ ~s(block_id="#{proposal.block_id}")
       assert message =~ ~s(status="live")
       # The topic is a label. Expanding it would be a conversation reference by
@@ -267,7 +267,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
       assert message =~ ~s(<turn role="user" position="0" refs="document:#{document.id}">)
       assert message =~ "tighten this"
       assert message =~ ~s(<turn role="assistant" position="1">)
-      assert message =~ "<document id=\"#{document.id}\""
+      assert message =~ "<document ref=\"1\" id=\"#{document.id}\""
       assert message =~ "The current text"
       assert String.ends_with?(message, "\n\ncarry on")
     end
@@ -290,7 +290,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                  replay: conversation
                )
 
-      assert length(String.split(message, "<document id=")) == 2
+      assert length(String.split(message, "<document ref=")) == 2
     end
 
     test "does not follow a conversation reference inside the replayed turns" do
@@ -347,10 +347,10 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                  [%{"type" => "document", "id" => document.id}]
                )
 
-      assert message =~ "看看 [上线流程](reference##{document.id})"
-      # Parenthesised, because an id beginning with a digit contains
-      # "reference#0" as a prefix.
-      refute message =~ "(reference#0)"
+      # The element carries the same handle the mention points at.
+      assert message =~ ~s(<document ref="1")
+      assert message =~ "看看 [上线流程](ref#1)"
+      refute message =~ "reference#0"
     end
 
     # The case the client cannot avoid: its mention UI has no way to reuse an
@@ -377,15 +377,13 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
 
       assert {:ok, %{message: message}} = PromptBuilder.build(body, refs)
 
-      # Four mentions, two distinct targets, and every one of them resolvable.
-      # An id begins with a digit, so a leftover index is spotted by the `)`
-      # that follows it rather than by the digit alone.
-      refute message =~ ~r/\(reference#\d+\)/
-      assert length(String.split(message, "reference##{first.id}")) == 3
-      assert length(String.split(message, "reference##{second.id}")) == 3
+      # Four mentions, two distinct handles, and every one of them resolvable.
+      refute message =~ "reference#"
+      assert length(String.split(message, "(ref#1)")) == 3
+      assert length(String.split(message, "(ref#2)")) == 3
 
       # Still expanded once each, which is what made the indices unusable.
-      assert length(String.split(message, "<document id=")) == 3
+      assert length(String.split(message, "<document ref=")) == 3
     end
 
     test "uses the slug for a project, matching what the element renders" do
@@ -399,7 +397,8 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                  %{"type" => "project", "slug" => "kenton"}
                ])
 
-      assert message =~ "[Kenton](reference#kenton)这是啥"
+      assert message =~ ~s(<project ref="1" slug="kenton")
+      assert message =~ "[Kenton](ref#1)这是啥"
     end
 
     test "leaves a label the client wrote itself" do
@@ -413,7 +412,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                  [%{"type" => "document", "id" => document.id}]
                )
 
-      assert message =~ "[我自己起的名字](reference##{document.id})"
+      assert message =~ "[我自己起的名字](ref#1)"
     end
 
     # Nothing here knows what was meant, so a pointer that visibly goes nowhere
@@ -429,7 +428,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                ])
 
       assert message =~ "[document](reference#7)"
-      assert message =~ "(reference##{document.id})"
+      assert message =~ "(ref#1)"
     end
 
     test "keeps an annotation reading as its type word, having no title to offer" do
@@ -448,7 +447,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                  }
                ])
 
-      assert message =~ "[annotation](reference##{annotation.id}) 说什么"
+      assert message =~ "[annotation](ref#1) 说什么"
     end
 
     # A turn's hrefs index the array *that turn* sent, so the mapping is per
@@ -475,8 +474,29 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
       assert {:ok, %{message: message}} =
                PromptBuilder.build("继续", [], replay: conversation)
 
-      assert message =~ "改一下 [上线流程](reference##{document.id})"
-      refute message =~ "(reference#3)"
+      assert message =~ "改一下 [上线流程](ref#1)"
+      refute message =~ "reference#3"
+    end
+
+    # A skipped reference is still an expansion and still holds a handle, so the
+    # mention that cited it lands on "the thing you cited is gone" rather than
+    # on nothing at all.
+    test "points a mention at the marker left for a reference that has gone" do
+      gone = UUIDv7.generate()
+
+      expect(DocumentsMock, :get_document!, fn _id ->
+        raise Ecto.NoResultsError, queryable: RintoPMO.Documents.Document
+      end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build(
+                 "看看 [document](reference#0)",
+                 [%{"type" => "document", "id" => gone}],
+                 on_missing_refs: :skip
+               )
+
+      assert message =~ ~s(<reference ref="1" status="unavailable")
+      assert message =~ "看看 [document](ref#1)"
     end
 
     test "does not touch a body with no refs to resolve against" do
@@ -579,7 +599,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
       assert message =~ "Content"
       # Not removed outright: the model would otherwise face "tighten this
       # paragraph" with no paragraph and no sign one was ever meant to be there.
-      assert message =~ ~s(<reference status="unavailable" type="document" id="#{gone}">)
+      assert message =~ ~s(<reference ref="2" status="unavailable" type="document" id="#{gone}">)
       assert message =~ "No longer available."
     end
 

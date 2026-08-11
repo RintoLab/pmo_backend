@@ -26,7 +26,8 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   The message still has to point at the expansions, and the client writes those
   pointers as markdown links: `[document](reference#0)`, whose href indexes the
-  `refs` array it sent.
+  `refs` array it sent. What the model reads is `[上线流程](ref#1)`, pointing at
+  a handle the prelude stamped on the element itself.
 
   **That index does not survive the trip, so it is resolved here while the array
   is still at hand.** Two things invalidate it, and neither is avoidable on the
@@ -42,12 +43,26 @@ defmodule RintoPMO.Agent.PromptBuilder do
   it twice -- which is fine, and is why `RintoPMO.Conversations.MessageRef`
   positions are not unique per message.
 
-  So each href is rewritten to the identity the prelude renders -- a slug for a
-  project, an id for everything else. Two mentions of one document end up
-  pointing at the same element, which is the truth: it is expanded once. The
-  link text is replaced too, but only where the client left the bare type word
-  as a placeholder, since `[document]` tells the model nothing the element does
-  not already say.
+  So the prelude hands out its own numbering. Every expansion is stamped with a
+  `ref` attribute -- `<document ref="1" id="..." title="...">` -- and each href
+  is rewritten to that handle: `[上线流程](ref#1)`. Both sides of the
+  correlation now carry the same number, which is the thing the client's index
+  never managed.
+
+  The handle is deliberately not the id. An id is thirty-odd characters of
+  hexadecimal repeated at every mention, which costs tokens and reads like
+  nothing; a topic cites a handful of things, so one digit does the whole job.
+  The id stays on the element, where it is written once and is what the model
+  needs to name the thing back.
+
+  Numbering from one, and reading `ref#` rather than `reference#`, keeps the
+  rewritten form distinct from the client's -- a leftover index can never be
+  mistaken for a handle, in a log or by a second pass over the same text.
+
+  Two mentions of one document end up on the same handle, which is the truth: it
+  is expanded once. The link text is replaced too, but only where the client
+  left the bare type word as a placeholder, since `[document]` tells the model
+  nothing the element does not already say.
 
   This is the one place that reads the body, and it reads only the href of a
   mention -- a delimited token, not prose, so nothing has to guess where a title
@@ -72,6 +87,9 @@ defmodule RintoPMO.Agent.PromptBuilder do
   Projects are keyed by `slug` because that is how they are addressed
   everywhere else here; annotations and proposals need `document_id` because
   they are only ever reachable through their document.
+
+  Every one of them, and a reference that has gone missing, carries a `ref`
+  attribute holding the handle its mentions point at. See "Mentions".
 
   ## Expansion terminates
 
@@ -177,14 +195,14 @@ defmodule RintoPMO.Agent.PromptBuilder do
         # died on a later reference is not recorded as a use.
         resolved |> Enum.flat_map(& &1.attachment_ids) |> record_use()
 
-        # Labels come from the entities `resolve/1` already fetched, so naming a
+        # Titles come from the entities `resolve/2` already fetched, so naming a
         # mention costs no query of its own.
-        labels = labels_by_key(all_refs, resolved)
-        texts = Enum.map(resolved, & &1.text) ++ transcript(replay, labels)
+        handles = handles_by_key(all_refs, resolved)
+        texts = Enum.map(resolved, & &1.text) ++ transcript(replay, handles)
 
         # The client's own `refs`, not `all_refs`: the hrefs index the array it
         # sent, which is the one before replay prepended anything.
-        body = rewrite_mentions(message, index_refs(refs), labels)
+        body = rewrite_mentions(message, index_refs(refs), handles)
 
         {:ok,
          %{
@@ -203,13 +221,15 @@ defmodule RintoPMO.Agent.PromptBuilder do
   # an interrogation.
   defp resolve_all(refs, on_missing) do
     {resolved, missing, hard} =
-      Enum.reduce(refs, {[], [], []}, fn ref, {resolved, missing, hard} ->
-        case resolve(ref) do
+      refs
+      |> Enum.with_index(1)
+      |> Enum.reduce({[], [], []}, fn {ref, handle}, {resolved, missing, hard} ->
+        case resolve(ref, handle) do
           {:ok, expansion} ->
             {[expansion | resolved], missing, hard}
 
           {:error, :ref_not_found, details} ->
-            {[unavailable(details) | resolved], [details | missing], hard}
+            {[unavailable(details, handle) | resolved], [details | missing], hard}
 
           # Anything else -- a malformed ref, unreadable attachment bytes -- is
           # not a target that has since gone, so it is neither collected nor
@@ -235,9 +255,11 @@ defmodule RintoPMO.Agent.PromptBuilder do
   # the model in front of "tighten this paragraph" with no paragraph and no
   # sign that one was ever meant to be there -- which is the silent loss the
   # whole strict-by-default rule exists to prevent.
-  defp unavailable(details) do
+  # It carries a handle like any other expansion: a mention pointing at it has
+  # to land somewhere, and "the thing you cited is gone" is the answer.
+  defp unavailable(details, handle) do
     attributes =
-      [{"status", "unavailable"}] ++
+      [{"ref", handle}, {"status", "unavailable"}] ++
         for key <- ["type", "id", "document_id"],
             value = Map.get(details, key),
             do: {key, value}
@@ -257,44 +279,36 @@ defmodule RintoPMO.Agent.PromptBuilder do
   # already worth reading, and is left as written.
   @type_words ~w(document annotation project proposal attachment)
 
-  defp rewrite_mentions(text, refs_by_index, _labels) when map_size(refs_by_index) == 0, do: text
+  defp rewrite_mentions(text, refs_by_index, _handles) when map_size(refs_by_index) == 0, do: text
 
-  defp rewrite_mentions(text, refs_by_index, labels) do
+  defp rewrite_mentions(text, refs_by_index, handles) do
     Regex.replace(@mention, text, fn whole, label, index ->
       with {:ok, ref} <- Map.fetch(refs_by_index, String.to_integer(index)),
-           target when is_binary(target) <- mention_target(ref) do
-        "[#{mention_label(label, ref, labels)}](reference##{target})"
+           {:ok, %{handle: handle, label: title}} <- Map.fetch(handles, ref_key(ref)) do
+        "[#{mention_label(label, title)}](ref##{handle})"
       else
-        # No ref at that index, or one too malformed to name a target. Either
-        # way this side does not know what was meant.
-        _unresolved -> whole
+        # No ref at that index, or one carrying no expansion. Either way this
+        # side does not know what was meant.
+        :error -> whole
       end
     end)
   end
 
-  # Keyed the way each kind of thing is addressed everywhere else here, so the
-  # href matches the attribute the prelude renders.
-  defp mention_target(%{"type" => "project", "slug" => slug}) when is_binary(slug), do: slug
-  defp mention_target(%{"id" => id}) when is_binary(id), do: id
-  defp mention_target(_ref), do: nil
+  defp mention_label(label, title) when label in @type_words and is_binary(title), do: title
+  defp mention_label(label, _title), do: label
 
-  defp mention_label(label, ref, labels) when label in @type_words do
-    Map.get(labels, ref_key(ref), label)
-  end
-
-  defp mention_label(label, _ref, _labels), do: label
-
-  # `resolved` is in `refs` order -- `resolve_all/2` restores it -- so the two
-  # zip. A ref that resolved to nothing nameable simply has no entry, and its
-  # mention keeps whatever the client wrote.
-  defp labels_by_key(refs, resolved) do
+  # One entry per expansion, keyed the way each kind of thing is addressed
+  # everywhere else here, so two mentions of one document find the same handle.
+  #
+  # `resolved` is in `refs` order -- `resolve_all/2` restores it, and numbers the
+  # handles off the same list -- so the two zip and the numbering agrees with
+  # what the elements were stamped with.
+  defp handles_by_key(refs, resolved) do
     refs
     |> Enum.zip(resolved)
-    |> Enum.reduce(%{}, fn {ref, %{label: label}}, acc ->
-      case normalize_label(label) do
-        nil -> acc
-        normalized -> Map.put(acc, ref_key(ref), normalized)
-      end
+    |> Enum.with_index(1)
+    |> Map.new(fn {{ref, %{label: label}}, handle} ->
+      {ref_key(ref), %{handle: handle, label: normalize_label(label)}}
     end)
   end
 
@@ -355,10 +369,10 @@ defmodule RintoPMO.Agent.PromptBuilder do
     |> Enum.reject(&(ref_type(&1) == "conversation"))
   end
 
-  defp transcript(nil, _labels), do: []
+  defp transcript(nil, _handles), do: []
 
-  defp transcript(%{conversation: conversation, messages: messages}, labels) do
-    [render_conversation(conversation, messages, labels)]
+  defp transcript(%{conversation: conversation, messages: messages}, handles) do
+    [render_conversation(conversation, messages, handles)]
   end
 
   # Deduplicated by identity, keeping the first occurrence. A project is keyed
@@ -372,44 +386,44 @@ defmodule RintoPMO.Agent.PromptBuilder do
   defp ref_type(%{"type" => type}) when is_binary(type), do: type
   defp ref_type(_ref), do: nil
 
-  defp resolve(%{"type" => "document", "id" => id}) when is_binary(id) do
+  defp resolve(%{"type" => "document", "id" => id}, handle) when is_binary(id) do
     with {:ok, document} <- fetch(fn -> documents().get_document!(id) end, "document", id) do
-      {:ok, text_only(render_document(document), document_label(document))}
+      {:ok, text_only(render_document(document, handle), document_label(document))}
     end
   end
 
-  defp resolve(%{"type" => "annotation", "id" => id, "document_id" => document_id})
+  defp resolve(%{"type" => "annotation", "id" => id, "document_id" => document_id}, handle)
        when is_binary(id) and is_binary(document_id) do
     with {:ok, document} <-
            fetch(fn -> documents().get_document!(document_id) end, "document", document_id),
          {:ok, annotation} <-
            fetch(fn -> annotations().get_annotation!(document, id) end, "annotation", id) do
-      {:ok, text_only(render_annotation(annotation))}
+      {:ok, text_only(render_annotation(annotation, handle))}
     end
   end
 
-  defp resolve(%{"type" => "project", "slug" => slug}) when is_binary(slug) do
+  defp resolve(%{"type" => "project", "slug" => slug}, handle) when is_binary(slug) do
     with {:ok, project} <- fetch(fn -> projects().get_project_by_slug!(slug) end, "project", slug) do
-      {:ok, text_only(render_project(project), project.name)}
+      {:ok, text_only(render_project(project, handle), project.name)}
     end
   end
 
-  defp resolve(%{"type" => "proposal", "id" => id, "document_id" => document_id})
+  defp resolve(%{"type" => "proposal", "id" => id, "document_id" => document_id}, handle)
        when is_binary(id) and is_binary(document_id) do
     with {:ok, document} <-
            fetch(fn -> documents().get_document!(document_id) end, "document", document_id),
          {:ok, proposal} <-
            fetch(fn -> documents().get_proposal!(document, id) end, "proposal", id) do
-      {:ok, text_only(render_proposal(proposal))}
+      {:ok, text_only(render_proposal(proposal, handle))}
     end
   end
 
-  defp resolve(%{"type" => "attachment", "id" => id}) when is_binary(id) do
+  defp resolve(%{"type" => "attachment", "id" => id}, handle) when is_binary(id) do
     with {:ok, attachment} <- fetch(fn -> attachments().get_attachment!(id) end, "attachment", id),
          {:ok, image} <- attachments().image_content(attachment) do
       {:ok,
        %{
-         text: render_attachment(attachment),
+         text: render_attachment(attachment, handle),
          images: [image],
          attachment_ids: [attachment.id],
          label: attachment.filename
@@ -417,11 +431,11 @@ defmodule RintoPMO.Agent.PromptBuilder do
     end
   end
 
-  defp resolve(%{"type" => type}) when is_binary(type) do
+  defp resolve(%{"type" => type}, _handle) when is_binary(type) do
     {:error, :invalid_ref, %{"type" => type, "reason" => "unknown type or missing key"}}
   end
 
-  defp resolve(_ref), do: {:error, :invalid_ref, %{"type" => ["is missing"]}}
+  defp resolve(_ref, _handle), do: {:error, :invalid_ref, %{"type" => ["is missing"]}}
 
   # An annotation and a proposal get no label: neither has a title, and the type
   # word the client wrote already reads correctly in a sentence.
@@ -442,12 +456,16 @@ defmodule RintoPMO.Agent.PromptBuilder do
     Ecto.NoResultsError -> {:error, :ref_not_found, %{"type" => type, "id" => id}}
   end
 
-  defp render_document(%Document{latest_revision: %DocumentRevision{} = revision} = document) do
+  defp render_document(
+         %Document{latest_revision: %DocumentRevision{} = revision} = document,
+         handle
+       ) do
     blocks = ordered_blocks(revision)
     {shown, truncated?} = take_within_budget(blocks)
 
     attributes =
       [
+        {"ref", handle},
         {"id", document.id},
         {"title", revision.title},
         {"revision", revision.id},
@@ -462,13 +480,17 @@ defmodule RintoPMO.Agent.PromptBuilder do
     element("document", attributes, body)
   end
 
-  defp render_document(%Document{} = document) do
-    element("document", [{"id", document.id}], "[Document has no revision snapshot.]")
+  defp render_document(%Document{} = document, handle) do
+    element(
+      "document",
+      [{"ref", handle}, {"id", document.id}],
+      "[Document has no revision snapshot.]"
+    )
   end
 
-  defp render_annotation(%Annotation{} = annotation) do
+  defp render_annotation(%Annotation{} = annotation, handle) do
     attributes =
-      [{"id", annotation.id}, {"document_id", annotation.document_id}] ++
+      [{"ref", handle}, {"id", annotation.id}, {"document_id", annotation.document_id}] ++
         optional_attribute("block_id", annotation.block_id)
 
     body =
@@ -482,8 +504,9 @@ defmodule RintoPMO.Agent.PromptBuilder do
     element("annotation", attributes, body)
   end
 
-  defp render_project(%Project{} = project) do
+  defp render_project(%Project{} = project, handle) do
     attributes = [
+      {"ref", handle},
       {"slug", project.slug},
       {"name", project.name},
       {"status", project.status}
@@ -500,7 +523,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
   # are above, once each, and the model correlates them by id. That is the same
   # bargain the rest of this module strikes -- the message keeps the label, the
   # prelude holds the content.
-  defp render_conversation(%Conversation{} = conversation, messages, labels) do
+  defp render_conversation(%Conversation{} = conversation, messages, handles) do
     attributes =
       [{"id", conversation.id}] ++
         optional_attribute("title", conversation.title) ++
@@ -517,7 +540,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
         element(
           "turn",
           turn_attributes,
-          rewrite_mentions(message.content, turn_index_refs(message), labels)
+          rewrite_mentions(message.content, turn_index_refs(message), handles)
         )
       end)
 
@@ -532,9 +555,10 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   defp turn_refs(%Message{}), do: nil
 
-  defp render_proposal(%BlockProposal{} = proposal) do
+  defp render_proposal(%BlockProposal{} = proposal, handle) do
     attributes =
       [
+        {"ref", handle},
         {"id", proposal.id},
         {"block_id", proposal.block_id},
         {"status", proposal.status}
@@ -554,9 +578,10 @@ defmodule RintoPMO.Agent.PromptBuilder do
     Ecto.NoResultsError -> nil
   end
 
-  defp render_attachment(%Attachment{} = attachment) do
+  defp render_attachment(%Attachment{} = attachment, handle) do
     attributes =
       [
+        {"ref", handle},
         {"id", attachment.id},
         {"mime", attachment.mime_type},
         {"width", attachment.width},

@@ -270,7 +270,7 @@ defmodule RintoPMOWeb.ConversationChannelTest do
       assert_reply ref, :ok, _payload, 5_000
 
       assert %{"message" => message} = last_command(capture)
-      assert message =~ ~s(<document id="#{document.id}")
+      assert message =~ ~s(<document ref="1" id="#{document.id}")
       assert message =~ "The quarterly plan"
       assert String.ends_with?(message, "\n\nsummarise it")
     end
@@ -294,7 +294,7 @@ defmodule RintoPMOWeb.ConversationChannelTest do
       assert_reply ref, :ok, _payload, 5_000
 
       assert %{"message" => message, "images" => [^image]} = last_command(capture)
-      assert message =~ ~s(<attachment id="#{attachment.id}")
+      assert message =~ ~s(<attachment ref="1" id="#{attachment.id}")
     end
 
     test "omits images entirely when there are none", %{tmp_dir: tmp_dir} do
