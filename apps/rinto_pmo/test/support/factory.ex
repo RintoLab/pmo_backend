@@ -127,6 +127,7 @@ defmodule RintoPMO.Factory do
       base_revision: revision,
       conversation: build(:conversation),
       actor: build(:actor),
+      scope: :block,
       block_id: UUIDv7.generate(),
       content: sequence(:block_proposal_content, &"Proposed text #{&1}"),
       status: :live

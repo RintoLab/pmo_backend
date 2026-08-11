@@ -401,6 +401,127 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  # Scope is the schema-level half of document-scope proposals: the rows and the
+  # rules that keep them apart from block proposals. What builds one, and what
+  # committing one does, comes later.
+  describe "proposal scope" do
+    test "a block proposal defaults to the block scope" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose(document, block.block_id, conversation, actor, "Tighter")
+
+      assert proposal.scope == :block
+    end
+
+    test "a block proposal must name a block" do
+      assert {:error, changeset} = insert_proposal(scope: :block, block_id: nil)
+      assert "can't be blank" in errors_on(changeset).block_id
+    end
+
+    for scope <- [:document, :title] do
+      test "a #{scope} proposal must not name a block" do
+        assert {:error, changeset} =
+                 insert_proposal(scope: unquote(scope), block_id: UUIDv7.generate())
+
+        assert changeset |> errors_on() |> Map.fetch!(:block_id) |> List.first() =~ "not allowed"
+      end
+    end
+
+    # The block index cannot reach these rows: Postgres holds NULLs distinct, so
+    # every null `block_id` would look unique to it.
+    test "one live proposal per topic per document-level scope" do
+      %{document: document} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      revision_id = latest_revision_id(document)
+
+      attrs = [
+        document_id: document.id,
+        conversation_id: conversation.id,
+        base_revision_id: revision_id,
+        scope: :document,
+        block_id: nil
+      ]
+
+      assert {:ok, _first} = insert_proposal(attrs)
+      assert {:error, changeset} = insert_proposal(attrs)
+      refute changeset.valid?
+    end
+
+    # Different things, so neither is an alternative to the other and one topic
+    # may hold both at once. That is why `scope` is in the index.
+    test "a topic may hold a live document proposal and a live title proposal" do
+      %{document: document} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      revision_id = latest_revision_id(document)
+
+      attrs = [
+        document_id: document.id,
+        conversation_id: conversation.id,
+        base_revision_id: revision_id,
+        block_id: nil
+      ]
+
+      assert {:ok, _document_scope} = insert_proposal([scope: :document] ++ attrs)
+      assert {:ok, _title_scope} = insert_proposal([scope: :title] ++ attrs)
+    end
+
+    # A document-level proposal groups under a `nil` block, so an unscoped query
+    # would hand `nil` downstream as though it were a block to commit.
+    test "document-level proposals stay out of the block-level views" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One", "Two"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, _proposed} = propose(document, block.block_id, conversation, actor, "Tighter")
+
+      assert {:ok, _document_scope} =
+               insert_proposal(
+                 document_id: document.id,
+                 conversation_id: conversation.id,
+                 base_revision_id: latest_revision_id(document),
+                 scope: :document,
+                 block_id: nil
+               )
+
+      # Neither the contention view nor a topic's working copy sees it.
+      assert Documents.contentions(document) == []
+
+      blocks = Documents.blocks_for_conversation(document, conversation.id)
+      assert Enum.map(blocks, & &1.block_id) == Enum.map(document_blocks(document), & &1.block_id)
+
+      # And a commit still finds exactly the one block proposal.
+      assert {:ok, revision} =
+               Documents.commit_proposals(document, %{
+                 actor_id: actor.id,
+                 base_revision_id: latest_revision_id(document)
+               })
+
+      assert Enum.map(revision.blocks, & &1.content) == ["Tighter", "## Two"]
+    end
+  end
+
+  defp insert_proposal(attrs) do
+    attrs = Map.new(attrs)
+
+    defaults = %{
+      content: "Proposed",
+      actor_id: insert(:actor).id
+    }
+
+    defaults
+    |> Map.merge(attrs)
+    |> then(&BlockProposal.changeset(%BlockProposal{}, &1))
+    |> Repo.insert()
+  end
+
+  defp document_blocks(document) do
+    Documents.get_document!(document.id).latest_revision.blocks
+    |> Enum.sort_by(& &1.position)
+  end
+
   defp propose(document, block_id, conversation, actor, content) do
     Documents.propose_block(document, %{
       block_id: block_id,

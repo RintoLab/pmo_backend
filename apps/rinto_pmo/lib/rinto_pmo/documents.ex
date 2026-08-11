@@ -222,7 +222,7 @@ defmodule RintoPMO.Documents do
   @impl true
   def contentions(%Document{} = document) do
     document
-    |> live_proposals()
+    |> live_proposals(:block)
     |> Enum.group_by(& &1.block_id)
     |> Enum.filter(fn {_block_id, proposals} -> length(proposals) > 1 end)
     |> Enum.map(fn {block_id, proposals} ->
@@ -243,7 +243,7 @@ defmodule RintoPMO.Documents do
   def blocks_for_conversation(%Document{} = document, conversation_id) do
     proposals =
       document
-      |> live_proposals()
+      |> live_proposals(:block)
       |> Enum.group_by(& &1.block_id)
 
     document
@@ -333,7 +333,7 @@ defmodule RintoPMO.Documents do
         |> repo.one!()
 
       parent = latest_revision!(repo, locked_document, preload_blocks?: true)
-      by_block = repo |> live_proposals(locked_document) |> Enum.group_by(& &1.block_id)
+      by_block = repo |> live_proposals(locked_document, :block) |> Enum.group_by(& &1.block_id)
 
       with {:ok, block_ids} <- selected_blocks(attrs, by_block),
            :ok <- ensure_no_contention(block_ids, by_block),
@@ -483,12 +483,15 @@ defmodule RintoPMO.Documents do
     end)
   end
 
-  defp live_proposals(%Document{} = document), do: live_proposals(Repo, document)
+  # Always scoped. Everything downstream of a lookup here groups by `block_id`,
+  # and the document-level scopes carry none -- an unscoped query would collect
+  # them under a `nil` key and hand `nil` to callers as though it were a block.
+  defp live_proposals(%Document{} = document, scope), do: live_proposals(Repo, document, scope)
 
-  defp live_proposals(repo, %Document{} = document) do
+  defp live_proposals(repo, %Document{} = document, scope) do
     document
     |> Ecto.assoc(:proposals)
-    |> where([proposal], proposal.status == :live)
+    |> where([proposal], proposal.status == :live and proposal.scope == ^scope)
     |> repo.all()
   end
 
@@ -512,6 +515,10 @@ defmodule RintoPMO.Documents do
       nil ->
         %{
           document_id: document.id,
+          # This path is reached only for a block proposal. The document-level
+          # scopes have their own entry point: they carry no `block_id`, so
+          # `live_proposal/4` could not find their slot to iterate on.
+          scope: :block,
           block_id: block_id,
           conversation_id: conversation_id,
           actor_id: actor_id,
