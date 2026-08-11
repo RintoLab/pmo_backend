@@ -463,12 +463,15 @@ defmodule RintoPMO.Agent.PromptBuilder do
     blocks = ordered_blocks(revision)
     {shown, truncated?} = take_within_budget(blocks)
 
+    # No revision id. It is thirty-six characters the model can do nothing
+    # with: a proposal's `base_revision_id` is stamped server-side from the
+    # latest revision (see `RintoPMO.Documents.propose_block/2`), so naming the
+    # snapshot here would only invite the model to send it back.
     attributes =
       [
         {"ref", handle},
         {"id", document.id},
         {"title", revision.title},
-        {"revision", revision.id},
         {"blocks", length(blocks)}
       ] ++ if truncated?, do: [{"truncated", "true"}], else: []
 
