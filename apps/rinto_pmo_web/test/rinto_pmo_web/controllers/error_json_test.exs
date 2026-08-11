@@ -49,6 +49,11 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     invalid_markdown:
       {422, "The Markdown body could not be parsed.", %{markdown: ["is invalid"]}},
     no_change_proposed: {422, "The proposed body is the document that already exists.", %{}},
+    stale_proposal:
+      {409, "The whole-document proposal was written against an older revision. Propose again.",
+       %{proposal_id: "proposal-1", base_revision_id: "rev-1", current_revision_id: "rev-2"}},
+    conflicting_commit:
+      {422, "A whole-document proposal is committed on its own, not with a block selection.", %{}},
     invalid_estimate:
       {422, "The task estimate is invalid.", %{field: "likely", reason: "must be ordered"}},
     task_not_splittable:

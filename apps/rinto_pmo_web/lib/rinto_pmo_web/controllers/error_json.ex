@@ -32,6 +32,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     invalid_block_op: {422, "The block operation is invalid."},
     invalid_markdown: {422, "The Markdown body could not be parsed."},
     no_change_proposed: {422, "The proposed body is the document that already exists."},
+    stale_proposal:
+      {409, "The whole-document proposal was written against an older revision. Propose again."},
+    conflicting_commit:
+      {422, "A whole-document proposal is committed on its own, not with a block selection."},
     invalid_estimate: {422, "The task estimate is invalid."},
     task_not_splittable: {422, "The task cannot be split in its current state."},
     corrupt_image: {422, "The image header could not be read."},

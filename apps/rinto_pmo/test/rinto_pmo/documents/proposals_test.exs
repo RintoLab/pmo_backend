@@ -812,6 +812,214 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  describe "commit_proposals/2 with a document proposal" do
+    test "writes every block the operations describe, in one revision" do
+      %{document: document} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(
+                 document,
+                 insert(:conversation),
+                 actor,
+                 "## Zero\n\n## One\n\n## Two, tighter"
+               )
+
+      assert {:ok, revision} = commit_document(document, actor, proposal)
+
+      assert Enum.map(revision.blocks, & &1.content) == ["## Zero", "## One", "## Two, tighter"]
+      assert Repo.reload!(proposal).status == :accepted
+    end
+
+    test "keeps the id of a block the rewrite left alone" do
+      %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(
+                 document,
+                 insert(:conversation),
+                 actor,
+                 "## One\n\n## Two, tighter"
+               )
+
+      assert {:ok, revision} = commit_document(document, actor, proposal)
+
+      kept = Enum.find(revision.blocks, &(&1.content == "## One"))
+      assert kept.block_id == first.block_id
+    end
+
+    # Named rather than adopted by default: it settles every block, so letting
+    # one land implicitly would discard other topics' work with nobody choosing.
+    test "is never adopted by a commit that did not name it" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, _proposed} =
+               propose_document(document, insert(:conversation), actor, "## Rewritten")
+
+      assert {:error, :nothing_to_commit, _details} = commit(document, actor)
+    end
+
+    # Their anchors may not survive it, so leaving them live would mean a commit
+    # that later fails on an operation nobody wrote.
+    test "supersedes the other live block and document proposals" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: theirs}} =
+               propose(document, block.block_id, insert(:conversation), actor, "Their block")
+
+      assert {:ok, %{proposal: rival}} =
+               propose_document(document, insert(:conversation), actor, "## Rival rewrite")
+
+      assert {:ok, %{proposal: mine}} =
+               propose_document(document, insert(:conversation), actor, "## My rewrite")
+
+      assert {:ok, _revision} = commit_document(document, actor, mine)
+
+      assert Repo.reload!(mine).status == :accepted
+      assert Repo.reload!(theirs).status == :superseded
+      assert Repo.reload!(rival).status == :superseded
+      assert Repo.reload!(rival).decided_by_actor_id == actor.id
+    end
+
+    # A title has no anchor to lose, so it is neither superseded nor ignored.
+    test "adopts an uncontested title alongside it and leaves a contended one live" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+      conversation = insert(:conversation)
+
+      assert {:ok, %{proposal: body}} =
+               propose_document(document, conversation, actor, "## Rewritten")
+
+      assert {:ok, %{proposal: title}} = propose_title(document, conversation, actor, "Renamed")
+
+      assert {:ok, revision} = commit_document(document, actor, body)
+
+      assert revision.title == "Renamed"
+      assert Repo.reload!(title).status == :accepted
+    end
+
+    test "leaves a contended title behind, as any other commit does" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: body}} =
+               propose_document(document, insert(:conversation), actor, "## Rewritten")
+
+      assert {:ok, %{proposal: mine}} =
+               propose_title(document, insert(:conversation), actor, "Mine")
+
+      assert {:ok, %{proposal: theirs}} =
+               propose_title(document, insert(:conversation), actor, "Theirs")
+
+      assert {:ok, revision} = commit_document(document, actor, body)
+
+      assert revision.title == "Document"
+      assert Repo.reload!(mine).status == :live
+      assert Repo.reload!(theirs).status == :live
+    end
+
+    # The whole reason `base_revision_id` stops being merely a record here: the
+    # operations cover blocks the proposal did not touch, so an old one would
+    # revert everything that landed under it.
+    test "refuses a proposal compiled against an older revision" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, insert(:conversation), actor, "## One\n\n## Two, mine")
+
+      # Something else lands underneath it.
+      assert {:ok, _proposed} =
+               propose(document, block.block_id, insert(:conversation), actor, "## One, theirs")
+
+      assert {:ok, landed} = commit(document, actor)
+
+      assert {:error, :stale_proposal, details} = commit_document(document, actor, proposal)
+      assert details.base_revision_id == proposal.base_revision_id
+      assert details.current_revision_id == landed.id
+
+      # Nothing was written and nothing was settled.
+      assert Repo.reload!(proposal).status == :live
+      assert latest_revision_id(document) == landed.id
+    end
+
+    test "a re-proposal after that is committable again" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+      conversation = insert(:conversation)
+
+      assert {:ok, _proposed} =
+               propose_document(document, conversation, actor, "## One\n\n## Two, mine")
+
+      assert {:ok, _proposed} =
+               propose(document, block.block_id, insert(:conversation), actor, "## One, theirs")
+
+      assert {:ok, _landed} = commit(document, actor)
+
+      assert {:ok, %{proposal: refreshed}} =
+               propose_document(document, conversation, actor, "## One, theirs\n\n## Two, mine")
+
+      assert {:ok, revision} = commit_document(document, actor, refreshed)
+      assert Enum.map(revision.blocks, & &1.content) == ["## One, theirs", "## Two, mine"]
+    end
+
+    test "refuses to be combined with a block selection" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, insert(:conversation), actor, "## Rewritten")
+
+      assert {:error, :conflicting_commit, _details} =
+               Documents.commit_proposals(document, %{
+                 actor_id: actor.id,
+                 base_revision_id: latest_revision_id(document),
+                 document_proposal_id: proposal.id,
+                 block_ids: [block.block_id]
+               })
+    end
+
+    test "refuses a proposal that is not live, or not a document proposal" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: block_proposal}} =
+               propose(document, block.block_id, insert(:conversation), actor, "Tighter")
+
+      assert {:error, :proposal_not_found, details} =
+               commit_document(document, actor, block_proposal)
+
+      assert details.scope == :document
+    end
+
+    test "carries the proposer's summary when the committer wrote none" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               Documents.propose_document(document, %{
+                 conversation_id: insert(:conversation).id,
+                 actor_id: actor.id,
+                 content: "## Rewritten",
+                 change_summary: "Split the intro out"
+               })
+
+      assert {:ok, revision} = commit_document(document, actor, proposal)
+      assert revision.change_summary == "Split the intro out"
+    end
+  end
+
+  defp commit_document(document, actor, proposal) do
+    Documents.commit_proposals(document, %{
+      actor_id: actor.id,
+      base_revision_id: latest_revision_id(document),
+      document_proposal_id: proposal.id
+    })
+  end
+
   defp propose_document(document, conversation, actor, markdown) do
     Documents.propose_document(document, %{
       conversation_id: conversation.id,

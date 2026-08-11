@@ -428,6 +428,26 @@ defmodule RintoPMO.Documents do
   A block with an undecided contention cannot be committed, but it does not
   hold up the rest: selection is per block, so the others go through and that
   one waits for a decision.
+
+  ## Committing a whole-document proposal
+
+  `document_proposal_id` commits one instead, and it is named rather than
+  adopted by default: a whole-document proposal settles every block, so letting
+  one land implicitly would discard other topics' work without anyone choosing
+  to. It cannot be combined with `block_ids` -- it is not one change among
+  several, it is the whole sequence -- and it requires being current: a proposal
+  compiled against an older revision would silently revert whatever landed since,
+  which for a document-wide change means the entire document.
+
+  Committing one **supersedes every other live block and document proposal**,
+  because their anchors may no longer exist. Title proposals are left alone; a
+  title has no anchor to lose, and an uncontested one is adopted here as it would
+  be in any other commit.
+
+  Nothing needs to happen in the other direction. Committing blocks moves the
+  document on, which is what makes a standing document proposal stale, so
+  whichever route lands first invalidates the other without a lock or a priority
+  between them.
   """
   @impl true
   def commit_proposals(%Document{} = document, attrs) do
@@ -439,25 +459,112 @@ defmodule RintoPMO.Documents do
         |> repo.one!()
 
       parent = latest_revision!(repo, locked_document, preload_blocks?: true)
-      by_block = repo |> live_proposals(locked_document, :block) |> Enum.group_by(& &1.block_id)
       title = title_change(repo, locked_document, attrs)
 
-      with {:ok, block_ids} <- selected_blocks(attrs, by_block, title),
-           :ok <- ensure_no_contention(block_ids, by_block),
-           {:ok, adopted} <- adopted_proposals(block_ids, by_block),
-           revision_attrs = revision_attrs(attrs, adopted, title),
-           {:ok, revision} <- insert_revision(repo, locked_document, parent, revision_attrs),
-           :ok <-
-             accept_all(
-               repo,
-               adopted ++ adopted_title(title),
-               attr(attrs, :actor_id, nil)
-             ),
-           :ok <- resolve_annotations(locked_document, revision, attrs) do
-        {:ok, revision}
+      case attr(attrs, :document_proposal_id, nil) do
+        nil -> commit_blocks(repo, locked_document, parent, title, attrs)
+        id -> commit_document(repo, locked_document, parent, title, id, attrs)
       end
     end)
     |> unwrap_error()
+  end
+
+  defp commit_blocks(repo, document, parent, title, attrs) do
+    by_block = repo |> live_proposals(document, :block) |> Enum.group_by(& &1.block_id)
+
+    with {:ok, block_ids} <- selected_blocks(attrs, by_block, title),
+         :ok <- ensure_no_contention(block_ids, by_block),
+         {:ok, adopted} <- adopted_proposals(block_ids, by_block),
+         revision_attrs = revision_attrs(attrs, adopted, title),
+         {:ok, revision} <- insert_revision(repo, document, parent, revision_attrs),
+         :ok <- accept_all(repo, adopted ++ adopted_title(title), attr(attrs, :actor_id, nil)),
+         :ok <- resolve_annotations(document, revision, attrs) do
+      {:ok, revision}
+    end
+  end
+
+  defp commit_document(repo, document, parent, title, proposal_id, attrs) do
+    actor_id = attr(attrs, :actor_id, nil)
+
+    with :ok <- ensure_no_block_selection(attrs),
+         {:ok, proposal} <- live_document_proposal(repo, document, proposal_id),
+         :ok <- ensure_compiled_against(proposal, parent),
+         revision_attrs = document_revision_attrs(attrs, proposal, title),
+         {:ok, revision} <- insert_revision(repo, document, parent, revision_attrs),
+         :ok <- accept_all(repo, [proposal | adopted_title(title)], actor_id),
+         :ok <- supersede_others(repo, document, proposal, actor_id),
+         :ok <- resolve_annotations(document, revision, attrs) do
+      {:ok, revision}
+    end
+  end
+
+  # Not one change among several: the operations settle every block, so a
+  # selection alongside them is a caller with two different ideas of what it is
+  # committing.
+  defp ensure_no_block_selection(attrs) do
+    case attr(attrs, :block_ids, nil) do
+      nil -> :ok
+      _selection -> {:error, {:conflicting_commit, %{}}}
+    end
+  end
+
+  defp live_document_proposal(repo, document, proposal_id) do
+    BlockProposal
+    |> where([proposal], proposal.document_id == ^document.id)
+    |> where([proposal], proposal.id == ^proposal_id)
+    |> where([proposal], proposal.scope == :document and proposal.status == :live)
+    |> lock("FOR UPDATE")
+    |> repo.one()
+    |> case do
+      nil -> {:error, {:proposal_not_found, %{proposal_id: proposal_id, scope: :document}}}
+      proposal -> {:ok, proposal}
+    end
+  end
+
+  # The one place a proposal's own `base_revision_id` is a conflict test rather
+  # than a record. For a block proposal it could never discriminate -- every
+  # topic's base is the latest revision by construction -- but a whole-document
+  # proposal carries operations for blocks it did not touch, so applying an old
+  # one would revert everything that landed under it. Re-propose to recompile.
+  defp ensure_compiled_against(%BlockProposal{} = proposal, %DocumentRevision{} = parent) do
+    if proposal.base_revision_id == parent.id do
+      :ok
+    else
+      {:error,
+       {:stale_proposal,
+        %{
+          proposal_id: proposal.id,
+          base_revision_id: proposal.base_revision_id,
+          current_revision_id: parent.id
+        }}}
+    end
+  end
+
+  # Their anchors may not exist in the revision this just wrote, so leaving them
+  # live would mean a commit that fails on an operation nobody wrote. Title
+  # proposals are untouched: a title has no anchor to lose.
+  #
+  # Keyed by id rather than relying on `accept_all/3` having already moved the
+  # adopted one off `:live`, so the two are independent of each other's order.
+  defp supersede_others(repo, document, %BlockProposal{} = adopted, actor_id) do
+    BlockProposal
+    |> where([proposal], proposal.document_id == ^document.id)
+    |> where([proposal], proposal.status == :live and proposal.scope in [:block, :document])
+    |> where([proposal], proposal.id != ^adopted.id)
+    |> repo.all()
+    |> then(&decide_each(repo, &1, :superseded, actor_id, DateTime.utc_now()))
+  end
+
+  defp document_revision_attrs(attrs, %BlockProposal{} = proposal, title) do
+    %{
+      block_ops: proposal.block_ops,
+      base_revision_id: attr(attrs, :base_revision_id, nil),
+      source_conversation_id: attr(attrs, :source_conversation_id, nil)
+    }
+    |> maybe_put(:title, title_content(title))
+    # The proposer's own summary stands in when the committer wrote none: a
+    # whole-document diff is what most needs a sentence in front of it.
+    |> maybe_put(:change_summary, attr(attrs, :change_summary, nil) || proposal.change_summary)
   end
 
   defp split_markdown(attrs) do
