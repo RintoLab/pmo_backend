@@ -38,6 +38,7 @@ defmodule RintoPMOWeb.V1.BlockProposalJSON do
     %{
       id: proposal.id,
       document_id: proposal.document_id,
+      scope: proposal.scope,
       block_id: proposal.block_id,
       conversation_id: proposal.conversation_id,
       actor_id: proposal.actor_id,

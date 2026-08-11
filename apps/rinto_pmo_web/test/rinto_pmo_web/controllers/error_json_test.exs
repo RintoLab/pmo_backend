@@ -29,12 +29,15 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     unknown_block:
       {422, "The block is not part of the document's latest revision.", %{block_id: "block-1"}},
     no_live_proposal: {422, "The block has no proposal to commit.", %{block_id: "block-1"}},
-    nothing_to_commit: {422, "No block has a proposal ready to commit.", %{}},
+    nothing_to_commit: {422, "Nothing has a proposal ready to commit.", %{}},
     invalid_block_ids:
       {422, "The selected blocks are invalid.", %{reason: "block_ids must be an array"}},
     proposal_not_found:
-      {422, "The proposal is not live on that block.",
+      {422, "The proposal is not live in that slot.",
        %{proposal_id: "proposal-1", block_id: "block-1"}},
+    invalid_scope:
+      {422, "The proposal scope is not one this endpoint accepts.",
+       %{scope: "wormhole", allowed: ["block", "title"]}},
     annotation_not_found:
       {422, "The annotation does not belong to this document.", %{annotation_id: "annotation-1"}},
     task_blocked:

@@ -503,6 +503,191 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  describe "propose_title/2" do
+    test "records what a topic wants the document called" do
+      %{document: document} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal, live_proposals: 1}} =
+               propose_title(document, conversation, actor, "标题去重验证")
+
+      assert proposal.scope == :title
+      assert proposal.block_id == nil
+      assert proposal.content == "标题去重验证"
+      assert proposal.status == :live
+      assert proposal.base_revision_id == latest_revision_id(document)
+    end
+
+    test "a topic rewriting its title iterates on one row" do
+      %{document: document} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: first}} = propose_title(document, conversation, actor, "First try")
+
+      assert {:ok, %{proposal: second, live_proposals: 1}} =
+               propose_title(document, conversation, actor, "Second try")
+
+      assert second.id == first.id
+      assert second.content == "Second try"
+    end
+
+    test "two topics wanting different titles is a contention" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, %{live_proposals: 1}} =
+               propose_title(document, insert(:conversation), actor, "Mine")
+
+      assert {:ok, %{live_proposals: 2}} =
+               propose_title(document, insert(:conversation), actor, "No, mine")
+    end
+  end
+
+  describe "decide_title/3" do
+    test "settles the argument and leaves the winner live" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+      decider = insert(:actor)
+
+      assert {:ok, %{proposal: mine}} =
+               propose_title(document, insert(:conversation), actor, "Mine")
+
+      assert {:ok, %{proposal: theirs}} =
+               propose_title(document, insert(:conversation), actor, "Theirs")
+
+      assert {:ok, adopted} = Documents.decide_title(document, theirs.id, decider.id)
+
+      assert adopted.id == theirs.id
+      assert adopted.status == :live
+      assert Repo.reload!(mine).status == :rejected
+      assert Repo.reload!(mine).decided_by_actor_id == decider.id
+    end
+
+    # The block slot and the title slot are different arguments; deciding one
+    # must not reach into the other.
+    test "refuses a proposal that is not in the title slot" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: block_proposal}} =
+               propose(document, block.block_id, conversation, actor, "Tighter")
+
+      assert {:error, :proposal_not_found, details} =
+               Documents.decide_title(document, block_proposal.id, actor.id)
+
+      assert details.scope == :title
+    end
+  end
+
+  describe "commit_proposals/2 with a title proposal" do
+    test "carries an uncontested title into the revision" do
+      %{document: document} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_title(document, conversation, actor, "上线流程")
+
+      assert {:ok, revision} = commit(document, actor)
+
+      assert revision.title == "上线流程"
+      assert Repo.reload!(proposal).status == :accepted
+    end
+
+    # A retitling is a change, so the commit is not empty for want of a block.
+    test "commits a title with no block proposal standing" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, _proposed} =
+               propose_title(document, insert(:conversation), actor, "Renamed")
+
+      assert {:ok, revision} = commit(document, actor)
+      assert revision.title == "Renamed"
+      assert Enum.map(revision.blocks, & &1.content) == ["## One"]
+    end
+
+    test "a title and a block go in one revision" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, _proposed} = propose(document, block.block_id, conversation, actor, "Tighter")
+      assert {:ok, _proposed} = propose_title(document, conversation, actor, "Renamed")
+
+      assert {:ok, revision} = commit(document, actor)
+      assert revision.title == "Renamed"
+      assert Enum.map(revision.blocks, & &1.content) == ["Tighter"]
+    end
+
+    # Left behind rather than holding up the rest, exactly as a contended block
+    # is. The revision keeps the parent's title.
+    test "leaves a contended title behind and commits the blocks" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, _proposed} =
+               propose(document, block.block_id, insert(:conversation), actor, "Tighter")
+
+      assert {:ok, %{proposal: mine}} =
+               propose_title(document, insert(:conversation), actor, "Mine")
+
+      assert {:ok, %{proposal: theirs}} =
+               propose_title(document, insert(:conversation), actor, "Theirs")
+
+      assert {:ok, revision} = commit(document, actor)
+
+      assert revision.title == "Document"
+      assert Enum.map(revision.blocks, & &1.content) == ["Tighter"]
+      assert Repo.reload!(mine).status == :live
+      assert Repo.reload!(theirs).status == :live
+    end
+
+    # Somebody typed a title. It wins, but it decides nothing about the
+    # proposals -- nobody chose between them.
+    test "a title in the commit attrs wins and settles nothing" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_title(document, insert(:conversation), actor, "Proposed")
+
+      assert {:ok, revision} =
+               Documents.commit_proposals(document, %{
+                 actor_id: actor.id,
+                 base_revision_id: latest_revision_id(document),
+                 title: "Typed by a person"
+               })
+
+      assert revision.title == "Typed by a person"
+      assert Repo.reload!(proposal).status == :live
+    end
+
+    test "still refuses a commit with nothing standing at all" do
+      %{document: document} = document_with_blocks(["One"])
+
+      assert {:error, :nothing_to_commit, _details} = commit(document, insert(:actor))
+    end
+  end
+
+  defp propose_title(document, conversation, actor, content) do
+    Documents.propose_title(document, %{
+      conversation_id: conversation.id,
+      actor_id: actor.id,
+      content: content
+    })
+  end
+
+  defp commit(document, actor) do
+    Documents.commit_proposals(document, %{
+      actor_id: actor.id,
+      base_revision_id: latest_revision_id(document)
+    })
+  end
+
   defp insert_proposal(attrs) do
     attrs = Map.new(attrs)
 

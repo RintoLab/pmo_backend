@@ -31,14 +31,39 @@ defmodule RintoPMOWeb.V1.BlockProposalController do
 
   def create(conn, %{"document_id" => document_id} = params) do
     document = get_document!(document_id)
-    attrs = Map.drop(params, ["document_id", "status", "decided_by_actor_id", "decided_at"])
 
-    with {:ok, proposed} <- documents_context().propose_block(document, attrs) do
+    attrs =
+      Map.drop(params, [
+        "document_id",
+        "status",
+        "decided_by_actor_id",
+        "decided_at",
+        "block_ops"
+      ])
+
+    with {:ok, proposed} <- propose(document, attrs) do
       conn
       |> put_status(:created)
       |> render(:proposed, proposed: proposed)
     end
   end
+
+  # `scope` chooses which slot the proposal claims. It defaults to `"block"`, so
+  # a client that has never heard of scopes keeps working unchanged.
+  #
+  # `block_ops` is dropped above rather than accepted: the operation list of a
+  # document proposal is compiled from its Markdown here, never sent in. A
+  # caller able to hand over its own operations could write a revision that no
+  # Markdown produces, which is exactly the door proposals exist to close.
+  defp propose(document, %{"scope" => "title"} = attrs) do
+    documents_context().propose_title(document, Map.delete(attrs, "block_id"))
+  end
+
+  defp propose(_document, %{"scope" => scope}) when scope not in ["block", "title"] do
+    {:error, :invalid_scope, %{scope: scope, allowed: ["block", "title"]}}
+  end
+
+  defp propose(document, attrs), do: documents_context().propose_block(document, attrs)
 
   @doc """
   Lists the blocks carrying more than one live proposal.
@@ -69,15 +94,24 @@ defmodule RintoPMOWeb.V1.BlockProposalController do
   The winner stays live: this ends the argument, it does not commit the change.
   """
   def decide(conn, %{"document_id" => document_id, "id" => id} = params) do
-    context = documents_context()
     document = get_document!(document_id)
-    proposal = context.get_proposal!(document, id)
+    proposal = documents_context().get_proposal!(document, id)
 
     with {:ok, actor_id} <- cast_id(params["actor_id"], "actor_id"),
-         {:ok, adopted} <-
-           context.decide_block(document, proposal.block_id, proposal.id, actor_id) do
+         {:ok, adopted} <- settle(document, proposal, actor_id) do
       render(conn, :show, proposal: adopted)
     end
+  end
+
+  # The proposal itself says which argument it is in, so a client deciding one
+  # does not have to know: it names a proposal, the same way it did before
+  # scopes existed.
+  defp settle(document, %{scope: :title} = proposal, actor_id) do
+    documents_context().decide_title(document, proposal.id, actor_id)
+  end
+
+  defp settle(document, proposal, actor_id) do
+    documents_context().decide_block(document, proposal.block_id, proposal.id, actor_id)
   end
 
   defp proposal_filter(params) do

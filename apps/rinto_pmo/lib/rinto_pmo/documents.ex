@@ -213,6 +213,49 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
+  Records what a topic wants a document to be called.
+
+  A title cannot travel inside a `:document` proposal's Markdown: a document's
+  title is a field of the revision and is never read out of the body (see
+  `RintoPMO.Documents.Markdown`), so it needs a proposal of its own.
+
+  Like a block proposal, a topic holds one live slot and rewriting is iteration
+  rather than a second opinion. Unlike one, the slot is the document -- there is
+  only one title to argue about.
+  """
+  @impl true
+  def propose_title(%Document{} = document, attrs) do
+    Repo.transact(fn repo ->
+      locked_document =
+        Document
+        |> where([candidate], candidate.id == ^document.id)
+        |> lock("FOR UPDATE")
+        |> repo.one!()
+
+      latest = latest_revision!(repo, locked_document, preload_blocks?: false)
+
+      with {:ok, proposal} <- upsert_scoped_proposal(repo, locked_document, latest, :title, attrs) do
+        {:ok,
+         %{proposal: proposal, live_proposals: count_live_scope(repo, locked_document, :title)}}
+      end
+    end)
+    |> unwrap_error()
+  end
+
+  @doc """
+  Settles a contended title in favour of one proposal.
+
+  The document-level twin of `decide_block/4`: same argument, same outcome, a
+  different slot. Two topics wanting different titles is an ordinary
+  disagreement and picking one is a decision a person makes -- which is why a
+  title is a scope of its own rather than something inferred from a body.
+  """
+  @impl true
+  def decide_title(%Document{} = document, proposal_id, actor_id) do
+    decide(document, :title, nil, proposal_id, actor_id)
+  end
+
+  @doc """
   Lists the blocks with more than one live proposal, and those proposals.
 
   Two live proposals on one block *is* the conflict test. No version numbers,
@@ -282,19 +325,27 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def decide_block(%Document{} = document, block_id, proposal_id, actor_id) do
+    decide(document, :block, block_id, proposal_id, actor_id)
+  end
+
+  # One decision, whichever slot holds the argument: the live proposals in that
+  # slot are the candidates, the named one wins and the rest are rejected. A
+  # block's slot is its `block_id`; a document-level scope's slot is the scope
+  # itself, there being only one of each per document.
+  defp decide(%Document{} = document, scope, block_id, proposal_id, actor_id) do
     Repo.transact(fn repo ->
       decided_at = DateTime.utc_now()
 
       candidates =
         BlockProposal
-        |> where([proposal], proposal.document_id == ^document.id)
-        |> where([proposal], proposal.block_id == ^block_id and proposal.status == :live)
+        |> where([proposal], proposal.document_id == ^document.id and proposal.status == :live)
+        |> slot(scope, block_id)
         |> lock("FOR UPDATE")
         |> repo.all()
 
       case Enum.split_with(candidates, &(&1.id == proposal_id)) do
         {[], _rest} ->
-          {:error, {:proposal_not_found, %{proposal_id: proposal_id, block_id: block_id}}}
+          {:error, {:proposal_not_found, slot_details(scope, block_id, proposal_id)}}
 
         {[adopted], losers} ->
           decide_all(repo, adopted, losers, actor_id, decided_at)
@@ -302,6 +353,17 @@ defmodule RintoPMO.Documents do
     end)
     |> unwrap_error()
   end
+
+  defp slot(query, :block, block_id) do
+    where(query, [proposal], proposal.scope == :block and proposal.block_id == ^block_id)
+  end
+
+  defp slot(query, scope, nil), do: where(query, [proposal], proposal.scope == ^scope)
+
+  defp slot_details(:block, block_id, proposal_id),
+    do: %{proposal_id: proposal_id, block_id: block_id}
+
+  defp slot_details(scope, nil, proposal_id), do: %{proposal_id: proposal_id, scope: scope}
 
   @doc """
   Turns the chosen proposals into a revision.
@@ -334,13 +396,19 @@ defmodule RintoPMO.Documents do
 
       parent = latest_revision!(repo, locked_document, preload_blocks?: true)
       by_block = repo |> live_proposals(locked_document, :block) |> Enum.group_by(& &1.block_id)
+      title = title_change(repo, locked_document, attrs)
 
-      with {:ok, block_ids} <- selected_blocks(attrs, by_block),
+      with {:ok, block_ids} <- selected_blocks(attrs, by_block, title),
            :ok <- ensure_no_contention(block_ids, by_block),
            {:ok, adopted} <- adopted_proposals(block_ids, by_block),
-           revision_attrs = revision_attrs(attrs, adopted),
+           revision_attrs = revision_attrs(attrs, adopted, title),
            {:ok, revision} <- insert_revision(repo, locked_document, parent, revision_attrs),
-           :ok <- accept_all(repo, adopted, attr(attrs, :actor_id, nil)),
+           :ok <-
+             accept_all(
+               repo,
+               adopted ++ adopted_title(title),
+               attr(attrs, :actor_id, nil)
+             ),
            :ok <- resolve_annotations(locked_document, revision, attrs) do
         {:ok, revision}
       end
@@ -548,10 +616,57 @@ defmodule RintoPMO.Documents do
   # Missing ids fall through to the changeset, which names them properly.
   defp live_proposal(_repo, _document, _block_id, _conversation_id), do: nil
 
+  # The document-level twin of `upsert_proposal/4`. The slot is keyed by scope
+  # rather than by block, and no `block_id` is written -- the check constraint
+  # and the changeset both refuse one here.
+  defp upsert_scoped_proposal(repo, document, latest, scope, attrs) do
+    conversation_id = attr(attrs, :conversation_id, nil)
+    content = attr(attrs, :content, nil)
+    actor_id = attr(attrs, :actor_id, nil)
+
+    case live_scoped_proposal(repo, document, scope, conversation_id) do
+      nil ->
+        %{
+          document_id: document.id,
+          scope: scope,
+          conversation_id: conversation_id,
+          actor_id: actor_id,
+          content: content,
+          base_revision_id: latest.id
+        }
+        |> BlockProposal.changeset()
+        |> repo.insert()
+
+      proposal ->
+        proposal
+        |> BlockProposal.content_changeset(%{actor_id: actor_id, content: content})
+        |> repo.update()
+    end
+  end
+
+  defp live_scoped_proposal(repo, document, scope, conversation_id)
+       when is_binary(conversation_id) do
+    BlockProposal
+    |> where([proposal], proposal.document_id == ^document.id)
+    |> where([proposal], proposal.scope == ^scope)
+    |> where([proposal], proposal.conversation_id == ^conversation_id)
+    |> where([proposal], proposal.status == :live)
+    |> repo.one()
+  end
+
+  defp live_scoped_proposal(_repo, _document, _scope, _conversation_id), do: nil
+
   defp count_live(repo, document, block_id) do
     BlockProposal
     |> where([proposal], proposal.document_id == ^document.id)
     |> where([proposal], proposal.block_id == ^block_id and proposal.status == :live)
+    |> repo.aggregate(:count)
+  end
+
+  defp count_live_scope(repo, document, scope) do
+    BlockProposal
+    |> where([proposal], proposal.document_id == ^document.id)
+    |> where([proposal], proposal.scope == ^scope and proposal.status == :live)
     |> repo.aggregate(:count)
   end
 
@@ -578,10 +693,10 @@ defmodule RintoPMO.Documents do
 
   # Commit
 
-  defp selected_blocks(attrs, by_block) do
+  defp selected_blocks(attrs, by_block, title) do
     case attr(attrs, :block_ids, nil) do
-      nil -> default_selection(by_block)
-      [] -> {:error, {:nothing_to_commit, %{}}}
+      nil -> default_selection(by_block, title)
+      [] -> nothing_to_commit_unless(title, [])
       block_ids when is_list(block_ids) -> {:ok, block_ids}
       _other -> {:error, {:invalid_block_ids, %{reason: "block_ids must be an array"}}}
     end
@@ -590,12 +705,17 @@ defmodule RintoPMO.Documents do
   # Everything that can go: every block holding exactly one live proposal. A
   # contended block is left behind rather than holding up the rest, which is
   # the whole point of selecting per block.
-  defp default_selection(by_block) do
+  defp default_selection(by_block, title) do
     case for {block_id, [_only]} <- by_block, do: block_id do
-      [] -> {:error, {:nothing_to_commit, %{}}}
+      [] -> nothing_to_commit_unless(title, [])
       block_ids -> {:ok, Enum.sort(block_ids)}
     end
   end
+
+  # A retitling is a change, so a commit carrying one is not empty even with no
+  # block to go with it.
+  defp nothing_to_commit_unless(nil, _block_ids), do: {:error, {:nothing_to_commit, %{}}}
+  defp nothing_to_commit_unless(_title, block_ids), do: {:ok, block_ids}
 
   defp ensure_no_contention(block_ids, by_block) do
     case Enum.filter(block_ids, &(length(Map.get(by_block, &1, [])) > 1)) do
@@ -618,7 +738,7 @@ defmodule RintoPMO.Documents do
     end
   end
 
-  defp revision_attrs(attrs, adopted) do
+  defp revision_attrs(attrs, adopted, title) do
     block_ops =
       Enum.map(adopted, fn proposal ->
         %{
@@ -634,9 +754,37 @@ defmodule RintoPMO.Documents do
       base_revision_id: attr(attrs, :base_revision_id, nil),
       source_conversation_id: attr(attrs, :source_conversation_id, nil)
     }
-    |> maybe_put(:title, attr(attrs, :title, nil))
+    |> maybe_put(:title, title_content(title))
     |> maybe_put(:change_summary, attr(attrs, :change_summary, nil))
   end
+
+  # What settles this revision's title, if anything at all.
+  #
+  # A proposal is adopted the way a block's is: exactly one live one is
+  # uncontested and goes, more than one is an argument and is left behind rather
+  # than holding up the rest of the commit.
+  #
+  # A title in `attrs` is somebody typing one. It wins, and it settles nothing --
+  # a person choosing their own words is not a decision about anybody's proposal.
+  defp title_change(repo, document, attrs) do
+    case attr(attrs, :title, nil) do
+      nil ->
+        case live_proposals(repo, document, :title) do
+          [only] -> {:adopted, only}
+          _none_or_contended -> nil
+        end
+
+      typed ->
+        {:typed, typed}
+    end
+  end
+
+  defp title_content(nil), do: nil
+  defp title_content({:typed, title}), do: title
+  defp title_content({:adopted, %BlockProposal{content: content}}), do: content
+
+  defp adopted_title({:adopted, proposal}), do: [proposal]
+  defp adopted_title(_typed_or_absent), do: []
 
   # `title` is absent rather than nil when unset, because the revision
   # changeset reads its absence as "keep the parent's".

@@ -203,6 +203,89 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
     assert %{"id" => ^proposal_id, "status" => "live"} = json_response(conn, 200)["data"]
   end
 
+  test "POST proposals routes a title scope to its own slot", %{conn: conn, document: document} do
+    proposal = insert(:block_proposal, document: document, scope: :title, block_id: nil)
+
+    expect(DocumentsMock, :propose_title, fn ^document, attrs ->
+      assert attrs["content"] == "上线流程"
+      # A block cannot be named here, so one sent anyway is dropped rather than
+      # passed on to be rejected.
+      refute Map.has_key?(attrs, "block_id")
+      {:ok, %{proposal: proposal, live_proposals: 1}}
+    end)
+
+    conn =
+      post(conn, ~p"/api/v1/documents/#{document.id}/proposals", %{
+        "scope" => "title",
+        "block_id" => UUIDv7.generate(),
+        "conversation_id" => proposal.conversation_id,
+        "actor_id" => proposal.actor_id,
+        "content" => "上线流程"
+      })
+
+    assert %{"scope" => "title", "block_id" => nil} = json_response(conn, 201)["data"]
+  end
+
+  # An operation list is compiled from Markdown, never sent in. A caller able to
+  # supply its own could write a revision no Markdown produces.
+  test "POST proposals ignores block operations sent by a client", %{
+    conn: conn,
+    document: document
+  } do
+    proposal = insert(:block_proposal, document: document)
+
+    expect(DocumentsMock, :propose_block, fn ^document, attrs ->
+      refute Map.has_key?(attrs, "block_ops")
+      {:ok, %{proposal: proposal, live_proposals: 1}}
+    end)
+
+    conn =
+      post(conn, ~p"/api/v1/documents/#{document.id}/proposals", %{
+        "block_id" => proposal.block_id,
+        "conversation_id" => proposal.conversation_id,
+        "actor_id" => proposal.actor_id,
+        "content" => "Rewritten",
+        "block_ops" => [%{"op" => "delete", "block_id" => UUIDv7.generate()}]
+      })
+
+    assert json_response(conn, 201)
+  end
+
+  test "POST proposals refuses a scope it does not serve", %{conn: conn, document: document} do
+    conn =
+      post(conn, ~p"/api/v1/documents/#{document.id}/proposals", %{
+        "scope" => "wormhole",
+        "conversation_id" => insert(:conversation).id,
+        "actor_id" => insert(:actor).id,
+        "content" => "Anything"
+      })
+
+    assert %{"error" => "invalid_scope", "details" => %{"scope" => "wormhole"}} =
+             json_response(conn, 422)
+  end
+
+  # The proposal says which argument it is in, so a client deciding one names a
+  # proposal and nothing else -- the same call it made before scopes existed.
+  test "POST decide settles a title from the proposal alone", %{conn: conn, document: document} do
+    proposal = insert(:block_proposal, document: document, scope: :title, block_id: nil)
+    actor = insert(:actor)
+    actor_id = actor.id
+    proposal_id = proposal.id
+
+    expect(DocumentsMock, :get_proposal!, fn ^document, _id -> proposal end)
+
+    expect(DocumentsMock, :decide_title, fn ^document, ^proposal_id, ^actor_id ->
+      {:ok, proposal}
+    end)
+
+    conn =
+      post(conn, ~p"/api/v1/documents/#{document.id}/proposals/#{proposal.id}/decide", %{
+        "actor_id" => actor.id
+      })
+
+    assert %{"id" => ^proposal_id, "scope" => "title"} = json_response(conn, 200)["data"]
+  end
+
   test "POST decide requires an actor", %{conn: conn, document: document} do
     proposal = insert(:block_proposal, document: document)
 
