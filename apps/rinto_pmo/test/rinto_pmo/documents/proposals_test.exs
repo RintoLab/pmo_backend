@@ -721,6 +721,50 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  describe "decide_document/3" do
+    # Committing one would settle it too, but only by changing the document at
+    # the same time. This says which rewrite the document will take and leaves
+    # when to take it to whoever commits.
+    test "settles two competing rewrites and leaves the winner live" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+      decider = insert(:actor)
+
+      assert {:ok, %{proposal: mine}} =
+               propose_document(document, insert(:conversation), actor, "## Mine")
+
+      assert {:ok, %{proposal: theirs}} =
+               propose_document(document, insert(:conversation), actor, "## Theirs")
+
+      assert {:ok, adopted} = Documents.decide_document(document, theirs.id, decider.id)
+
+      assert adopted.id == theirs.id
+      assert adopted.status == :live
+      assert Repo.reload!(mine).status == :rejected
+      assert Documents.scope_contentions(document) == []
+
+      # And the winner still has to be committed like anything else.
+      assert {:ok, revision} = commit_document(document, actor, adopted)
+      assert Enum.map(revision.blocks, & &1.content) == ["## Theirs"]
+    end
+
+    # A rewrite competes with another rewrite. Against a block proposal there is
+    # nothing to choose: the two are not alternatives, and a commit supersedes
+    # the block one rather than a decision rejecting it.
+    test "refuses a proposal from another slot" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: block_proposal}} =
+               propose(document, block.block_id, insert(:conversation), actor, "Tighter")
+
+      assert {:error, :proposal_not_found, details} =
+               Documents.decide_document(document, block_proposal.id, actor.id)
+
+      assert details.scope == :document
+    end
+  end
+
   describe "commit_proposals/2 with a title proposal" do
     test "carries an uncontested title into the revision" do
       %{document: document} = document_with_blocks(["One"])

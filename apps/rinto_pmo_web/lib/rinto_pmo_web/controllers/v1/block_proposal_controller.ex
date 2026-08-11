@@ -145,6 +145,10 @@ defmodule RintoPMOWeb.V1.BlockProposalController do
     documents_context().decide_title(document, proposal.id, actor_id)
   end
 
+  defp settle(document, %{scope: :document} = proposal, actor_id) do
+    documents_context().decide_document(document, proposal.id, actor_id)
+  end
+
   defp settle(document, proposal, actor_id) do
     documents_context().decide_block(document, proposal.block_id, proposal.id, actor_id)
   end

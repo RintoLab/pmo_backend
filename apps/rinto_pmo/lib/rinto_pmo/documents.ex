@@ -397,6 +397,24 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
+  Settles two topics' competing rewrites in favour of one.
+
+  Committing one would settle it too -- that supersedes every other live
+  proposal on the way through -- but only by changing the document at the same
+  time. Deciding is the same argument without that: it says which rewrite the
+  document is going to take, leaving when to take it to whoever commits.
+
+  Note what this is *not* an argument with. A rewrite competes with another
+  rewrite; against a block proposal there is nothing to choose, because the two
+  are not alternatives (see `RintoPMO.Documents.BlockProposal`). Losing block
+  proposals are superseded by the commit, not rejected by a decision here.
+  """
+  @impl true
+  def decide_document(%Document{} = document, proposal_id, actor_id) do
+    decide(document, :document, nil, proposal_id, actor_id)
+  end
+
+  @doc """
   Lists the blocks with more than one live proposal, and those proposals.
 
   Two live proposals on one block *is* the conflict test. No version numbers,

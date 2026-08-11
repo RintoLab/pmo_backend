@@ -85,6 +85,10 @@ defmodule RintoPMO.Documents.Behaviour do
               {:ok, BlockProposal.t()}
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
+  @callback decide_document(Document.t(), UUIDv7.t(), UUIDv7.t()) ::
+              {:ok, BlockProposal.t()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
   @callback commit_proposals(Document.t(), map()) ::
               {:ok, DocumentRevision.t()}
               | {:error, Ecto.Changeset.t()}
