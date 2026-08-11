@@ -21,7 +21,17 @@ rinto-pmo config init --api http://localhost:4000/api/v1
 后续命令自动读取，不要手工拼 actor id，也不要把远程 AI actor 当成本地执行者。
 可以用 `rinto-pmo config show` 检查当前配置。
 
-## 1. 找到可以做的任务
+## 1. 找到项目和任务
+
+不知道 project slug 时，先发现项目并确认它关联的代码仓库：
+
+```sh
+rinto-pmo project list
+rinto-pmo project show <project-slug>
+```
+
+`project show` 返回项目描述以及仓库 URL、目录名和默认分支。确认当前工作区对应任务所属的仓库，
+不要因为本地恰好打开了另一个仓库就在错误的位置实现。
 
 查看项目里无人领取且尚未结束的实际工作：
 
@@ -132,6 +142,7 @@ rinto-pmo task release <task-id>
 当前二进制支持的参数以这些帮助为准：
 
 ```sh
+rinto-pmo project --help
 rinto-pmo task --help
 rinto-pmo task <command> --help
 rinto-pmo doc --help
