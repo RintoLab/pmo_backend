@@ -6,17 +6,15 @@ defmodule RintoPMO.DocumentsTest do
   alias RintoPMO.Documents.DocumentRevision
 
   describe "documents" do
-    test "creates a project document with an initial revision and optional blocks" do
+    test "creates a project document with an initial revision, cutting the body into blocks" do
       project = insert(:project)
       actor = insert(:actor, enabled: false)
 
       assert {:ok, %Document{} = document} =
                create_document(project, %{
                  title: "Project plan",
-                 blocks: [
-                   %{actor_id: actor.id, content: "## Background\n\nContext"},
-                   %{actor_id: actor.id, content: "## Goals\n\nGoals"}
-                 ]
+                 actor_id: actor.id,
+                 markdown: "## Background\n\nContext\n\n## Goals\n\nGoals"
                })
 
       assert document.project_id == project.id
@@ -25,15 +23,45 @@ defmodule RintoPMO.DocumentsTest do
                revision =
                document.latest_revision
 
+      assert Enum.map(revision.blocks, & &1.content) == [
+               "## Background\n\nContext",
+               "## Goals\n\nGoals"
+             ]
+
       assert Enum.map(revision.blocks, & &1.position) == [0, 1]
       assert Enum.map(revision.blocks, & &1.actor_id) == [actor.id, actor.id]
       assert Enum.uniq(Enum.map(revision.blocks, & &1.block_id)) |> length() == 2
     end
 
-    test "allows an unassigned document without blocks" do
+    test "allows an unassigned document without a body" do
       assert {:ok, document} = Documents.create_document(%{title: "Empty draft"})
       assert document.project_id == nil
       assert %{blocks: []} = document.latest_revision
+    end
+
+    test "a body with nothing but whitespace produces no blocks" do
+      assert {:ok, document} =
+               Documents.create_document(%{
+                 title: "Empty draft",
+                 actor_id: insert(:actor).id,
+                 markdown: "\n\n   \n"
+               })
+
+      assert %{blocks: []} = document.latest_revision
+    end
+
+    test "requires an actor for a body that produces blocks" do
+      assert {:error, changeset} =
+               Documents.create_document(%{title: "Plan", markdown: "## One\n\ntext"})
+
+      assert %{revisions: [%{blocks: [%{actor_id: ["can't be blank"]}]}]} = errors_on(changeset)
+    end
+
+    test "rejects a body that is not a string" do
+      assert {:error, changeset} =
+               Documents.create_document(%{title: "Plan", markdown: %{"nope" => true}})
+
+      assert %{markdown: ["is invalid"]} = errors_on(changeset)
     end
 
     test "requires the revision title" do
@@ -103,10 +131,8 @@ defmodule RintoPMO.DocumentsTest do
       {:ok, document} =
         create_document(project, %{
           title: "Plan",
-          blocks: [
-            %{actor_id: first_actor.id, content: "## First\n\nOld"},
-            %{actor_id: first_actor.id, content: "## Second\n\nKeep"}
-          ]
+          actor_id: first_actor.id,
+          markdown: "## First\n\nOld\n\n## Second\n\nKeep"
         })
 
       parent = document.latest_revision

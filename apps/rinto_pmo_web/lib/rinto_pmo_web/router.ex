@@ -31,6 +31,10 @@ defmodule RintoPMOWeb.Router do
       resources "/tasks", TaskController, only: [:index, :create]
     end
 
+    # How a Markdown body would be cut into blocks, without creating anything.
+    # The split happens here, so this is where an author checks it.
+    post "/documents/preview_blocks", DocumentController, :preview_blocks
+
     resources "/documents", DocumentController, only: [:index, :show, :create, :delete] do
       resources "/revisions", DocumentRevisionController,
         only: [:index, :show, :create],

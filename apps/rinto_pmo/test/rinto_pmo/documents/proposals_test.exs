@@ -124,7 +124,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       refute Map.has_key?(first, :other_contents)
 
       assert second.block_id == second_block.block_id
-      assert second.content == "Original two"
+      assert second.content == "## Original two"
       refute second.proposed?
       assert second.other_proposals == 0
     end
@@ -137,7 +137,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       {:ok, _} = propose(document, block.block_id, theirs, insert(:actor), "Their version")
 
       assert [only] = Documents.blocks_for_conversation(document, bystander.id)
-      assert only.content == "Original"
+      assert only.content == "## Original"
       refute only.proposed?
       assert only.other_proposals == 1
     end
@@ -207,7 +207,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert revision.source_conversation_id == conversation.id
 
       blocks = Documents.get_revision!(document, revision.id).blocks
-      assert Enum.map(blocks, & &1.content) == ["Rewritten one", "Original two"]
+      assert Enum.map(blocks, & &1.content) == ["Rewritten one", "## Original two"]
       # Block identity survives the rewrite; only the snapshot is new.
       assert Enum.map(blocks, & &1.block_id) == [first_block.block_id, second_block.block_id]
       # The block is attributed to whoever wrote the text, not whoever approved.
@@ -272,7 +272,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
                })
 
       blocks = Documents.get_revision!(document, revision.id).blocks
-      assert Enum.map(blocks, & &1.content) == ["Contended", "Uncontested"]
+      assert Enum.map(blocks, & &1.content) == ["## Contended", "Uncontested"]
     end
 
     test "the default selection skips contended blocks" do
@@ -294,7 +294,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
                })
 
       blocks = Documents.get_revision!(document, revision.id).blocks
-      assert Enum.map(blocks, & &1.content) == ["Contended", "Uncontested"]
+      assert Enum.map(blocks, & &1.content) == ["## Contended", "Uncontested"]
 
       # The argument is still there, waiting to be settled.
       assert [%{block_id: still_contended}] = Documents.contentions(document)
@@ -410,13 +410,16 @@ defmodule RintoPMO.Documents.ProposalsTest do
     })
   end
 
+  # One block per heading: the body is cut server-side, so a test wanting N
+  # blocks has to write a body that cuts into N.
   defp document_with_blocks(contents) do
     actor = insert(:actor)
 
     {:ok, document} =
       Documents.create_document(%{
         title: "Document",
-        blocks: Enum.map(contents, &%{actor_id: actor.id, content: &1})
+        actor_id: actor.id,
+        markdown: Enum.map_join(contents, "\n\n", &"## #{&1}")
       })
 
     %{document: document, blocks: Enum.sort_by(document.latest_revision.blocks, & &1.position)}

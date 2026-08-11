@@ -10,6 +10,15 @@ defmodule RintoPMOWeb.V1.DocumentJSON do
     %{data: data(document)}
   end
 
+  def preview_blocks(%{contents: contents}) do
+    blocks =
+      contents
+      |> Enum.with_index()
+      |> Enum.map(fn {content, position} -> %{position: position, content: content} end)
+
+    %{data: %{blocks: blocks}}
+  end
+
   defp summary(%Document{} = document) do
     %{
       id: document.id,

@@ -25,6 +25,7 @@ defmodule RintoPMO.Documents do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Documents.Markdown
   alias RintoPMO.Utils
 
   @behaviour RintoPMO.Documents.Behaviour
@@ -65,21 +66,43 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
-  Creates a document, its initial revision, and optional blocks atomically.
+  Creates a document, its initial revision, and its blocks atomically.
+
+  `attrs` takes `title`, an optional `project_id` and `change_summary`, and the
+  body as `markdown` plus the `actor_id` to credit it to. The body is cut into
+  blocks by `RintoPMO.Documents.Markdown` -- callers hand over a Markdown
+  document, not a block list, because the grain is this layer's decision and a
+  caller free to choose it would drift from every other caller.
+
+  A missing or blank body is allowed: an empty document is a legitimate
+  starting point, and there is nothing to credit to an actor either.
   """
   @impl true
   def create_document(attrs) do
-    %Document{}
-    |> Document.creation_changeset(attrs)
-    |> Repo.insert()
-    |> case do
-      {:ok, %Document{revisions: [revision]} = document} ->
-        {:ok, %{document | latest_revision: revision}}
+    with {:ok, attrs} <- split_markdown(attrs) do
+      %Document{}
+      |> Document.creation_changeset(attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, %Document{revisions: [revision]} = document} ->
+          {:ok, %{document | latest_revision: revision}}
 
-      {:error, %Changeset{} = changeset} ->
-        {:error, changeset}
+        {:error, %Changeset{} = changeset} ->
+          {:error, changeset}
+      end
     end
   end
+
+  @doc """
+  Reports how a Markdown body would be cut into blocks, creating nothing.
+
+  The grain is this layer's decision (see `create_document/1`), so an author has
+  no way to check it before committing to it. Without this they would have to
+  create a document, look, and then clean up -- which is how block boundaries
+  nobody wanted end up in the history.
+  """
+  @impl true
+  def preview_blocks(markdown) when is_binary(markdown), do: Markdown.split(markdown)
 
   @doc """
   Idempotently archives a document.
@@ -323,6 +346,40 @@ defmodule RintoPMO.Documents do
       end
     end)
     |> unwrap_error()
+  end
+
+  defp split_markdown(attrs) do
+    case attr(attrs, :markdown, nil) do
+      nil ->
+        {:ok, put_blocks(attrs, [])}
+
+      markdown when is_binary(markdown) ->
+        case Markdown.split(markdown) do
+          {:ok, contents} -> {:ok, put_blocks(attrs, contents)}
+          {:error, _reason} -> {:error, invalid_markdown(attrs)}
+        end
+
+      _other ->
+        {:error, invalid_markdown(attrs)}
+    end
+  end
+
+  # Every block of a new document is credited to the one actor that wrote the
+  # body. Per-block authorship only starts to differ once revisions land, and
+  # those carry their own `actor_id` per operation.
+  defp put_blocks(attrs, contents) do
+    actor_id = attr(attrs, :actor_id, nil)
+    blocks = Enum.map(contents, &%{actor_id: actor_id, content: &1})
+
+    attrs
+    |> Map.drop([:markdown, "markdown", :actor_id, "actor_id", :blocks, "blocks"])
+    |> Map.put(:blocks, blocks)
+  end
+
+  defp invalid_markdown(attrs) do
+    %Document{}
+    |> Document.creation_changeset(put_blocks(attrs, []))
+    |> Changeset.add_error(:markdown, "is invalid")
   end
 
   defp filter_documents(query, :all), do: query

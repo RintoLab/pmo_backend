@@ -23,6 +23,23 @@ defmodule RintoPMOWeb.V1.DocumentController do
     end
   end
 
+  @doc """
+  Reports how a Markdown body would be cut into blocks, creating nothing.
+
+  The split is the server's decision, so this is the only way an author can see
+  the grain before living with it.
+  """
+  def preview_blocks(conn, %{"markdown" => markdown}) when is_binary(markdown) do
+    case Utils.module(:documents).preview_blocks(markdown) do
+      {:ok, contents} -> render(conn, :preview_blocks, contents: contents)
+      {:error, _reason} -> {:error, :invalid_markdown, %{markdown: ["is invalid"]}}
+    end
+  end
+
+  def preview_blocks(_conn, _params) do
+    {:error, :bad_request, %{markdown: ["can't be blank"]}}
+  end
+
   def delete(conn, %{"id" => id}) do
     context = Utils.module(:documents)
     document = context.get_document!(id)

@@ -14,7 +14,6 @@
 mod client;
 mod doc;
 mod error;
-mod markdown;
 mod skill;
 
 use clap::{Parser, Subcommand};

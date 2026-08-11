@@ -552,6 +552,9 @@ paths:
       tags: [Documents]
       operationId: createDocument
       summary: Create a document and its initial revision
+      description: >-
+        The body is sent as one Markdown document and cut into blocks by the server.
+        See `DocumentCreateInput.markdown` for where it cuts.
       requestBody:
         $ref: "#/components/requestBodies/DocumentCreate"
       responses:
@@ -561,6 +564,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DocumentResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/preview_blocks:
+    post:
+      tags: [Documents]
+      operationId: previewDocumentBlocks
+      summary: Preview how a Markdown body cuts into blocks
+      description: >-
+        Reports the blocks `POST /documents` would produce from this body, creating
+        nothing. The split is the server's decision, so this is how an author checks
+        the grain before living with it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentPreviewBlocksInput"
+      responses:
+        "200":
+          description: The blocks the body would be cut into, in document order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentPreviewBlocksResponse"
+        "400":
+          description: The body is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
         "422":
           $ref: "#/components/responses/ValidationError"
   /documents/{document_id}:
@@ -2523,17 +2556,6 @@ components:
           items:
             $ref: "#/components/schemas/ProjectSummary"
       additionalProperties: false
-    DocumentBlockCreateInput:
-      type: object
-      required: [actor_id, content]
-      properties:
-        actor_id:
-          type: string
-          format: uuid
-        content:
-          type: string
-          description: A complete Markdown fragment, normally beginning with an H2 or H3 heading.
-      additionalProperties: false
     InsertAfterBlockOperation:
       type: object
       required: [op, after_block_id, actor_id, content]
@@ -2620,14 +2642,56 @@ components:
         title:
           type: string
           minLength: 1
+          description: >-
+            The only source of the document title. It is never read out of the body,
+            so an H1 in the body is ordinary content and a body may carry several.
         change_summary:
           type: string
           nullable: true
-        blocks:
-          type: array
-          default: []
-          items:
-            $ref: "#/components/schemas/DocumentBlockCreateInput"
+        actor_id:
+          type: string
+          format: uuid
+          description: >-
+            Who the body is credited to. Required whenever `markdown` produces at
+            least one block; every block of a new document is credited to this actor.
+        markdown:
+          type: string
+          description: >-
+            The document body as one Markdown document. The server cuts it into
+            blocks at every top-level H1, H2 and H3 heading; H4 and deeper stay with
+            their section, and headings inside code blocks, lists or block quotes do
+            not cut. Blocks are stored as Markdown re-rendered from the parsed
+            document, so formatting is normalised. Use
+            `POST /documents/preview_blocks` to see the split before creating anything.
+      additionalProperties: false
+    DocumentPreviewBlocksInput:
+      type: object
+      required: [markdown]
+      properties:
+        markdown:
+          type: string
+      additionalProperties: false
+    DocumentPreviewBlocksResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [blocks]
+          properties:
+            blocks:
+              type: array
+              items:
+                type: object
+                required: [position, content]
+                properties:
+                  position:
+                    type: integer
+                    minimum: 0
+                  content:
+                    type: string
+              additionalProperties: false
+          additionalProperties: false
       additionalProperties: false
     DocumentRevisionCreateInput:
       type: object
@@ -4210,6 +4274,7 @@ components:
         - task_blocked
         - review_round_open
         - invalid_block_op
+        - invalid_markdown
         - invalid_estimate
         - task_not_splittable
         - corrupt_image

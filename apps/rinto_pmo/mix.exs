@@ -41,6 +41,7 @@ defmodule RintoPMO.MixProject do
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
       {:uuidv7, "~> 1.0"},
+      {:mdex, "~> 0.13"},
       {:oban, "~> 2.20"},
       {:erlexec, "~> 2.3"},
       {:ex_machina, "~> 2.8.1", only: :test},

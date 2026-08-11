@@ -38,6 +38,7 @@ defmodule RintoPMO.Documents.Behaviour do
   @callback get_document!(UUIDv7.t()) :: Document.t()
   @callback create_document(map()) ::
               {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
+  @callback preview_blocks(String.t()) :: {:ok, [String.t()]} | {:error, term()}
   @callback archive_document(Document.t()) ::
               {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
 

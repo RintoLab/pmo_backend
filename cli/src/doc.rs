@@ -5,7 +5,6 @@ use serde_json::{json, Map, Value};
 
 use crate::client::{self, Client};
 use crate::error::{Error, Result};
-use crate::markdown;
 
 #[derive(Subcommand)]
 pub enum DocCommand {
@@ -23,13 +22,9 @@ pub struct CreateArgs {
     #[arg(long)]
     title: String,
 
-    /// Markdown file holding the body; split into blocks at `#`, `##` and `###` headings
-    #[arg(long, value_name = "FILE", required_unless_present = "blocks")]
-    body: Option<PathBuf>,
-
-    /// JSON array of blocks, for content heading splitting cannot express
-    #[arg(long, value_name = "FILE", conflicts_with = "body")]
-    blocks: Option<PathBuf>,
+    /// Markdown file holding the body; the server splits it into blocks at `#`, `##` and `###` headings
+    #[arg(long, value_name = "FILE")]
+    body: PathBuf,
 
     /// Project to file the document under; omit to leave it unassigned
     #[arg(long, value_name = "UUID")]
@@ -62,33 +57,26 @@ pub struct ListArgs {
 }
 
 pub fn run(command: DocCommand) -> Result<()> {
+    let client = &Client::from_env()?;
+
     match command {
-        // Built inside each arm rather than up front: `create --dry-run`
-        // touches nothing but the local file, so it must not fail on an
-        // unconfigured environment.
-        DocCommand::Create(args) => create(args),
-        DocCommand::Show(args) => show(&Client::from_env()?, args),
-        DocCommand::List(args) => list(&Client::from_env()?, args),
+        DocCommand::Create(args) => create(client, args),
+        DocCommand::Show(args) => show(client, args),
+        DocCommand::List(args) => list(client, args),
     }
 }
 
-fn create(args: CreateArgs) -> Result<()> {
+fn create(client: &Client, args: CreateArgs) -> Result<()> {
+    let markdown = read(&args.body)?;
+
     if args.dry_run {
-        return dry_run(&args);
+        return dry_run(client, &args.title, markdown);
     }
-
-    let client = &Client::from_env()?;
-
-    let blocks = match (&args.body, &args.blocks) {
-        (Some(path), _) => stamp(read_markdown(path)?, client.actor_id()),
-        (None, Some(path)) => blocks_from_json(path, client.actor_id())?,
-        // clap's `required_unless_present` already rejects this.
-        (None, None) => unreachable!("clap guarantees one of --body or --blocks"),
-    };
 
     let mut payload = Map::new();
     payload.insert("title".to_string(), json!(args.title));
-    payload.insert("blocks".to_string(), Value::Array(blocks));
+    payload.insert("actor_id".to_string(), json!(client.actor_id()));
+    payload.insert("markdown".to_string(), json!(markdown));
     if let Some(project_id) = args.project_id {
         payload.insert("project_id".to_string(), json!(project_id));
     }
@@ -111,24 +99,29 @@ fn create(args: CreateArgs) -> Result<()> {
 /// Exists because block granularity is an authoring decision the author cannot
 /// otherwise check: without a preview the only way to see the split is to
 /// create a real document and then have to clean it up.
-fn dry_run(args: &CreateArgs) -> Result<()> {
-    let blocks: Vec<String> = match (&args.body, &args.blocks) {
-        (Some(path), _) => read_markdown(path)?,
-        (None, Some(path)) => blocks_from_json(path, "")?
-            .iter()
-            .map(|block| content_of(block).to_string())
-            .collect(),
-        (None, None) => unreachable!("clap guarantees one of --body or --blocks"),
-    };
+///
+/// It asks the server rather than splitting locally. The server owns the rule,
+/// and a preview computed by a rule of this binary's own would be a forecast of
+/// what an old CLI thinks -- worse than no preview, because it looks right.
+fn dry_run(client: &Client, title: &str, markdown: String) -> Result<()> {
+    let preview =
+        client::data(client.post("/documents/preview_blocks", json!({ "markdown": markdown }))?)?;
 
-    println!("title: {}", args.title);
+    let blocks = preview
+        .get("blocks")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+
+    println!("title: {title}");
     println!("{} block(s), nothing created:", blocks.len());
     for (index, block) in blocks.iter().enumerate() {
-        let opening = block.lines().next().unwrap_or("").trim();
+        let content = content_of(block);
+        let opening = content.lines().next().unwrap_or("").trim();
         println!(
             "  {:>2}. {opening}  ({} chars)",
             index + 1,
-            block.chars().count()
+            content.chars().count()
         );
     }
 
@@ -202,61 +195,22 @@ fn list(client: &Client, args: ListArgs) -> Result<()> {
     Ok(())
 }
 
-fn read_markdown(path: &Path) -> Result<Vec<String>> {
-    let blocks = markdown::split_into_blocks(&read(path)?);
+/// Reads the body, refusing an empty one here rather than shipping it.
+///
+/// The one check this binary makes about content, and it is not a structural
+/// one: a body with nothing in it is a mistake at the keyboard -- a path typo,
+/// a file the model never wrote -- and the server cannot tell that apart from
+/// someone deliberately creating an empty document.
+fn read(path: &Path) -> Result<String> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|err| Error::Io(format!("could not read {}: {err}", path.display())))?;
 
-    if blocks.is_empty() {
+    if source.trim().is_empty() {
         return Err(Error::Input(format!(
             "{} has no content to write",
             path.display()
         )));
     }
 
-    Ok(blocks)
-}
-
-fn stamp(contents: Vec<String>, actor_id: &str) -> Vec<Value> {
-    contents
-        .into_iter()
-        .map(|content| json!({ "actor_id": actor_id, "content": content }))
-        .collect()
-}
-
-/// Passes author-supplied block objects through untouched apart from stamping
-/// `actor_id`, which is this process's business and never the caller's.
-fn blocks_from_json(path: &Path, actor_id: &str) -> Result<Vec<Value>> {
-    let source = read(path)?;
-
-    let parsed: Value = serde_json::from_str(&source)
-        .map_err(|err| Error::Input(format!("{} is not valid JSON: {err}", path.display())))?;
-
-    let entries = match parsed {
-        Value::Array(entries) => entries,
-        _ => {
-            return Err(Error::Input(format!(
-                "{} must hold a JSON array of blocks",
-                path.display()
-            )))
-        }
-    };
-
-    entries
-        .into_iter()
-        .enumerate()
-        .map(|(index, entry)| match entry {
-            Value::Object(mut block) => {
-                block.entry("actor_id").or_insert_with(|| json!(actor_id));
-                Ok(Value::Object(block))
-            }
-            _ => Err(Error::Input(format!(
-                "block {index} in {} is not an object",
-                path.display()
-            ))),
-        })
-        .collect()
-}
-
-fn read(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path)
-        .map_err(|err| Error::Io(format!("could not read {}: {err}", path.display())))
+    Ok(source)
 }

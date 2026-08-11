@@ -226,13 +226,16 @@ defmodule RintoPMO.Documents.SessionTest do
     pid
   end
 
+  # One block per heading: the body is cut server-side, so a test wanting N
+  # blocks has to write a body that cuts into N.
   defp document_with_blocks(contents) do
     actor = insert(:actor)
 
     {:ok, document} =
       Documents.create_document(%{
         title: "Document",
-        blocks: Enum.map(contents, &%{actor_id: actor.id, content: &1})
+        actor_id: actor.id,
+        markdown: Enum.map_join(contents, "\n\n", &"## #{&1}")
       })
 
     %{document: document, blocks: Enum.sort_by(document.latest_revision.blocks, & &1.position)}

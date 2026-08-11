@@ -29,6 +29,7 @@ defmodule RintoPMOWeb.ErrorJSON do
     task_blocked: {422, "The task is blocked by unfinished dependencies."},
     review_round_open: {422, "The document already has an open review round."},
     invalid_block_op: {422, "The block operation is invalid."},
+    invalid_markdown: {422, "The Markdown body could not be parsed."},
     invalid_estimate: {422, "The task estimate is invalid."},
     task_not_splittable: {422, "The task cannot be split in its current state."},
     corrupt_image: {422, "The image header could not be read."},
