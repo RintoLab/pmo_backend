@@ -20,6 +20,7 @@ defmodule RintoPMO.Documents do
   use RintoPMO, :context
 
   alias Ecto.Changeset
+  alias RintoPMO.Documents.BlockDiff
   alias RintoPMO.Documents.BlockOps
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.Document
@@ -237,6 +238,49 @@ defmodule RintoPMO.Documents do
       with {:ok, proposal} <- upsert_scoped_proposal(repo, locked_document, latest, :title, attrs) do
         {:ok,
          %{proposal: proposal, live_proposals: count_live_scope(repo, locked_document, :title)}}
+      end
+    end)
+    |> unwrap_error()
+  end
+
+  @doc """
+  Records a topic's rewrite of a whole document.
+
+  `content` is Markdown for the entire body, and is compiled here into the
+  block operations that would produce it -- the only way to propose a change
+  that splits, merges, inserts, removes or reorders blocks, none of which a
+  block proposal can express.
+
+  The operations are stored rather than recomputed at commit time, because they
+  are what a person will have reviewed. What keeps them honest is that a
+  document-scope proposal is only committable while its `base_revision_id` is
+  still the document's latest revision; re-proposing recompiles against
+  whatever is current, so iterating is also how a topic catches up.
+
+  Refused when the Markdown produces the document that already exists: a
+  proposal that changes nothing would commit as a revision identical to its
+  parent.
+  """
+  @impl true
+  def propose_document(%Document{} = document, attrs) do
+    Repo.transact(fn repo ->
+      locked_document =
+        Document
+        |> where([candidate], candidate.id == ^document.id)
+        |> lock("FOR UPDATE")
+        |> repo.one!()
+
+      latest = latest_revision!(repo, locked_document, preload_blocks?: true)
+
+      with {:ok, contents} <- split_proposed_markdown(attrs),
+           {:ok, operations} <- compile_operations(latest, contents, attrs),
+           {:ok, proposal} <-
+             upsert_document_proposal(repo, locked_document, latest, operations, attrs) do
+        {:ok,
+         %{
+           proposal: proposal,
+           live_proposals: count_live_scope(repo, locked_document, :document)
+         }}
       end
     end)
     |> unwrap_error()
@@ -655,6 +699,87 @@ defmodule RintoPMO.Documents do
   end
 
   defp live_scoped_proposal(_repo, _document, _scope, _conversation_id), do: nil
+
+  # Cut by the same rules as a new document's body, because the grain is this
+  # layer's decision and a proposal choosing its own would drift from every
+  # revision around it.
+  defp split_proposed_markdown(attrs) do
+    case attr(attrs, :content, nil) do
+      markdown when is_binary(markdown) ->
+        case Markdown.split(markdown) do
+          {:ok, contents} -> {:ok, contents}
+          {:error, reason} -> {:error, {:invalid_markdown, %{reason: inspect(reason)}}}
+        end
+
+      nil ->
+        # No body at all is the changeset's error to name, not a diffing failure.
+        {:ok, :absent}
+
+      _not_a_string ->
+        {:error, {:invalid_markdown, %{reason: "content must be a string"}}}
+    end
+  end
+
+  defp compile_operations(_latest, :absent, _attrs), do: {:ok, []}
+
+  defp compile_operations(%DocumentRevision{} = latest, contents, attrs) do
+    case BlockDiff.compile(ordered_blocks(latest), contents, attr(attrs, :actor_id, nil)) do
+      [] -> {:error, {:no_change_proposed, %{}}}
+      operations -> {:ok, operations}
+    end
+  end
+
+  defp upsert_document_proposal(repo, document, latest, operations, attrs) do
+    conversation_id = attr(attrs, :conversation_id, nil)
+
+    compiled = %{
+      actor_id: attr(attrs, :actor_id, nil),
+      content: attr(attrs, :content, nil),
+      block_ops: storable_operations(operations),
+      base_revision_id: latest.id,
+      change_summary: attr(attrs, :change_summary, nil)
+    }
+
+    case live_scoped_proposal(repo, document, :document, conversation_id) do
+      nil ->
+        compiled
+        |> Map.merge(%{
+          document_id: document.id,
+          scope: :document,
+          conversation_id: conversation_id
+        })
+        |> BlockProposal.changeset()
+        |> repo.insert()
+
+      proposal ->
+        # Recompiled against the current latest revision, so a topic revising
+        # its rewrite is also a topic catching up with whatever landed since.
+        proposal
+        |> BlockProposal.content_changeset(compiled)
+        |> repo.update()
+    end
+  end
+
+  defp ordered_blocks(%DocumentRevision{blocks: blocks}) when is_list(blocks) do
+    Enum.sort_by(blocks, & &1.position)
+  end
+
+  # Stored as `jsonb`, which comes back with string keys and string values
+  # whatever went in. Converting on the way in rather than leaving it to the
+  # database means a proposal just written and one just read hold the same shape,
+  # so nothing downstream has to know which it is holding. `BlockOps` reads
+  # either form; the point is that there is only one.
+  defp storable_operations(operations) do
+    Enum.map(operations, fn operation ->
+      Map.new(operation, fn
+        {key, value} when is_atom(value) and not is_nil(value) ->
+          {Atom.to_string(key), Atom.to_string(value)}
+
+        {key, value} ->
+          {Atom.to_string(key), value}
+      end)
+    end)
+  end
 
   defp count_live(repo, document, block_id) do
     BlockProposal

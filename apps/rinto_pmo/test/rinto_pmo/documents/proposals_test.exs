@@ -4,6 +4,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
   alias RintoPMO.Annotations
   alias RintoPMO.AnnotationsMock
   alias RintoPMO.Documents
+  alias RintoPMO.Documents.BlockOps
   alias RintoPMO.Documents.BlockProposal
 
   setup do
@@ -545,6 +546,144 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  describe "propose_document/2" do
+    test "compiles the body into the operations that would produce it" do
+      %{document: document, blocks: [first, second]} = document_with_blocks(["One", "Two"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal, live_proposals: 1}} =
+               propose_document(document, conversation, actor, "## One\n\n## Two, tighter")
+
+      assert proposal.scope == :document
+      assert proposal.block_id == nil
+      assert proposal.content == "## One\n\n## Two, tighter"
+      assert proposal.base_revision_id == latest_revision_id(document)
+
+      # The untouched block is absent from the operations entirely; the edited
+      # one keeps its id.
+      assert [%{"op" => "update", "block_id" => block_id, "content" => "## Two, tighter"}] =
+               proposal.block_ops
+
+      assert block_id == second.block_id
+      refute block_id == first.block_id
+    end
+
+    # The thing a block proposal could never say.
+    test "expresses a split, which no block proposal can" do
+      %{document: document} = document_with_blocks(["One"])
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(
+                 document,
+                 insert(:conversation),
+                 insert(:actor),
+                 "## One\n\n## Two"
+               )
+
+      assert [%{"op" => "insert_after"}] = proposal.block_ops
+    end
+
+    # Everything downstream reads these back out of jsonb, so the shape that
+    # survives the round trip is the shape that matters -- string keys and string
+    # op names, which BlockOps accepts alongside atoms.
+    test "the stored operations still apply after a round trip through the database" do
+      %{document: document} = document_with_blocks(["One", "Two", "Three"])
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(
+                 document,
+                 insert(:conversation),
+                 insert(:actor),
+                 "## Zero\n\n## One\n\n## Two, tighter"
+               )
+
+      stored = Repo.reload!(proposal)
+      blocks = document_blocks(document)
+
+      assert {:ok, entries} = BlockOps.apply(blocks, stored.block_ops)
+
+      assert Enum.map(entries, & &1.content) == ["## Zero", "## One", "## Two, tighter"]
+    end
+
+    test "a topic revising its rewrite recompiles against what is current now" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One", "Two"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: first}} =
+               propose_document(document, conversation, actor, "## One, tighter\n\n## Two")
+
+      # Something else lands underneath it.
+      assert {:ok, _proposed} =
+               propose(document, block.block_id, insert(:conversation), actor, "## One, theirs")
+
+      assert {:ok, revision} = commit(document, actor)
+
+      assert {:ok, %{proposal: second, live_proposals: 1}} =
+               propose_document(
+                 document,
+                 conversation,
+                 actor,
+                 "## One, theirs\n\n## Two, tighter"
+               )
+
+      # One row, iterating -- and now based on the revision that just landed.
+      assert second.id == first.id
+      assert second.base_revision_id == revision.id
+      assert [%{"content" => "## Two, tighter"}] = second.block_ops
+    end
+
+    test "refuses a body that changes nothing" do
+      %{document: document} = document_with_blocks(["One", "Two"])
+
+      assert {:error, :no_change_proposed, _details} =
+               propose_document(
+                 document,
+                 insert(:conversation),
+                 insert(:actor),
+                 "## One\n\n## Two"
+               )
+    end
+
+    # A body that is not a string at all -- the same thing `create_document/1`
+    # refuses. Anything that is a string, MDEx parses.
+    test "refuses a body that is not Markdown at all" do
+      %{document: document} = document_with_blocks(["One"])
+
+      assert {:error, :invalid_markdown, _details} =
+               propose_document(document, insert(:conversation), insert(:actor), %{"nope" => true})
+    end
+
+    test "two topics rewriting one document is a contention" do
+      %{document: document} = document_with_blocks(["One"])
+      actor = insert(:actor)
+
+      assert {:ok, %{live_proposals: 1}} =
+               propose_document(document, insert(:conversation), actor, "## Mine")
+
+      assert {:ok, %{live_proposals: 2}} =
+               propose_document(document, insert(:conversation), actor, "## Theirs")
+    end
+
+    # Different things, so one topic may hold both -- the index has `scope` in it
+    # for exactly this.
+    test "a topic may rewrite the body and rename the document at once" do
+      %{document: document} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: body}} =
+               propose_document(document, conversation, actor, "## Rewritten")
+
+      assert {:ok, %{proposal: title}} = propose_title(document, conversation, actor, "Renamed")
+
+      assert body.scope == :document
+      assert title.scope == :title
+      refute body.id == title.id
+    end
+  end
+
   describe "decide_title/3" do
     test "settles the argument and leaves the winner live" do
       %{document: document} = document_with_blocks(["One"])
@@ -671,6 +810,14 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
       assert {:error, :nothing_to_commit, _details} = commit(document, insert(:actor))
     end
+  end
+
+  defp propose_document(document, conversation, actor, markdown) do
+    Documents.propose_document(document, %{
+      conversation_id: conversation.id,
+      actor_id: actor.id,
+      content: markdown
+    })
   end
 
   defp propose_title(document, conversation, actor, content) do

@@ -187,11 +187,17 @@ defmodule RintoPMO.Documents.BlockProposal do
   def content_changeset(%__MODULE__{} = proposal, attrs) do
     # The same intent iterating, so the row is rewritten rather than replaced.
     # The actor travels with it: the last writer is the current author.
+    #
+    # A document proposal also brings a fresh operation list and the revision it
+    # was compiled against -- revising a rewrite is how a topic catches up with
+    # whatever landed under it. A block proposal passes neither and keeps what it
+    # had.
     proposal
-    |> cast(attrs, [:actor_id, :content])
-    |> validate_required([:actor_id, :content])
+    |> cast(attrs, [:actor_id, :content, :block_ops, :base_revision_id, :change_summary])
+    |> validate_required([:actor_id, :content, :base_revision_id])
     |> validate_length(:content, min: 1)
     |> foreign_key_constraint(:actor_id)
+    |> foreign_key_constraint(:base_revision_id)
   end
 
   @doc false

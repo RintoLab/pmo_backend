@@ -251,6 +251,46 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
     assert json_response(conn, 201)
   end
 
+  test "POST proposals routes a document scope and returns the compiled diff", %{
+    conn: conn,
+    document: document
+  } do
+    operations = [%{"op" => "insert_after", "after_block_id" => nil, "content" => "## New"}]
+
+    proposal =
+      insert(:block_proposal,
+        document: document,
+        scope: :document,
+        block_id: nil,
+        content: "## New\n\n## Old",
+        block_ops: operations,
+        change_summary: "Added an intro"
+      )
+
+    expect(DocumentsMock, :propose_document, fn ^document, attrs ->
+      assert attrs["content"] == "## New\n\n## Old"
+      assert attrs["change_summary"] == "Added an intro"
+      {:ok, %{proposal: proposal, live_proposals: 1}}
+    end)
+
+    conn =
+      post(conn, ~p"/api/v1/documents/#{document.id}/proposals", %{
+        "scope" => "document",
+        "conversation_id" => proposal.conversation_id,
+        "actor_id" => proposal.actor_id,
+        "content" => "## New\n\n## Old",
+        "change_summary" => "Added an intro"
+      })
+
+    # The operations come back so a client can show the diff a person is being
+    # asked to approve, rather than two bodies to compare by eye.
+    assert %{
+             "scope" => "document",
+             "block_ops" => ^operations,
+             "change_summary" => "Added an intro"
+           } = json_response(conn, 201)["data"]
+  end
+
   test "POST proposals refuses a scope it does not serve", %{conn: conn, document: document} do
     conn =
       post(conn, ~p"/api/v1/documents/#{document.id}/proposals", %{

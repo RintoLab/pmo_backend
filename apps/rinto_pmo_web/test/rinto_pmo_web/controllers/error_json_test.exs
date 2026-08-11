@@ -48,6 +48,7 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {422, "The block operation is invalid.", %{op_index: 0, reason: "duplicate block ID"}},
     invalid_markdown:
       {422, "The Markdown body could not be parsed.", %{markdown: ["is invalid"]}},
+    no_change_proposed: {422, "The proposed body is the document that already exists.", %{}},
     invalid_estimate:
       {422, "The task estimate is invalid.", %{field: "likely", reason: "must be ordered"}},
     task_not_splittable:

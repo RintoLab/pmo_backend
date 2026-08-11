@@ -43,6 +43,11 @@ defmodule RintoPMOWeb.V1.BlockProposalJSON do
       conversation_id: proposal.conversation_id,
       actor_id: proposal.actor_id,
       content: proposal.content,
+      # The operations the content compiles into, so a client can render the
+      # diff a person is being asked to approve rather than two bodies to
+      # compare by eye. Absent on the scopes that have no blocks to operate on.
+      block_ops: proposal.block_ops,
+      change_summary: proposal.change_summary,
       base_revision_id: proposal.base_revision_id,
       status: proposal.status,
       decided_by_actor_id: proposal.decided_by_actor_id,

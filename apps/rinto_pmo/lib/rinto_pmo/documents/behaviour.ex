@@ -59,6 +59,10 @@ defmodule RintoPMO.Documents.Behaviour do
               {:ok, proposed()}
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
+  @callback propose_document(Document.t(), map()) ::
+              {:ok, proposed()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
   @callback contentions(Document.t()) :: [contention()]
   @callback blocks_for_conversation(Document.t(), UUIDv7.t()) :: [conversation_block()]
   @callback decide_block(Document.t(), UUIDv7.t(), UUIDv7.t(), UUIDv7.t()) ::

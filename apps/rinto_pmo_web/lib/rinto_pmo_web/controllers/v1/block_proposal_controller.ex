@@ -59,8 +59,14 @@ defmodule RintoPMOWeb.V1.BlockProposalController do
     documents_context().propose_title(document, Map.delete(attrs, "block_id"))
   end
 
-  defp propose(_document, %{"scope" => scope}) when scope not in ["block", "title"] do
-    {:error, :invalid_scope, %{scope: scope, allowed: ["block", "title"]}}
+  # `content` is the whole body here, as Markdown, and is cut into blocks
+  # server-side -- the same rule a new document's body follows.
+  defp propose(document, %{"scope" => "document"} = attrs) do
+    documents_context().propose_document(document, Map.delete(attrs, "block_id"))
+  end
+
+  defp propose(_document, %{"scope" => scope}) when scope not in ["block", "title", "document"] do
+    {:error, :invalid_scope, %{scope: scope, allowed: ["block", "title", "document"]}}
   end
 
   defp propose(document, attrs), do: documents_context().propose_block(document, attrs)
