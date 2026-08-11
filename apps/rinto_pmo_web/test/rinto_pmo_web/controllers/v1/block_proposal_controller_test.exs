@@ -386,6 +386,39 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
     assert %{"id" => ^proposal_id, "scope" => "title"} = json_response(conn, 200)["data"]
   end
 
+  test "POST rebase carries a proposal across what landed under it", %{
+    conn: conn,
+    document: document
+  } do
+    proposal = insert(:block_proposal, document: document, scope: :document, block_id: nil)
+    proposal_id = proposal.id
+
+    expect(DocumentsMock, :rebase_document_proposal, fn ^document, ^proposal_id ->
+      {:ok, proposal}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/proposals/#{proposal.id}/rebase")
+
+    assert %{"id" => ^proposal_id, "scope" => "document"} = json_response(conn, 200)["data"]
+  end
+
+  test "POST rebase surfaces a conflict for a person to decide", %{
+    conn: conn,
+    document: document
+  } do
+    proposal = insert(:block_proposal, document: document, scope: :document, block_id: nil)
+    block_id = UUIDv7.generate()
+
+    expect(DocumentsMock, :rebase_document_proposal, fn ^document, _id ->
+      {:error, :rebase_conflict, %{reason: :diverged, block_ids: [block_id]}}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/proposals/#{proposal.id}/rebase")
+
+    assert %{"error" => "rebase_conflict", "details" => %{"block_ids" => [^block_id]}} =
+             json_response(conn, 409)
+  end
+
   test "POST decide requires an actor", %{conn: conn, document: document} do
     proposal = insert(:block_proposal, document: document)
 

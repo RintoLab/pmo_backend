@@ -812,6 +812,140 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  describe "rebase_document_proposal/2" do
+    # The whole point: a stale proposal becomes committable again without going
+    # back to the model.
+    test "carries a rewrite across an edit that landed on another block" do
+      %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, conversation, actor, "## One\n\n## Two, mine")
+
+      assert {:ok, _proposed} =
+               propose(document, first.block_id, insert(:conversation), actor, "## One, theirs")
+
+      assert {:ok, landed} = commit(document, actor)
+      assert {:error, :stale_proposal, _details} = commit_document(document, actor, proposal)
+
+      assert {:ok, rebased} = Documents.rebase_document_proposal(document, proposal.id)
+
+      assert rebased.id == proposal.id
+      assert rebased.base_revision_id == landed.id
+
+      # Both edits survive, and it commits.
+      assert {:ok, revision} = commit_document(document, actor, rebased)
+      assert Enum.map(revision.blocks, & &1.content) == ["## One, theirs", "## Two, mine"]
+    end
+
+    test "carries an insertion across an edit elsewhere" do
+      %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
+      conversation = insert(:conversation)
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, conversation, actor, "## One\n\n## Middle\n\n## Two")
+
+      assert {:ok, _proposed} =
+               propose(document, first.block_id, insert(:conversation), actor, "## One, theirs")
+
+      assert {:ok, _landed} = commit(document, actor)
+      assert {:ok, rebased} = Documents.rebase_document_proposal(document, proposal.id)
+      assert {:ok, revision} = commit_document(document, actor, rebased)
+
+      assert Enum.map(revision.blocks, & &1.content) == [
+               "## One, theirs",
+               "## Middle",
+               "## Two"
+             ]
+    end
+
+    # At the block grain, which is the grain every other argument here is at.
+    test "reports a conflict when both sides rewrote the same block" do
+      %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, insert(:conversation), actor, "## One, mine\n\n## Two")
+
+      assert {:ok, _proposed} =
+               propose(document, first.block_id, insert(:conversation), actor, "## One, theirs")
+
+      assert {:ok, _landed} = commit(document, actor)
+
+      assert {:error, :rebase_conflict, details} =
+               Documents.rebase_document_proposal(document, proposal.id)
+
+      assert details.reason == :diverged
+      assert details.block_ids == [first.block_id]
+
+      # Nothing was changed, so the proposal is still there to be decided about.
+      assert Repo.reload!(proposal).base_revision_id == proposal.base_revision_id
+    end
+
+    test "answers unchanged when the proposal is already current" do
+      %{document: document} = document_with_blocks(["One"])
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, insert(:conversation), insert(:actor), "## Rewritten")
+
+      assert {:ok, same} = Documents.rebase_document_proposal(document, proposal.id)
+      assert same.base_revision_id == proposal.base_revision_id
+      assert same.block_ops == proposal.block_ops
+    end
+
+    # What it wanted is already true, so there is nothing left to propose.
+    test "reports no change when the landed revision already says what it wanted" do
+      %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, insert(:conversation), actor, "## One, same\n\n## Two")
+
+      assert {:ok, _proposed} =
+               propose(document, first.block_id, insert(:conversation), actor, "## One, same")
+
+      assert {:ok, _landed} = commit(document, actor)
+
+      assert {:error, :no_change_proposed, _details} =
+               Documents.rebase_document_proposal(document, proposal.id)
+    end
+
+    test "refuses a proposal that is not a live document proposal" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+
+      assert {:ok, %{proposal: block_proposal}} =
+               propose(document, block.block_id, insert(:conversation), insert(:actor), "Tighter")
+
+      assert {:error, :proposal_not_found, _details} =
+               Documents.rebase_document_proposal(document, block_proposal.id)
+    end
+
+    # The stored Markdown and the stored operations have to agree, or a person
+    # reviews one thing and commits another.
+    test "leaves the body and the operations describing the same document" do
+      %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, insert(:conversation), actor, "## One\n\n## Two, mine")
+
+      assert {:ok, _proposed} =
+               propose(document, first.block_id, insert(:conversation), actor, "## One, theirs")
+
+      assert {:ok, _landed} = commit(document, actor)
+      assert {:ok, rebased} = Documents.rebase_document_proposal(document, proposal.id)
+
+      assert {:ok, from_body} = Documents.preview_blocks(rebased.content)
+
+      assert {:ok, from_operations} =
+               BlockOps.apply(document_blocks(document), rebased.block_ops)
+
+      assert Enum.map(from_operations, & &1.content) == from_body
+    end
+  end
+
   describe "scope_contentions/1" do
     test "reports each document-level scope more than one topic is arguing over" do
       %{document: document} = document_with_blocks(["One"])

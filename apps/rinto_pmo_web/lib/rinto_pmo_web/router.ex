@@ -45,6 +45,10 @@ defmodule RintoPMOWeb.Router do
       resources "/proposals", BlockProposalController, only: [:index, :show, :create]
 
       post "/proposals/:id/decide", BlockProposalController, :decide
+
+      # Carrying a whole-document proposal across what landed under it, rather
+      # than throwing it away and asking the model again.
+      post "/proposals/:id/rebase", BlockProposalController, :rebase
       get "/contentions", BlockProposalController, :contentions
 
       # The document as one topic sees it: its own proposals standing in, and

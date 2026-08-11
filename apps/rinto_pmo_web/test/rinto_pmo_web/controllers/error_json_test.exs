@@ -54,6 +54,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
        %{proposal_id: "proposal-1", base_revision_id: "rev-1", current_revision_id: "rev-2"}},
     conflicting_commit:
       {422, "A whole-document proposal is committed on its own, not with a block selection.", %{}},
+    rebase_conflict:
+      {409, "The proposal cannot be carried across what landed under it without a decision.",
+       %{reason: "diverged", block_ids: ["block-1"]}},
     invalid_estimate:
       {422, "The task estimate is invalid.", %{field: "likely", reason: "must be ordered"}},
     task_not_splittable:

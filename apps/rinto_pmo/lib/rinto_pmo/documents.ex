@@ -21,6 +21,7 @@ defmodule RintoPMO.Documents do
 
   alias Ecto.Changeset
   alias RintoPMO.Documents.BlockDiff
+  alias RintoPMO.Documents.BlockMerge
   alias RintoPMO.Documents.BlockOps
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.Document
@@ -284,6 +285,102 @@ defmodule RintoPMO.Documents do
       end
     end)
     |> unwrap_error()
+  end
+
+  @doc """
+  Carries a whole-document proposal across the revisions that landed under it.
+
+  A document proposal goes stale the moment anything else commits, and the
+  alternative to this is throwing it away and asking the model again -- losing a
+  round trip and whatever review a person had already done. So the three
+  versions are merged instead: the revision it was written against, the blocks it
+  wanted, and the blocks as they now stand. See
+  `RintoPMO.Documents.BlockMerge` for how each block is decided.
+
+  The merged body is then proposed exactly as a fresh one would be, so the
+  content and the operations agree by construction rather than by care.
+
+  Three answers are not success. A conflict reports the blocks two people wrote
+  differently, at the same grain as any other contention, so the decision is one
+  a person already knows how to make. A restructured document is refused rather
+  than merged. And a proposal whose merge leaves nothing to change reports
+  `no_change_proposed`: what it wanted is already true.
+  """
+  @impl true
+  def rebase_document_proposal(%Document{} = document, proposal_id) do
+    Repo.transact(fn repo ->
+      locked_document =
+        Document
+        |> where([candidate], candidate.id == ^document.id)
+        |> lock("FOR UPDATE")
+        |> repo.one!()
+
+      parent = latest_revision!(repo, locked_document, preload_blocks?: true)
+
+      with {:ok, proposal} <- live_document_proposal(repo, locked_document, proposal_id) do
+        rebase_onto(repo, locked_document, parent, proposal)
+      end
+    end)
+    |> unwrap_error()
+  end
+
+  # Already current. Rebasing is idempotent rather than an error, so a caller may
+  # ask without first working out whether it needs to.
+  defp rebase_onto(
+         _repo,
+         _document,
+         %DocumentRevision{id: id},
+         %BlockProposal{
+           base_revision_id: id
+         } = proposal
+       ) do
+    {:ok, proposal}
+  end
+
+  defp rebase_onto(repo, document, parent, proposal) do
+    base = revision_with_blocks!(repo, document, proposal.base_revision_id)
+
+    with {:ok, wanted} <- replay_operations(base, proposal.block_ops),
+         {:ok, contents} <- merge_onto(base, wanted, parent),
+         attrs = rebased_attrs(proposal, contents),
+         {:ok, split} <- split_proposed_markdown(attrs),
+         {:ok, operations} <- compile_operations(parent, split, attrs) do
+      upsert_document_proposal(repo, document, parent, operations, attrs)
+    end
+  end
+
+  defp replay_operations(%DocumentRevision{} = base, operations) do
+    case BlockOps.apply(ordered_blocks(base), operations || []) do
+      {:ok, entries} -> {:ok, entries}
+      {:error, code, details} -> {:error, {code, details}}
+    end
+  end
+
+  defp merge_onto(%DocumentRevision{} = base, wanted, %DocumentRevision{} = parent) do
+    case BlockMerge.merge(ordered_blocks(base), wanted, ordered_blocks(parent)) do
+      {:ok, contents} -> {:ok, contents}
+      {:conflict, details} -> {:error, {:rebase_conflict, details}}
+    end
+  end
+
+  # Rejoined into a body and put back through the ordinary propose path, so the
+  # stored Markdown and the stored operations cannot disagree: whatever the body
+  # cuts into is what the operations produce.
+  defp rebased_attrs(%BlockProposal{} = proposal, contents) do
+    %{
+      conversation_id: proposal.conversation_id,
+      actor_id: proposal.actor_id,
+      content: Enum.join(contents, "\n\n"),
+      change_summary: proposal.change_summary
+    }
+  end
+
+  defp revision_with_blocks!(repo, %Document{} = document, revision_id) do
+    document
+    |> Ecto.assoc(:revisions)
+    |> where([revision], revision.id == ^revision_id)
+    |> repo.one!()
+    |> repo.preload(:blocks)
   end
 
   @doc """

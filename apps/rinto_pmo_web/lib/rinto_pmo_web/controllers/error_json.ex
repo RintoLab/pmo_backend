@@ -36,6 +36,8 @@ defmodule RintoPMOWeb.ErrorJSON do
       {409, "The whole-document proposal was written against an older revision. Propose again."},
     conflicting_commit:
       {422, "A whole-document proposal is committed on its own, not with a block selection."},
+    rebase_conflict:
+      {409, "The proposal cannot be carried across what landed under it without a decision."},
     invalid_estimate: {422, "The task estimate is invalid."},
     task_not_splittable: {422, "The task cannot be split in its current state."},
     corrupt_image: {422, "The image header could not be read."},

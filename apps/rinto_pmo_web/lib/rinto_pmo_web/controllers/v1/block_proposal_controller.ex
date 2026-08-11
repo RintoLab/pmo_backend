@@ -124,6 +124,20 @@ defmodule RintoPMOWeb.V1.BlockProposalController do
     end
   end
 
+  @doc """
+  Carries a whole-document proposal across the revisions that landed under it.
+
+  Idempotent: one already compiled against the latest revision comes back
+  unchanged, so a caller may ask without first working out whether it needs to.
+  """
+  def rebase(conn, %{"document_id" => document_id, "id" => id}) do
+    document = get_document!(document_id)
+
+    with {:ok, rebased} <- documents_context().rebase_document_proposal(document, id) do
+      render(conn, :show, proposal: rebased)
+    end
+  end
+
   # The proposal itself says which argument it is in, so a client deciding one
   # does not have to know: it names a proposal, the same way it did before
   # scopes existed.
