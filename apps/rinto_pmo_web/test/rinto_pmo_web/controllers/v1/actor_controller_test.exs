@@ -16,6 +16,39 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
              json_response(conn, 200)["data"]
   end
 
+  test "GET /api/v1/actors/human returns the system's only person", %{conn: conn} do
+    human = insert(:actor, kind: :human, name: "User")
+    human_id = human.id
+
+    expect(ActorsMock, :get_unique_human, fn -> {:ok, human} end)
+
+    conn = get(conn, ~p"/api/v1/actors/human")
+
+    assert %{"id" => ^human_id, "kind" => "human", "name" => "User"} =
+             json_response(conn, 200)["data"]
+  end
+
+  test "GET /api/v1/actors/human reports a missing person", %{conn: conn} do
+    expect(ActorsMock, :get_unique_human, fn -> {:error, :human_actor_not_found} end)
+
+    conn = get(conn, ~p"/api/v1/actors/human")
+
+    assert %{"error" => "human_actor_not_found"} = json_response(conn, 404)
+  end
+
+  test "GET /api/v1/actors/human refuses an ambiguous identity", %{conn: conn} do
+    ids = [UUIDv7.generate(), UUIDv7.generate()]
+
+    expect(ActorsMock, :get_unique_human, fn ->
+      {:error, :human_actor_ambiguous, %{actor_ids: ids}}
+    end)
+
+    conn = get(conn, ~p"/api/v1/actors/human")
+
+    assert %{"error" => "human_actor_ambiguous", "details" => %{"actor_ids" => ^ids}} =
+             json_response(conn, 409)
+  end
+
   test "GET /api/v1/actors/:id shows an actor", %{conn: conn} do
     actor = insert(:actor, name: "Human")
     actor_id = actor.id

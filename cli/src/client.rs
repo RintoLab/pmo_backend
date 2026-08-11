@@ -2,9 +2,6 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 
-const API_ENV: &str = "RINTO_API";
-const ACTOR_ENV: &str = "RINTO_ACTOR_ID";
-
 /// A thin HTTP client over the Rinto PMO REST API.
 ///
 /// Deliberately dumb: it does not validate request bodies, does not retry, and
@@ -13,38 +10,20 @@ const ACTOR_ENV: &str = "RINTO_ACTOR_ID";
 /// not inside this process.
 pub struct Client {
     base_url: String,
-    actor_id: String,
     agent: ureq::Agent,
 }
 
 impl Client {
-    pub fn from_env() -> Result<Self> {
-        let base_url = std::env::var(API_ENV).map_err(|_| {
-            Error::Config(format!(
-                "{API_ENV} is not set (expected the API base URL, e.g. http://localhost:4000/api/v1)"
-            ))
-        })?;
-
-        let actor_id = std::env::var(ACTOR_ENV).map_err(|_| {
-            Error::Config(format!(
-                "{ACTOR_ENV} is not set (expected the UUID of the actor this agent writes as)"
-            ))
-        })?;
+    pub fn new(base_url: &str) -> Result<Self> {
+        let base_url = base_url.trim().trim_end_matches('/');
+        if base_url.is_empty() {
+            return Err(Error::Config("the API base URL is empty".to_string()));
+        }
 
         Ok(Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            actor_id,
+            base_url: base_url.to_string(),
             agent: ureq::AgentBuilder::new().build(),
         })
-    }
-
-    /// The actor every write is attributed to.
-    ///
-    /// Read from the environment rather than taken as an argument: which
-    /// persona an agent writes as is a property of how it was started, not
-    /// something a model should be choosing per call.
-    pub fn actor_id(&self) -> &str {
-        &self.actor_id
     }
 
     pub fn get(&self, path: &str, query: &[(&str, &str)]) -> Result<Value> {
@@ -59,6 +38,20 @@ impl Client {
         Self::send(self.agent.post(&self.url(path)).send_json(body))
     }
 
+    pub fn patch(&self, path: &str, body: Value) -> Result<Value> {
+        Self::send(self.agent.patch(&self.url(path)).send_json(body))
+    }
+
+    pub fn delete(&self, path: &str) -> Result<()> {
+        match self.agent.delete(&self.url(path)).call() {
+            Ok(_response) => Ok(()),
+            Err(ureq::Error::Status(status, response)) => {
+                Err(Self::response_error(status, response))
+            }
+            Err(ureq::Error::Transport(transport)) => Err(Error::Network(format!("{transport}"))),
+        }
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
     }
@@ -71,27 +64,29 @@ impl Client {
 
             // A non-2xx status. Surface the server's own wording verbatim.
             Err(ureq::Error::Status(status, response)) => {
-                let body = response.into_json::<Value>().unwrap_or(Value::Null);
-
-                let mut details = Vec::new();
-                if let Some(reported) = body.get("details") {
-                    crate::error::flatten_details(reported, "", &mut details);
-                }
-
-                Err(Error::Api {
-                    status,
-                    code: string_field(&body, "error"),
-                    message: match string_field(&body, "message") {
-                        message if message.is_empty() => {
-                            "no message supplied by the server".to_string()
-                        }
-                        message => message,
-                    },
-                    details,
-                })
+                Err(Self::response_error(status, response))
             }
 
             Err(ureq::Error::Transport(transport)) => Err(Error::Network(format!("{transport}"))),
+        }
+    }
+
+    fn response_error(status: u16, response: ureq::Response) -> Error {
+        let body = response.into_json::<Value>().unwrap_or(Value::Null);
+
+        let mut details = Vec::new();
+        if let Some(reported) = body.get("details") {
+            crate::error::flatten_details(reported, "", &mut details);
+        }
+
+        Error::Api {
+            status,
+            code: string_field(&body, "error"),
+            message: match string_field(&body, "message") {
+                message if message.is_empty() => "no message supplied by the server".to_string(),
+                message => message,
+            },
+            details,
         }
     }
 }

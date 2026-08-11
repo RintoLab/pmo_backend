@@ -29,6 +29,14 @@ description: 在 Rinto 里新建文档。当讨论收敛出了值得固化的内
 
 ## 怎么建
 
+首次使用先配置 API 和代表实际用户的 human actor：
+
+```sh
+rinto-pmo config init --api http://localhost:4000/api/v1
+```
+
+后续创建文档时，CLI 会自动使用配置中的用户 id 做内容归属。
+
 **标题和正文分开给。** 标题走 `--title`；**CLI 不会从正文里找标题**，
 所以正文里的 `# 一级标题` 只是普通内容，不会被当成文档标题。
 

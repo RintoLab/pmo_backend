@@ -9,6 +9,12 @@ defmodule RintoPMOWeb.V1.ActorController do
     render(conn, :index, actors: actors)
   end
 
+  def human(conn, _params) do
+    with {:ok, actor} <- actor_context().get_unique_human() do
+      render(conn, :show, actor: actor)
+    end
+  end
+
   def show(conn, %{"id" => id}) do
     actor = actor_context().get_actor!(id)
 

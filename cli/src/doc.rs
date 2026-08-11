@@ -4,6 +4,7 @@ use clap::{Args, Subcommand};
 use serde_json::{json, Map, Value};
 
 use crate::client::{self, Client};
+use crate::config::Config;
 use crate::error::{Error, Result};
 
 #[derive(Subcommand)]
@@ -57,16 +58,17 @@ pub struct ListArgs {
 }
 
 pub fn run(command: DocCommand) -> Result<()> {
-    let client = &Client::from_env()?;
+    let config = Config::load()?;
+    let client = &Client::new(config.api())?;
 
     match command {
-        DocCommand::Create(args) => create(client, args),
+        DocCommand::Create(args) => create(client, config.actor_id(), args),
         DocCommand::Show(args) => show(client, args),
         DocCommand::List(args) => list(client, args),
     }
 }
 
-fn create(client: &Client, args: CreateArgs) -> Result<()> {
+fn create(client: &Client, actor_id: &str, args: CreateArgs) -> Result<()> {
     let markdown = read(&args.body)?;
 
     if args.dry_run {
@@ -75,7 +77,7 @@ fn create(client: &Client, args: CreateArgs) -> Result<()> {
 
     let mut payload = Map::new();
     payload.insert("title".to_string(), json!(args.title));
-    payload.insert("actor_id".to_string(), json!(client.actor_id()));
+    payload.insert("actor_id".to_string(), json!(actor_id));
     payload.insert("markdown".to_string(), json!(markdown));
     if let Some(project_id) = args.project_id {
         payload.insert("project_id".to_string(), json!(project_id));

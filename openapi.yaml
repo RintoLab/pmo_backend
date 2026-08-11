@@ -86,6 +86,34 @@ paths:
                 $ref: "#/components/schemas/ActorResponse"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /actors/human:
+    get:
+      tags: [Actors]
+      operationId: getHumanActor
+      summary: Get the system's only human participant
+      description: >
+        Bootstrap identity for local clients before user authentication exists.
+        AI actors are ignored. The request fails rather than choosing when no
+        human exists or when several humans make the identity ambiguous.
+      responses:
+        "200":
+          description: The only human actor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActorResponse"
+        "404":
+          description: No human actor is configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "409":
+          description: More than one human actor exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /actors/{id}:
     parameters:
       - $ref: "#/components/parameters/ActorId"
@@ -4269,6 +4297,8 @@ components:
         - stale_document
         - task_already_claimed
         - task_state_conflict
+        - human_actor_not_found
+        - human_actor_ambiguous
         - dependency_cycle
         - validation_error
         - task_blocked

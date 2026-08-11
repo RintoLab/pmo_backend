@@ -12,9 +12,13 @@
 //! See `docs/ai-document-cli.md` for the reasoning behind all three.
 
 mod client;
+mod config;
 mod doc;
 mod error;
+mod project;
 mod skill;
+mod task;
+mod update;
 
 use clap::{Parser, Subcommand};
 
@@ -27,20 +31,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Configure the API and discover the human user
+    #[command(subcommand)]
+    Config(config::ConfigCommand),
     /// Read and write documents
     #[command(subcommand)]
     Doc(doc::DocCommand),
+    /// Discover projects and their repositories
+    #[command(subcommand)]
+    Project(project::ProjectCommand),
+    /// Find, claim, and update project tasks
+    #[command(subcommand)]
+    Task(task::TaskCommand),
     /// Install the agent skills this binary carries
     #[command(subcommand)]
     Skill(skill::SkillCommand),
+    /// Update this binary from the latest GitHub CLI release
+    Update(update::UpdateArgs),
 }
 
 fn main() {
     let cli = Cli::parse();
 
     let outcome = match cli.command {
+        Command::Config(command) => config::run(command),
         Command::Doc(command) => doc::run(command),
+        Command::Project(command) => project::run(command),
+        Command::Task(command) => task::run(command),
         Command::Skill(command) => skill::run(command),
+        Command::Update(args) => update::run(args),
     };
 
     if let Err(error) = outcome {

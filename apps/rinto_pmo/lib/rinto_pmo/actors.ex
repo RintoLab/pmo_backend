@@ -13,6 +13,10 @@ defmodule RintoPMO.Actors do
     alias RintoPMO.Actors.Actor
 
     @callback list_actors() :: [Actor.t()]
+    @callback get_unique_human() ::
+                {:ok, Actor.t()}
+                | {:error, :human_actor_not_found}
+                | {:error, :human_actor_ambiguous, map()}
     @callback get_actor!(UUIDv7.t()) :: Actor.t()
     @callback create_actor(map()) :: {:ok, Actor.t()} | {:error, Ecto.Changeset.t()}
     @callback update_actor(Actor.t(), map()) ::
@@ -29,6 +33,34 @@ defmodule RintoPMO.Actors do
     Actor
     |> order_by([actor], asc: actor.name)
     |> Repo.all()
+  end
+
+  @doc """
+  Fetches the system's only human participant.
+
+  This is the pre-authentication identity used by local clients. Refusing zero
+  or several humans is deliberate: choosing an arbitrary person would
+  attribute documents and completed work to the wrong user.
+  """
+  @impl true
+  def get_unique_human do
+    humans =
+      Actor
+      |> where([actor], actor.kind == :human)
+      |> order_by([actor], asc: actor.inserted_at)
+      |> Repo.all()
+
+    case humans do
+      [human] ->
+        {:ok, human}
+
+      [] ->
+        {:error, :human_actor_not_found}
+
+      several ->
+        {:error, :human_actor_ambiguous,
+         %{actor_ids: Enum.map(several, & &1.id), count: length(several)}}
+    end
   end
 
   @doc """
