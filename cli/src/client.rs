@@ -2,9 +2,6 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 
-const API_ENV: &str = "RINTO_API";
-const ACTOR_ENV: &str = "RINTO_ACTOR_ID";
-
 /// A thin HTTP client over the Rinto PMO REST API.
 ///
 /// Deliberately dumb: it does not validate request bodies, does not retry, and
@@ -13,38 +10,20 @@ const ACTOR_ENV: &str = "RINTO_ACTOR_ID";
 /// not inside this process.
 pub struct Client {
     base_url: String,
-    actor_id: String,
     agent: ureq::Agent,
 }
 
 impl Client {
-    pub fn from_env() -> Result<Self> {
-        let base_url = std::env::var(API_ENV).map_err(|_| {
-            Error::Config(format!(
-                "{API_ENV} is not set (expected the API base URL, e.g. http://localhost:4000/api/v1)"
-            ))
-        })?;
-
-        let actor_id = std::env::var(ACTOR_ENV).map_err(|_| {
-            Error::Config(format!(
-                "{ACTOR_ENV} is not set (expected the UUID of the actor this agent writes as)"
-            ))
-        })?;
+    pub fn new(base_url: &str) -> Result<Self> {
+        let base_url = base_url.trim().trim_end_matches('/');
+        if base_url.is_empty() {
+            return Err(Error::Config("the API base URL is empty".to_string()));
+        }
 
         Ok(Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            actor_id,
+            base_url: base_url.to_string(),
             agent: ureq::AgentBuilder::new().build(),
         })
-    }
-
-    /// The actor every write is attributed to.
-    ///
-    /// Read from the environment rather than taken as an argument: which
-    /// persona an agent writes as is a property of how it was started, not
-    /// something a model should be choosing per call.
-    pub fn actor_id(&self) -> &str {
-        &self.actor_id
     }
 
     pub fn get(&self, path: &str, query: &[(&str, &str)]) -> Result<Value> {

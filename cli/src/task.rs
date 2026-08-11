@@ -5,6 +5,7 @@ use clap::{Args, Subcommand};
 use serde_json::{json, Value};
 
 use crate::client::{self, Client};
+use crate::config::Config;
 use crate::error::{Error, Result};
 
 #[derive(Subcommand)]
@@ -21,7 +22,7 @@ pub enum TaskCommand {
     Update(UpdateArgs),
     /// Assign a task to an actor, replacing its current assignee
     Assign(AssignArgs),
-    /// Claim an unassigned task as RINTO_ACTOR_ID
+    /// Claim an unassigned task as the configured human user
     Claim(TaskIdArgs),
     /// Return a task to the unassigned pool without changing its status
     Release(TaskIdArgs),
@@ -69,8 +70,12 @@ pub struct ListArgs {
     parent_id: Option<String>,
 
     /// Only tasks owned by this actor; pass `none` for unassigned tasks
-    #[arg(long, value_name = "UUID|none")]
+    #[arg(long, value_name = "UUID|none", conflicts_with = "mine")]
     assignee_id: Option<String>,
+
+    /// Only tasks owned by the human actor in this CLI's configuration
+    #[arg(long)]
+    mine: bool,
 
     /// Only tasks implementing this document
     #[arg(long, value_name = "UUID")]
@@ -126,16 +131,17 @@ pub struct SplitArgs {
 }
 
 pub fn run(command: TaskCommand) -> Result<()> {
-    let client = &Client::from_env()?;
+    let config = Config::load()?;
+    let client = &Client::new(config.api())?;
 
     match command {
-        TaskCommand::List(args) => list(client, args),
+        TaskCommand::List(args) => list(client, config.actor_id(), args),
         TaskCommand::Show(args) => show(client, args),
         TaskCommand::Stats(args) => stats(client, args),
         TaskCommand::Create(args) => create(client, args),
         TaskCommand::Update(args) => update(client, args),
         TaskCommand::Assign(args) => assign(client, args),
-        TaskCommand::Claim(args) => claim(client, args),
+        TaskCommand::Claim(args) => claim(client, config.actor_id(), args),
         TaskCommand::Release(args) => release(client, args),
         TaskCommand::Split(args) => split(client, args),
         TaskCommand::Start(args) => transition(client, args, "start", "started"),
@@ -146,9 +152,9 @@ pub fn run(command: TaskCommand) -> Result<()> {
     }
 }
 
-fn list(client: &Client, args: ListArgs) -> Result<()> {
+fn list(client: &Client, actor_id: &str, args: ListArgs) -> Result<()> {
     let path = format!("/projects/{}/tasks", args.project_slug);
-    let query = list_query(&args);
+    let query = list_query(&args, actor_id);
     let query_refs: Vec<(&str, &str)> = query
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
@@ -168,12 +174,20 @@ fn list(client: &Client, args: ListArgs) -> Result<()> {
     Ok(())
 }
 
-fn list_query(args: &ListArgs) -> Vec<(String, String)> {
+fn list_query(args: &ListArgs, actor_id: &str) -> Vec<(String, String)> {
     let mut query = Vec::new();
     push_query(&mut query, "kind", args.kind.as_deref());
     push_query(&mut query, "status", args.status.as_deref());
     push_query(&mut query, "parent_id", args.parent_id.as_deref());
-    push_query(&mut query, "assignee_id", args.assignee_id.as_deref());
+    push_query(
+        &mut query,
+        "assignee_id",
+        if args.mine {
+            Some(actor_id)
+        } else {
+            args.assignee_id.as_deref()
+        },
+    );
     push_query(&mut query, "document_id", args.document_id.as_deref());
     push_query(
         &mut query,
@@ -233,9 +247,9 @@ fn assign(client: &Client, args: AssignArgs) -> Result<()> {
     Ok(())
 }
 
-fn claim(client: &Client, args: TaskIdArgs) -> Result<()> {
+fn claim(client: &Client, actor_id: &str, args: TaskIdArgs) -> Result<()> {
     let path = format!("/tasks/{}/claim", args.task_id);
-    let task = client::data(client.post(&path, json!({"actor_id": client.actor_id()}))?)?;
+    let task = client::data(client.post(&path, json!({"actor_id": actor_id}))?)?;
     print_result("claimed", &task);
     Ok(())
 }
@@ -415,13 +429,14 @@ mod tests {
             status: Some("open".to_string()),
             parent_id: Some("none".to_string()),
             assignee_id: Some("none".to_string()),
+            mine: false,
             document_id: Some("doc-id".to_string()),
             live: Some(true),
             overdue: Some(false),
         };
 
         assert_eq!(
-            list_query(&args),
+            list_query(&args, "human-id"),
             vec![
                 ("kind".to_string(), "work".to_string()),
                 ("status".to_string(), "open".to_string()),
@@ -430,6 +445,30 @@ mod tests {
                 ("document_id".to_string(), "doc-id".to_string()),
                 ("live".to_string(), "true".to_string()),
                 ("overdue".to_string(), "false".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn mine_uses_the_configured_human_actor() {
+        let args = ListArgs {
+            project_slug: "demo".to_string(),
+            kind: Some("work".to_string()),
+            status: None,
+            parent_id: None,
+            assignee_id: None,
+            mine: true,
+            document_id: None,
+            live: Some(true),
+            overdue: None,
+        };
+
+        assert_eq!(
+            list_query(&args, "human-id"),
+            vec![
+                ("kind".to_string(), "work".to_string()),
+                ("assignee_id".to_string(), "human-id".to_string()),
+                ("live".to_string(), "true".to_string())
             ]
         );
     }

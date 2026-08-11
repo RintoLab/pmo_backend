@@ -23,6 +23,27 @@ defmodule RintoPMO.ActorsTest do
       assert returned_ids == MapSet.new([first_actor.id, second_actor.id])
     end
 
+    test "fetches the only human without confusing AI actors for users" do
+      {:ok, human} = Actors.create_actor(%{kind: :human, name: "User"})
+      {:ok, _ai} = Actors.create_actor(valid_ai_attrs("Assistant"))
+
+      assert {:ok, ^human} = Actors.get_unique_human()
+    end
+
+    test "reports when there is no human" do
+      {:ok, _ai} = Actors.create_actor(valid_ai_attrs("Assistant"))
+
+      assert {:error, :human_actor_not_found} = Actors.get_unique_human()
+    end
+
+    test "refuses to choose between several humans" do
+      {:ok, first} = Actors.create_actor(%{kind: :human, name: "First"})
+      {:ok, second} = Actors.create_actor(%{kind: :human, name: "Second"})
+
+      assert {:error, :human_actor_ambiguous, details} = Actors.get_unique_human()
+      assert MapSet.new(details.actor_ids) == MapSet.new([first.id, second.id])
+    end
+
     test "updates configuration and disables an actor" do
       {:ok, actor} = Actors.create_actor(valid_ai_attrs("AI"))
 

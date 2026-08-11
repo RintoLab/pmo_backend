@@ -12,6 +12,7 @@
 //! See `docs/ai-document-cli.md` for the reasoning behind all three.
 
 mod client;
+mod config;
 mod doc;
 mod error;
 mod skill;
@@ -28,6 +29,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Configure the API and discover the human user
+    #[command(subcommand)]
+    Config(config::ConfigCommand),
     /// Read and write documents
     #[command(subcommand)]
     Doc(doc::DocCommand),
@@ -43,6 +47,7 @@ fn main() {
     let cli = Cli::parse();
 
     let outcome = match cli.command {
+        Command::Config(command) => config::run(command),
         Command::Doc(command) => doc::run(command),
         Command::Task(command) => task::run(command),
         Command::Skill(command) => skill::run(command),

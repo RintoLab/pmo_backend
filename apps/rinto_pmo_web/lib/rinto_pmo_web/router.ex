@@ -8,6 +8,7 @@ defmodule RintoPMOWeb.Router do
   scope "/api/v1", RintoPMOWeb.V1 do
     pipe_through :api
 
+    get "/actors/human", ActorController, :human
     resources "/actors", ActorController, only: [:index, :show, :create, :update]
 
     # Which actor does a job that belongs to no single topic -- naming them, so

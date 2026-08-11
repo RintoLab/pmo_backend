@@ -11,12 +11,15 @@ Rinto 里的 Task 是要交付的工作，Document 是这项工作的决策依�
 
 ## 前提
 
-CLI 从环境读取连接和身份：
+CLI 首次使用时需要配置 API：
 
-- `RINTO_API`：API 根地址，例如 `http://localhost:4000/api/v1`
-- `RINTO_ACTOR_ID`：当前开发 agent 对应的 actor UUID
+```sh
+rinto-pmo config init --api http://localhost:4000/api/v1
+```
 
-身份由启动环境决定。不要为了领取别人的任务而临时改写 `RINTO_ACTOR_ID`。
+这条命令会在服务端找出唯一的 `human` actor，并把 API 地址和用户 id 写入 CLI 配置文件。
+后续命令自动读取，不要手工拼 actor id，也不要把远程 AI actor 当成本地执行者。
+可以用 `rinto-pmo config show` 检查当前配置。
 
 ## 1. 找到可以做的任务
 
@@ -29,7 +32,7 @@ rinto-pmo task list <project-slug> --kind work --assignee-id none --live true
 恢复工作时，先看当前 actor 已领取的任务：
 
 ```sh
-rinto-pmo task list <project-slug> --kind work --assignee-id "$RINTO_ACTOR_ID" --live true
+rinto-pmo task list <project-slug> --kind work --mine --live true
 ```
 
 列表按创建时间从旧到新。`summary` 是工作分解的汇总节点，不是可以领取和执行的工作，
@@ -48,7 +51,7 @@ rinto-pmo task claim <task-id>
 rinto-pmo task show <task-id>
 ```
 
-`claim` 使用 `RINTO_ACTOR_ID`，并且是并发安全的。
+`claim` 自动使用配置文件中的 human actor id，并且是并发安全的。
 如果返回 `task_already_claimed`，说明别人先拿到了：**不要重试抢同一个任务**，重新列任务池并选别的任务。
 
 领取成功后重新 `show`，确认这些信息：

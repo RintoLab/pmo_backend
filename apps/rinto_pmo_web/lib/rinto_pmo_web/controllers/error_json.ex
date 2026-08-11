@@ -4,9 +4,11 @@ defmodule RintoPMOWeb.ErrorJSON do
   @errors %{
     bad_request: {400, "The request is invalid."},
     not_found: {404, "The requested resource was not found."},
+    human_actor_not_found: {404, "The system has no human actor configured."},
     image_too_large: {413, "The image exceeds the size accepted for inline use."},
     unsupported_image: {415, "The file is not an image format that can be sent to a model."},
     stale_document: {409, "The document has changed since the provided base revision."},
+    human_actor_ambiguous: {409, "The system has more than one human actor."},
     task_state_conflict: {409, "The task is no longer in the expected state."},
     # Losing a claim race is not a validation failure and not a retry: the task
     # has an owner now, and the answer is to pick a different one.

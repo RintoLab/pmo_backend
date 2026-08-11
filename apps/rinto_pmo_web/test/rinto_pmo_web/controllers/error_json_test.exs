@@ -6,6 +6,7 @@ defmodule RintoPMOWeb.ErrorJSONTest do
   @errors %{
     bad_request: {400, "The request is invalid.", %{parameter: "limit", reason: "is invalid"}},
     not_found: {404, "The requested resource was not found.", %{}},
+    human_actor_not_found: {404, "The system has no human actor configured.", %{}},
     image_too_large:
       {413, "The image exceeds the size accepted for inline use.",
        %{byte_size: 9_000_000, limit: 4_500_000}},
@@ -15,6 +16,8 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     stale_document:
       {409, "The document has changed since the provided base revision.",
        %{base_version: 2, current_version: 3, diff: []}},
+    human_actor_ambiguous:
+      {409, "The system has more than one human actor.", %{actor_ids: ["actor-1", "actor-2"]}},
     task_state_conflict:
       {409, "The task is no longer in the expected state.", %{current_status: "in_progress"}},
     task_already_claimed:
