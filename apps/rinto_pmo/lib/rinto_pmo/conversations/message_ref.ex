@@ -23,12 +23,24 @@ defmodule RintoPMO.Conversations.MessageRef do
   cannot stand in: UUIDv7 orders only to the millisecond, and a message's refs
   are all written inside one.
 
-  It is otherwise unconstrained -- not unique per message, not checked
+  It carries a second job, which is why it is the client's index and not merely
+  *an* ordering: a mention in the message body points at its ref by that index
+  (`[document](reference#0)`), and `PromptBuilder` rewrites those pointers when
+  the turn is replayed. `position` is the lookup key that makes the rewrite
+  reproducible weeks later, so it has to stay the number the client sent.
+
+  **Refs are therefore deliberately not deduplicated on the way in.** A mention
+  UI has no way to reuse an entry already in the array, so citing one document
+  twice sends it twice; collapsing those rows would renumber the positions and
+  strand the pointer that named the later one. Deduplication happens where it
+  belongs -- once, in `PromptBuilder`, deciding what gets expanded.
+
+  `position` is otherwise unconstrained -- not unique per message, not checked
   non-negative. A message's refs are written once, in a single transaction,
   numbered from their index in the list, and a message is never edited, so
   nothing appends a ref later. There is no interleaving to guard against
   (unlike `Message` or `RintoPMO.Annotations.AnnotationReply`, whose positions
-  are contended), and the ordering holds whatever the numbers happen to be.
+  are contended).
   """
 
   use RintoPMO, :schema

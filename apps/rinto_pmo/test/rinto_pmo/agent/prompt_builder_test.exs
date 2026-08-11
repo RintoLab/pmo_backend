@@ -335,6 +335,156 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
     end
   end
 
+  describe "build/3 mentions" do
+    test "rewrites an index href to the id, and names the placeholder label" do
+      document = document_with_blocks(["The current text"], "上线流程")
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build(
+                 "看看 [document](reference#0)",
+                 [%{"type" => "document", "id" => document.id}]
+               )
+
+      assert message =~ "看看 [上线流程](reference##{document.id})"
+      # Parenthesised, because an id beginning with a digit contains
+      # "reference#0" as a prefix.
+      refute message =~ "(reference#0)"
+    end
+
+    # The case the client cannot avoid: its mention UI has no way to reuse an
+    # entry already in the array, so discussing two documents in four mentions
+    # sends four refs -- and the backend collapses them to two expansions.
+    test "points repeated mentions of one document at the same expansion" do
+      first = document_with_blocks(["A says stage it"], "上线流程")
+      second = document_with_blocks(["B says ship it"], "发布规范")
+
+      stub(DocumentsMock, :get_document!, fn id ->
+        if id == first.id, do: first, else: second
+      end)
+
+      refs = [
+        %{"type" => "document", "id" => first.id},
+        %{"type" => "document", "id" => second.id},
+        %{"type" => "document", "id" => first.id},
+        %{"type" => "document", "id" => second.id}
+      ]
+
+      body =
+        "这个 [document](reference#0) 是这么说的，但 [document](reference#1) 是这么说的，" <>
+          "所以哪个对？[document](reference#2) or [document](reference#3)?"
+
+      assert {:ok, %{message: message}} = PromptBuilder.build(body, refs)
+
+      # Four mentions, two distinct targets, and every one of them resolvable.
+      # An id begins with a digit, so a leftover index is spotted by the `)`
+      # that follows it rather than by the digit alone.
+      refute message =~ ~r/\(reference#\d+\)/
+      assert length(String.split(message, "reference##{first.id}")) == 3
+      assert length(String.split(message, "reference##{second.id}")) == 3
+
+      # Still expanded once each, which is what made the indices unusable.
+      assert length(String.split(message, "<document id=")) == 3
+    end
+
+    test "uses the slug for a project, matching what the element renders" do
+      project = insert(:project, slug: "kenton", name: "Kenton")
+
+      expect(ProjectsMock, :get_project_by_slug!, fn _slug -> project end)
+      expect(DocumentsMock, :list_documents, fn _filter -> [] end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("[project](reference#0)这是啥", [
+                 %{"type" => "project", "slug" => "kenton"}
+               ])
+
+      assert message =~ "[Kenton](reference#kenton)这是啥"
+    end
+
+    test "leaves a label the client wrote itself" do
+      document = document_with_blocks(["Text"], "上线流程")
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build(
+                 "看看 [我自己起的名字](reference#0)",
+                 [%{"type" => "document", "id" => document.id}]
+               )
+
+      assert message =~ "[我自己起的名字](reference##{document.id})"
+    end
+
+    # Nothing here knows what was meant, so a pointer that visibly goes nowhere
+    # beats one invented to look right.
+    test "leaves an index with no ref behind it exactly as it stands" do
+      document = document_with_blocks(["Text"])
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("[document](reference#7) and [document](reference#0)", [
+                 %{"type" => "document", "id" => document.id}
+               ])
+
+      assert message =~ "[document](reference#7)"
+      assert message =~ "(reference##{document.id})"
+    end
+
+    test "keeps an annotation reading as its type word, having no title to offer" do
+      document = document_with_blocks(["Block text"])
+      annotation = insert(:annotation, document: document, content: "This is wrong")
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+      expect(AnnotationsMock, :get_annotation!, fn _document, _id -> annotation end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("[annotation](reference#0) 说什么", [
+                 %{
+                   "type" => "annotation",
+                   "id" => annotation.id,
+                   "document_id" => document.id
+                 }
+               ])
+
+      assert message =~ "[annotation](reference##{annotation.id}) 说什么"
+    end
+
+    # A turn's hrefs index the array *that turn* sent, so the mapping is per
+    # message. `position` is what makes it reproducible weeks later.
+    test "rewrites a replayed turn against the positions it was stored with" do
+      conversation = insert(:conversation)
+      document = document_with_blocks(["The current text"], "上线流程")
+
+      stored =
+        build(:message_ref,
+          message: nil,
+          position: 3,
+          ref_type: "document",
+          ref_id: document.id,
+          payload: %{"type" => "document", "id" => document.id}
+        )
+
+      expect(ConversationsMock, :recent_messages, fn _conversation, _limit ->
+        [replayed_message(conversation, :user, 0, "改一下 [document](reference#3)", [stored])]
+      end)
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("继续", [], replay: conversation)
+
+      assert message =~ "改一下 [上线流程](reference##{document.id})"
+      refute message =~ "(reference#3)"
+    end
+
+    test "does not touch a body with no refs to resolve against" do
+      assert {:ok, %{message: "[document](reference#0) 呢"}} =
+               PromptBuilder.build("[document](reference#0) 呢", [])
+    end
+  end
+
   describe "build/2 with several refs" do
     test "renders them in the order given, ahead of the message" do
       first = document_with_blocks(["One"], "First")

@@ -8,7 +8,9 @@ defmodule RintoPMO.Agent.PromptBuilder do
   splices `<file name="...">content</file>` ahead of the message text, and
   nothing on pi's side parses it back. That leaves us free to choose how a
   reference travels from client to model, and the choice made here is to
-  **never parse the message body**.
+  **never take a reference from the message body**. What is expanded is decided
+  by `refs` alone; the body is read in exactly one bounded way, described under
+  "Mentions" below, and never to discover a reference.
 
   The client sends what its mention UI already knows:
 
@@ -18,9 +20,44 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   Scanning the text for `@name` or `#id` markers instead would mean inventing an
   escape syntax, guessing where a title ends, and changing two codebases every
-  time that syntax moved. The message keeps whatever human-readable label the
-  client put in it; the model correlates it with the expanded prelude through
-  the titles and ids rendered there.
+  time that syntax moved.
+
+  ## Mentions
+
+  The message still has to point at the expansions, and the client writes those
+  pointers as markdown links: `[document](reference#0)`, whose href indexes the
+  `refs` array it sent.
+
+  **That index does not survive the trip, so it is resolved here while the array
+  is still at hand.** Two things invalidate it, and neither is avoidable on the
+  client:
+
+    * `dedupe_refs/1` collapses two mentions of one document into a single
+      expansion, so four ref entries can become two elements and the later
+      indices point at nothing
+    * replay prepends its own refs, shifting every index the client chose
+
+  Nor can the client dedupe its way out. Its mention UI has no way to reuse an
+  entry already in the array, so mentioning one document twice necessarily sends
+  it twice -- which is fine, and is why `RintoPMO.Conversations.MessageRef`
+  positions are not unique per message.
+
+  So each href is rewritten to the identity the prelude renders -- a slug for a
+  project, an id for everything else. Two mentions of one document end up
+  pointing at the same element, which is the truth: it is expanded once. The
+  link text is replaced too, but only where the client left the bare type word
+  as a placeholder, since `[document]` tells the model nothing the element does
+  not already say.
+
+  This is the one place that reads the body, and it reads only the href of a
+  mention -- a delimited token, not prose, so nothing has to guess where a title
+  ends. An index with no ref behind it is left exactly as it stands: nothing
+  here knows what was meant, and inventing a target is worse than leaving a
+  pointer that visibly goes nowhere.
+
+  The body is otherwise untouched, and what is *stored* is always the client's
+  original text: the rewrite happens on the way to the model, so a client
+  reading its own history back still gets the hrefs it wrote.
 
   ## Reference forms
 
@@ -140,11 +177,18 @@ defmodule RintoPMO.Agent.PromptBuilder do
         # died on a later reference is not recorded as a use.
         resolved |> Enum.flat_map(& &1.attachment_ids) |> record_use()
 
-        texts = Enum.map(resolved, & &1.text) ++ transcript(replay)
+        # Labels come from the entities `resolve/1` already fetched, so naming a
+        # mention costs no query of its own.
+        labels = labels_by_key(all_refs, resolved)
+        texts = Enum.map(resolved, & &1.text) ++ transcript(replay, labels)
+
+        # The client's own `refs`, not `all_refs`: the hrefs index the array it
+        # sent, which is the one before replay prepended anything.
+        body = rewrite_mentions(message, index_refs(refs), labels)
 
         {:ok,
          %{
-           message: prepend_prelude(message, texts),
+           message: prepend_prelude(body, texts),
            images: Enum.flat_map(resolved, & &1.images)
          }}
 
@@ -201,6 +245,82 @@ defmodule RintoPMO.Agent.PromptBuilder do
     text_only(element("reference", attributes, "[No longer available.]"))
   end
 
+  # Mentions
+
+  # A markdown link whose href is `reference#` and a decimal index. The label
+  # stops at `]` and cannot span lines, so an unclosed bracket somewhere in the
+  # prose cannot swallow the rest of the message.
+  @mention ~r/\[([^\]\n]*)\]\(reference#(\d+)\)/
+
+  # The bare type words the client uses as placeholder link text. Only these are
+  # replaced by a title -- anything else is a human's own words, or a label
+  # already worth reading, and is left as written.
+  @type_words ~w(document annotation project proposal attachment)
+
+  defp rewrite_mentions(text, refs_by_index, _labels) when map_size(refs_by_index) == 0, do: text
+
+  defp rewrite_mentions(text, refs_by_index, labels) do
+    Regex.replace(@mention, text, fn whole, label, index ->
+      with {:ok, ref} <- Map.fetch(refs_by_index, String.to_integer(index)),
+           target when is_binary(target) <- mention_target(ref) do
+        "[#{mention_label(label, ref, labels)}](reference##{target})"
+      else
+        # No ref at that index, or one too malformed to name a target. Either
+        # way this side does not know what was meant.
+        _unresolved -> whole
+      end
+    end)
+  end
+
+  # Keyed the way each kind of thing is addressed everywhere else here, so the
+  # href matches the attribute the prelude renders.
+  defp mention_target(%{"type" => "project", "slug" => slug}) when is_binary(slug), do: slug
+  defp mention_target(%{"id" => id}) when is_binary(id), do: id
+  defp mention_target(_ref), do: nil
+
+  defp mention_label(label, ref, labels) when label in @type_words do
+    Map.get(labels, ref_key(ref), label)
+  end
+
+  defp mention_label(label, _ref, _labels), do: label
+
+  # `resolved` is in `refs` order -- `resolve_all/2` restores it -- so the two
+  # zip. A ref that resolved to nothing nameable simply has no entry, and its
+  # mention keeps whatever the client wrote.
+  defp labels_by_key(refs, resolved) do
+    refs
+    |> Enum.zip(resolved)
+    |> Enum.reduce(%{}, fn {ref, %{label: label}}, acc ->
+      case normalize_label(label) do
+        nil -> acc
+        normalized -> Map.put(acc, ref_key(ref), normalized)
+      end
+    end)
+  end
+
+  # A title lands inside a markdown link on one line of prose, so a newline in
+  # it would break the sentence around it.
+  defp normalize_label(label) when is_binary(label) do
+    case label |> String.replace(~r/\s+/, " ") |> String.trim() do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_label(_label), do: nil
+
+  defp index_refs(refs) do
+    refs |> Enum.with_index() |> Map.new(fn {ref, index} -> {index, ref} end)
+  end
+
+  # A stored ref carries the index it was sent under in `position`, which is what
+  # makes the rewrite reproducible when a turn is replayed weeks later.
+  defp turn_index_refs(%Message{refs: refs}) when is_list(refs) do
+    Map.new(refs, fn ref -> {ref.position, ref.payload} end)
+  end
+
+  defp turn_index_refs(%Message{}), do: %{}
+
   defp prepend_prelude(message, []), do: message
 
   defp prepend_prelude(message, texts) do
@@ -235,10 +355,10 @@ defmodule RintoPMO.Agent.PromptBuilder do
     |> Enum.reject(&(ref_type(&1) == "conversation"))
   end
 
-  defp transcript(nil), do: []
+  defp transcript(nil, _labels), do: []
 
-  defp transcript(%{conversation: conversation, messages: messages}) do
-    [render_conversation(conversation, messages)]
+  defp transcript(%{conversation: conversation, messages: messages}, labels) do
+    [render_conversation(conversation, messages, labels)]
   end
 
   # Deduplicated by identity, keeping the first occurrence. A project is keyed
@@ -254,7 +374,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   defp resolve(%{"type" => "document", "id" => id}) when is_binary(id) do
     with {:ok, document} <- fetch(fn -> documents().get_document!(id) end, "document", id) do
-      {:ok, text_only(render_document(document))}
+      {:ok, text_only(render_document(document), document_label(document))}
     end
   end
 
@@ -270,7 +390,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   defp resolve(%{"type" => "project", "slug" => slug}) when is_binary(slug) do
     with {:ok, project} <- fetch(fn -> projects().get_project_by_slug!(slug) end, "project", slug) do
-      {:ok, text_only(render_project(project))}
+      {:ok, text_only(render_project(project), project.name)}
     end
   end
 
@@ -291,7 +411,8 @@ defmodule RintoPMO.Agent.PromptBuilder do
        %{
          text: render_attachment(attachment),
          images: [image],
-         attachment_ids: [attachment.id]
+         attachment_ids: [attachment.id],
+         label: attachment.filename
        }}
     end
   end
@@ -302,7 +423,10 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   defp resolve(_ref), do: {:error, :invalid_ref, %{"type" => ["is missing"]}}
 
-  defp text_only(text), do: %{text: text, images: [], attachment_ids: []}
+  # An annotation and a proposal get no label: neither has a title, and the type
+  # word the client wrote already reads correctly in a sentence.
+  defp text_only(text, label \\ nil),
+    do: %{text: text, images: [], attachment_ids: [], label: label}
 
   # Most prompts reference no image at all; the context would no-op, but there
   # is no reason to reach it to find that out.
@@ -376,7 +500,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
   # are above, once each, and the model correlates them by id. That is the same
   # bargain the rest of this module strikes -- the message keeps the label, the
   # prelude holds the content.
-  defp render_conversation(%Conversation{} = conversation, messages) do
+  defp render_conversation(%Conversation{} = conversation, messages, labels) do
     attributes =
       [{"id", conversation.id}] ++
         optional_attribute("title", conversation.title) ++
@@ -388,7 +512,13 @@ defmodule RintoPMO.Agent.PromptBuilder do
           [{"role", message.role}, {"position", message.position}] ++
             optional_attribute("refs", turn_refs(message))
 
-        element("turn", turn_attributes, message.content)
+        # Each turn carries its own array, so the mapping is per message rather
+        # than one table for the whole transcript.
+        element(
+          "turn",
+          turn_attributes,
+          rewrite_mentions(message.content, turn_index_refs(message), labels)
+        )
       end)
 
     element("conversation", attributes, body)
@@ -454,6 +584,12 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   defp document_title(%Document{latest_revision: %DocumentRevision{title: title}}), do: title
   defp document_title(%Document{}), do: "(untitled)"
+
+  # Distinct from `document_title/1`: a row in a project's index has to say
+  # something, but a mention with no title to offer is better left reading
+  # "document" than "(untitled)".
+  defp document_label(%Document{latest_revision: %DocumentRevision{title: title}}), do: title
+  defp document_label(%Document{}), do: nil
 
   defp replies(%Annotation{replies: [_first | _rest] = replies}) do
     Enum.map_join(replies, "\n", fn %AnnotationReply{} = reply ->
