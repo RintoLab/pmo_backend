@@ -82,6 +82,104 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
     end
   end
 
+  # A block_id is thirty-six characters, once per block, paid again on every
+  # replay -- and the model no longer needs one, because the CLI hands out real
+  # ids on demand and a whole-document rewrite needs none at all. What is left is
+  # lining an annotation up with the paragraph it is about, inside one prompt.
+  describe "block labels" do
+    test "marks blocks by label and never by id" do
+      document = document_with_blocks(["One", "Two", "Three"])
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("read it", [%{"type" => "document", "id" => document.id}])
+
+      assert message =~ "[block:b1]"
+      assert message =~ "[block:b2]"
+      assert message =~ "[block:b3]"
+
+      for block <- document.latest_revision.blocks do
+        refute message =~ block.block_id
+      end
+    end
+
+    # The correlation the label exists for: which paragraph is this about.
+    test "an annotation names the paragraph by the same label the document uses" do
+      document = document_with_blocks(["One", "Two"])
+      [_first, second] = Enum.sort_by(document.latest_revision.blocks, & &1.position)
+
+      annotation =
+        insert(:annotation, document: document, block_id: second.block_id, content: "Wrong here")
+
+      expect(DocumentsMock, :get_document!, 2, fn _id -> document end)
+      expect(AnnotationsMock, :get_annotation!, fn _document, _id -> annotation end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("look", [
+                 %{"type" => "document", "id" => document.id},
+                 %{
+                   "type" => "annotation",
+                   "id" => annotation.id,
+                   "document_id" => document.id
+                 }
+               ])
+
+      assert message =~ ~s(block="b2")
+      # And the label it names is in the document, so the two line up.
+      assert message =~ "[block:b2]"
+      refute message =~ second.block_id
+    end
+
+    # An annotation outlives the paragraph it was anchored to -- a rewrite that
+    # moves one gives it a new identity. Pointing at a paragraph that is not
+    # there would be worse than not pointing: the text it was written against is
+    # still rendered, which is the honest answer.
+    test "says nothing about a block the document no longer has" do
+      document = document_with_blocks(["One"])
+
+      annotation =
+        insert(:annotation,
+          document: document,
+          block_id: UUIDv7.generate(),
+          block_text: "## Moved away",
+          content: "Wrong here"
+        )
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+      expect(AnnotationsMock, :get_annotation!, fn _document, _id -> annotation end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("look", [
+                 %{
+                   "type" => "annotation",
+                   "id" => annotation.id,
+                   "document_id" => document.id
+                 }
+               ])
+
+      refute message =~ "block="
+      # What it was written against is still there to read.
+      assert message =~ "## Moved away"
+    end
+
+    # Numbered by position in the document, so a truncated one still labels the
+    # blocks it shows by where they actually are.
+    test "labels a truncated document from its first block" do
+      long = String.duplicate("x", 15_000)
+      document = document_with_blocks([long, long, long])
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("read it", [%{"type" => "document", "id" => document.id}])
+
+      assert message =~ "[block:b1]"
+      refute message =~ "[block:b3]"
+      assert message =~ ~s(truncated="true")
+    end
+  end
+
   describe "build/2 with an annotation ref" do
     test "renders the thread with its replies" do
       document = insert(:document)
@@ -190,11 +288,13 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
     test "renders the proposed text and names its topic without expanding it" do
       conversation = insert(:conversation, title: "Tighten §3")
       document = document_with_blocks(["Original"])
+      [block] = document.latest_revision.blocks
 
       proposal =
         insert(:block_proposal,
           document: document,
           conversation: conversation,
+          block_id: block.block_id,
           content: "Rewritten paragraph.",
           status: :live
         )
@@ -214,7 +314,11 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                ])
 
       assert message =~ ~s(<proposal ref="1" id="#{proposal.id}")
-      assert message =~ ~s(block_id="#{proposal.block_id}")
+      # The paragraph it is about, as a label rather than an id: the label lines
+      # it up with `[block:b1]` in the document, and no real id belongs in a
+      # prompt.
+      assert message =~ ~s(block="b1")
+      refute message =~ proposal.block_id
       assert message =~ ~s(status="live")
       # The topic is a label. Expanding it would be a conversation reference by
       # another name, and the whole point is that this expansion terminates.

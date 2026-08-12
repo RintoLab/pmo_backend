@@ -91,6 +91,27 @@ defmodule RintoPMO.Agent.PromptBuilder do
   Every one of them, and a reference that has gone missing, carries a `ref`
   attribute holding the handle its mentions point at. See "Mentions".
 
+  ## Blocks are labelled, not identified
+
+  A document's blocks are marked `[block:b1]`, `[block:b2]`, and an annotation or
+  a standing proposal says `block="b3"` rather than naming an id. **No real
+  `block_id` appears in a prompt.**
+
+  They used to. A `block_id` is thirty-six characters of hexadecimal, once per
+  block of every expanded document, and paid again on every replay -- by a wide
+  margin the largest thing in a prompt, and the only part that grew with the
+  document.
+
+  What it bought was the model's ability to name a block, and that no longer
+  needs the prompt: the CLI hands out real ids on demand, and the ordinary shape
+  of change -- rewriting the whole document -- needs none at all. What remains is
+  a correlation *within* one prompt: which paragraph is this annotation about.
+  A label does that in three characters.
+
+  Because the label never travels back, there is nothing to store and no revision
+  to pin to it. That is what makes this cheap rather than the bookkeeping exercise
+  it would have been while the prompt was the model's only source of ids.
+
   ## Expansion terminates
 
   **Expanding a reference renders the thing itself and the parts belonging to
@@ -429,7 +450,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
            fetch(fn -> documents().get_document!(document_id) end, "document", document_id),
          {:ok, annotation} <-
            fetch(fn -> annotations().get_annotation!(document, id) end, "annotation", id) do
-      {:ok, text_only(render_annotation(annotation, handle))}
+      {:ok, text_only(render_annotation(document, annotation, handle))}
     end
   end
 
@@ -445,7 +466,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
            fetch(fn -> documents().get_document!(document_id) end, "document", document_id),
          {:ok, proposal} <-
            fetch(fn -> documents().get_proposal!(document, id) end, "proposal", id) do
-      {:ok, text_only(render_proposal(proposal, handle))}
+      {:ok, text_only(render_proposal(document, proposal, handle))}
     end
   end
 
@@ -507,8 +528,12 @@ defmodule RintoPMO.Agent.PromptBuilder do
       ] ++ if truncated?, do: [{"truncated", "true"}], else: []
 
     body =
-      shown
-      |> Enum.map_join("\n\n", fn block -> "[block:#{block.block_id}]\n#{block.content}" end)
+      blocks
+      |> Enum.with_index(1)
+      |> Enum.take(length(shown))
+      |> Enum.map_join("\n\n", fn {block, ordinal} ->
+        "[block:#{label(ordinal)}]\n#{block.content}"
+      end)
       |> append_truncation_note(truncated?)
 
     element("document", attributes, body)
@@ -522,10 +547,10 @@ defmodule RintoPMO.Agent.PromptBuilder do
     )
   end
 
-  defp render_annotation(%Annotation{} = annotation, handle) do
+  defp render_annotation(%Document{} = document, %Annotation{} = annotation, handle) do
     attributes =
       [{"ref", handle}, {"id", annotation.id}, {"document_id", annotation.document_id}] ++
-        optional_attribute("block_id", annotation.block_id)
+        optional_attribute("block", block_label(document, annotation.block_id))
 
     body =
       join_present([
@@ -589,7 +614,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   defp turn_refs(%Message{}), do: nil
 
-  defp render_proposal(%BlockProposal{} = proposal, handle) do
+  defp render_proposal(%Document{} = document, %BlockProposal{} = proposal, handle) do
     attributes =
       [
         {"ref", handle},
@@ -597,7 +622,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
         {"scope", proposal.scope},
         {"status", proposal.status}
       ] ++
-        optional_attribute("block_id", proposal.block_id) ++
+        optional_attribute("block", block_label(document, proposal.block_id)) ++
         optional_attribute("conversation", proposal_topic(proposal))
 
     element("proposal", attributes, proposal.content)
@@ -682,6 +707,40 @@ defmodule RintoPMO.Agent.PromptBuilder do
     shown = Enum.reverse(shown)
     {shown, length(shown) < length(blocks)}
   end
+
+  # A block's label inside one prompt, not its identity.
+  #
+  # A `block_id` is thirty-six characters of hexadecimal, and it used to be
+  # repeated once per block of every expanded document -- by far the largest
+  # thing in a prompt, and paid again on every replay. What it was for was
+  # letting the model name a block, and it no longer has to: the CLI hands out
+  # real ids on demand (`doc show --with-block-ids`), and the shape of change
+  # that needs none at all -- a whole-document rewrite -- is the ordinary one.
+  #
+  # So the prompt carries a short label instead, and it never travels back. It
+  # exists to line up an annotation, or a standing proposal, with the paragraph
+  # it is about, which is a correlation *within* one prompt. That is why there is
+  # nothing to store and no revision to pin: a label the model never sends
+  # anywhere cannot go stale in anybody's hands.
+  defp label(ordinal), do: "b#{ordinal}"
+
+  # Nothing when the block is no longer in the document. An annotation can outlive
+  # the paragraph it was anchored to -- a rewrite that moves one gives it a new
+  # identity -- and pointing at a paragraph that is not there would be worse than
+  # not pointing: the annotation still renders the text it was written against,
+  # which is the honest answer to "what was this about".
+  defp block_label(%Document{latest_revision: %DocumentRevision{} = revision}, block_id)
+       when is_binary(block_id) do
+    revision
+    |> ordered_blocks()
+    |> Enum.find_index(&(&1.block_id == block_id))
+    |> case do
+      nil -> nil
+      index -> label(index + 1)
+    end
+  end
+
+  defp block_label(_document, _block_id), do: nil
 
   defp ordered_blocks(%DocumentRevision{blocks: blocks}) when is_list(blocks) do
     Enum.sort_by(blocks, & &1.position)
