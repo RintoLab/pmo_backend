@@ -3,6 +3,8 @@ defmodule RintoPMO.Conversations.SessionsTest do
   # global, so these tests own both for their duration.
   use RintoPMO.DataCase, async: false
 
+  alias RintoPMO.Actors
+  alias RintoPMO.ActorsMock
   alias RintoPMO.Agent.PiSession
   alias RintoPMO.Conversations
   alias RintoPMO.Conversations.Recorder
@@ -22,9 +24,11 @@ defmodule RintoPMO.Conversations.SessionsTest do
       PiSession.Supervisor.close_all()
     end)
 
-    # These tests drive the real context rather than the mock: the point is
-    # what happens to the rows when a process is evicted.
+    # These tests drive the real contexts rather than the mocks: the point is
+    # what happens to the rows when a process is evicted, and heating now reads
+    # the assistant actor to learn which model to run.
     stub_with(ConversationsMock, Conversations)
+    stub_with(ActorsMock, Actors)
 
     %{tmp_dir: tmp_dir}
   end
@@ -44,6 +48,84 @@ defmodule RintoPMO.Conversations.SessionsTest do
     printf '%s\\n' '{"type":"extension_ui_request","id":"ui-1","method":"input","title":"Which one?"}'
     sleep 300
     """)
+  end
+
+  describe "the assistant a topic runs as" do
+    test "heats with the assistant actor's own model and prompt", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "argv")
+
+      actor =
+        insert(:actor,
+          kind: :ai,
+          provider: "anthropic",
+          model: "claude-opus-4",
+          thinking_level: "high",
+          system_prompt: "You review architecture."
+        )
+
+      conversation = insert(:conversation, assistant_actor_id: actor.id)
+
+      {:ok, _conversation, :revived} =
+        Sessions.ensure_hot(conversation,
+          session_opts: dumping_pi(tmp_dir, capture)
+        )
+
+      assert eventually(fn -> File.exists?(capture) end)
+      argv = capture |> File.read!() |> String.split("\n", trim: true)
+
+      assert "--provider" in argv
+      assert "anthropic" in argv
+      assert "claude-opus-4" in argv
+      assert "high" in argv
+      assert "You review architecture." in argv
+    end
+
+    # A pi process is told which model to be once, at startup, and runs
+    # `--no-session`. Writing the row without closing it would leave the topic
+    # answering as the old actor with nothing saying so.
+    test "switching the assistant cools the topic so the change lands", %{tmp_dir: tmp_dir} do
+      conversation = hot_conversation!(tmp_dir)
+      session_id = conversation.pi_session_id
+      replacement = insert(:actor, kind: :ai, model: "claude-sonnet-4")
+
+      {:ok, switched} = Sessions.switch_assistant(conversation, replacement.id)
+
+      assert switched.assistant_actor_id == replacement.id
+      refute switched.pi_session_id
+      refute PiSession.alive?(session_id)
+    end
+
+    # History lives here rather than in pi, and cooling arms the replay, so the
+    # new model is handed the recent turns on the next prompt.
+    test "the topic survives the switch, with its replay owed again", %{tmp_dir: tmp_dir} do
+      conversation = hot_conversation!(tmp_dir)
+      Conversations.claim_replay(conversation)
+      refute Conversations.get_conversation!(conversation.id).replay_pending
+
+      replacement = insert(:actor, kind: :ai, model: "claude-sonnet-4")
+      {:ok, switched} = Sessions.switch_assistant(conversation, replacement.id)
+
+      {:ok, reheated, :revived} =
+        Sessions.ensure_hot(switched, session_opts: idle_pi(tmp_dir))
+
+      assert reheated.replay_pending
+    end
+  end
+
+  defp eventually(fun, attempts \\ 100)
+  defp eventually(_fun, 0), do: false
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(10)
+      eventually(fun, attempts - 1)
+    end
+  end
+
+  defp dumping_pi(tmp_dir, capture) do
+    fake_pi(tmp_dir, ~s|printf '%s\\n' "$@" > "#{capture}"\nsleep 300\n|)
   end
 
   defp set_limit(limit) do

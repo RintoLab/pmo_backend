@@ -4,6 +4,8 @@ defmodule RintoPMOWeb.ConversationChannelTest do
   # argv so it cannot be handed an executable per call.
   use RintoPMOWeb.ChannelCase, async: false
 
+  alias RintoPMO.Actors
+  alias RintoPMO.ActorsMock
   alias RintoPMO.Agent.PiSession
   alias RintoPMO.Agent.TitleGeneratorMock
   alias RintoPMO.Attachments
@@ -37,6 +39,8 @@ defmodule RintoPMOWeb.ConversationChannelTest do
     # The real context: these tests are about what the channel does to a topic,
     # and mocking the thing being changed would only test the mock.
     stub_with(ConversationsMock, Conversations)
+    # Heating reads the assistant actor to learn which model to run.
+    stub_with(ActorsMock, Actors)
     stub_with(AttachmentsMock, Attachments)
     :ok
   end

@@ -32,6 +32,86 @@ defmodule RintoPMO.Agent.PiSessionTest do
     """)
   end
 
+  # Which model answers, and as whom. The flags are built here rather than by a
+  # caller, so the only honest test is what actually reached pi's argv -- a
+  # sourced behaviour file inherits the caller's positional parameters, so it can
+  # write them out.
+  describe "the persona a session runs as" do
+    test "passes the model, thinking level and system prompt", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "argv")
+
+      session =
+        start_session!(
+          fake_pi(tmp_dir, ~s|printf '%s\\n' "$@" > "#{capture}"\nsleep 300\n|) ++
+            [
+              provider: "anthropic",
+              model: "claude-opus-4",
+              thinking: "high",
+              system_prompt: "You review architecture."
+            ]
+        )
+
+      assert eventually(fn -> File.exists?(capture) end)
+      argv = argv(capture)
+
+      assert flag(argv, "--provider") == "anthropic"
+      assert flag(argv, "--model") == "claude-opus-4"
+      assert flag(argv, "--thinking") == "high"
+      assert flag(argv, "--system-prompt") == "You review architecture."
+
+      # The behaviour file has to stay last: that is how the fake finds it.
+      assert argv |> List.last() |> String.ends_with?(".sh")
+
+      PiSession.close(session)
+    end
+
+    test "passes nothing when nothing was configured", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "argv")
+
+      session =
+        start_session!(fake_pi(tmp_dir, ~s|printf '%s\\n' "$@" > "#{capture}"\nsleep 300\n|))
+
+      assert eventually(fn -> File.exists?(capture) end)
+      argv = argv(capture)
+
+      # pi then picks its own default, which is what a topic with no assistant
+      # actor configured gets.
+      for absent <- ["--provider", "--model", "--thinking", "--system-prompt"] do
+        refute absent in argv
+      end
+
+      PiSession.close(session)
+    end
+
+    # A provider names nothing pi can act on without a model beside it.
+    test "drops a provider that arrives without a model", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "argv")
+
+      session =
+        start_session!(
+          fake_pi(tmp_dir, ~s|printf '%s\\n' "$@" > "#{capture}"\nsleep 300\n|) ++
+            [provider: "anthropic", model: nil]
+        )
+
+      assert eventually(fn -> File.exists?(capture) end)
+      argv = argv(capture)
+
+      refute "--provider" in argv
+      refute "--model" in argv
+
+      PiSession.close(session)
+    end
+  end
+
+  defp argv(capture), do: capture |> File.read!() |> String.split("\n", trim: true)
+
+  defp flag(argv, name) do
+    case Enum.find_index(argv, &(&1 == name)) do
+      nil -> nil
+      index -> Enum.at(argv, index + 1)
+    end
+  end
+
   defp start_session!(opts) do
     assert {:ok, pid} = PiSession.Supervisor.start_session(opts)
     on_exit(fn -> PiSession.close(pid) end)

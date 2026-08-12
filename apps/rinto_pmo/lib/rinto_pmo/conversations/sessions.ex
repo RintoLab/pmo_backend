@@ -38,6 +38,7 @@ defmodule RintoPMO.Conversations.Sessions do
   whether that reference is needed.
   """
 
+  alias RintoPMO.Actors.Actor
   alias RintoPMO.Agent.PiSession
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Conversations.Recorder
@@ -92,6 +93,32 @@ defmodule RintoPMO.Conversations.Sessions do
     if conversation.pi_session_id, do: PiSession.close(conversation.pi_session_id)
     Recorder.stop(conversation.id)
     conversations().detach_session(conversation)
+  end
+
+  @doc """
+  Changes which AI a topic is talking to, and cools it so the change lands.
+
+  A pi process reads which model to be, and its system prompt, once at startup:
+  it runs `--no-session`, so there is nothing to reconfigure afterwards. Writing
+  the new actor onto the row without closing the process would leave a topic
+  answering as the old one until it happened to be evicted -- exactly the kind of
+  silent gap this call exists to close.
+
+  **The conversation survives the switch.** History lives here rather than in pi,
+  and cooling arms the replay, so the first prompt after this hands the new model
+  the recent turns. It reads what was said before it arrived.
+
+  What does not move is attribution: turns already recorded keep the actor that
+  said them, and only turns from here on are credited to the new one. "Which
+  model wrote this paragraph" stays answerable.
+  """
+  @spec switch_assistant(Conversation.t(), UUIDv7.t()) ::
+          {:ok, Conversation.t()} | {:error, Ecto.Changeset.t()}
+  def switch_assistant(%Conversation{} = conversation, actor_id) do
+    with {:ok, conversation} <-
+           conversations().update_conversation(conversation, %{assistant_actor_id: actor_id}) do
+      cool(conversation)
+    end
   end
 
   @doc """
@@ -176,9 +203,16 @@ defmodule RintoPMO.Conversations.Sessions do
   # elsewhere look live.
   defp start_session(conversation, opts) do
     session_id = "conversation-#{conversation.id}-#{System.unique_integer([:positive])}"
-    session_opts = Keyword.get(opts, :session_opts, [])
 
-    case PiSession.Supervisor.start_session(Keyword.put(session_opts, :id, session_id)) do
+    # The caller's own options win: a test injects its fake pi this way, and it
+    # is not asking for the assistant's model when it does.
+    session_opts =
+      conversation
+      |> persona_opts()
+      |> Keyword.merge(Keyword.get(opts, :session_opts, []))
+      |> Keyword.put(:id, session_id)
+
+    case PiSession.Supervisor.start_session(session_opts) do
       {:ok, _pid} ->
         {:ok, session_id}
 
@@ -191,6 +225,33 @@ defmodule RintoPMO.Conversations.Sessions do
         {:error, :agent_unavailable, %{reason: inspect(reason)}}
     end
   end
+
+  # The assistant actor's configuration, translated into what a session needs.
+  # `ensure_hot/2` has already refused a conversation with no assistant, so the
+  # empty case here is a row that has gone or one whose kind says it cannot
+  # answer -- both of which fall back to pi's defaults rather than failing a
+  # revive, because a topic that cannot be opened is worse than one answering as
+  # a default model.
+  defp persona_opts(%Conversation{assistant_actor_id: nil}), do: []
+
+  defp persona_opts(%Conversation{assistant_actor_id: actor_id}) do
+    case actors().get_actor!(actor_id) do
+      %Actor{kind: :ai} = actor ->
+        [
+          provider: actor.provider,
+          model: actor.model,
+          thinking: actor.thinking_level,
+          system_prompt: actor.system_prompt
+        ]
+
+      %Actor{} ->
+        []
+    end
+  rescue
+    Ecto.NoResultsError -> []
+  end
+
+  defp actors, do: Utils.module(:actors)
 
   defp conversations, do: Utils.module(:conversations)
 

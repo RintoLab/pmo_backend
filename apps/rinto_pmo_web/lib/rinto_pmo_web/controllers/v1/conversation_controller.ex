@@ -27,11 +27,32 @@ defmodule RintoPMOWeb.V1.ConversationController do
   def update(conn, %{"id" => id} = params) do
     context = conversations_context()
     conversation = context.get_conversation!(id)
+    attrs = Map.delete(params, "id")
 
-    with {:ok, conversation} <-
-           context.update_conversation(conversation, Map.delete(params, "id")) do
+    with {:ok, conversation} <- write(conversation, attrs) do
       render(conn, :show, conversation: conversation)
     end
+  end
+
+  # Changing which AI answers has to go through `Sessions`, not straight at the
+  # row: a running pi process was told which model to be at startup and cannot
+  # be reconfigured, so the switch has to cool the topic to take effect. Writing
+  # the row alone would leave it answering as the old actor with nothing saying
+  # so.
+  #
+  # The topic itself survives -- history lives here, and cooling arms the replay
+  # that hands it to the new model on the next prompt.
+  defp write(conversation, %{"assistant_actor_id" => actor_id} = attrs) do
+    with {:ok, conversation} <- Sessions.switch_assistant(conversation, actor_id) do
+      case Map.delete(attrs, "assistant_actor_id") do
+        empty when empty == %{} -> {:ok, conversation}
+        rest -> conversations_context().update_conversation(conversation, rest)
+      end
+    end
+  end
+
+  defp write(conversation, attrs) do
+    conversations_context().update_conversation(conversation, attrs)
   end
 
   @doc """

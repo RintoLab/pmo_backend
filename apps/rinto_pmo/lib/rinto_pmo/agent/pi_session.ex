@@ -99,6 +99,10 @@ defmodule RintoPMO.Agent.PiSession do
           | {:offline, boolean()}
           | {:extra_args, [String.t()]}
           | {:pubsub, atom()}
+          | {:provider, String.t() | nil}
+          | {:model, String.t() | nil}
+          | {:thinking, String.t() | nil}
+          | {:system_prompt, String.t() | nil}
 
   # Public API
 
@@ -422,7 +426,47 @@ defmodule RintoPMO.Agent.PiSession do
     base = ["--mode", "rpc", "--no-session", "--session-dir", session_dir]
     base = if Keyword.get(opts, :offline, false), do: base ++ ["--offline"], else: base
 
-    base ++ Keyword.get(opts, :extra_args, [])
+    # Ahead of `extra_args`, which has to stay last: it is how a test hands the
+    # fake pi its behaviour file, and the fake reads its *last* argument.
+    base ++ persona_args(opts) ++ Keyword.get(opts, :extra_args, [])
+  end
+
+  # Which model answers, and as whom. Absent options are simply not passed, and
+  # pi falls back to its own defaults -- which is what a conversation with no
+  # assistant actor configured gets.
+  defp persona_args(opts) do
+    model_args(opts) ++
+      flag(opts, :thinking, "--thinking") ++
+      flag(opts, :system_prompt, "--system-prompt")
+  end
+
+  # A provider without a model names nothing pi can act on, so the pair travels
+  # together or not at all.
+  defp model_args(opts) do
+    case {value(opts, :provider), value(opts, :model)} do
+      {provider, model} when is_binary(provider) and is_binary(model) ->
+        ["--provider", provider, "--model", model]
+
+      {_provider, model} when is_binary(model) ->
+        ["--model", model]
+
+      _neither ->
+        []
+    end
+  end
+
+  defp flag(opts, key, name) do
+    case value(opts, key) do
+      nil -> []
+      value -> [name, value]
+    end
+  end
+
+  defp value(opts, key) do
+    case Keyword.get(opts, key) do
+      value when is_binary(value) and value != "" -> value
+      _absent_or_blank -> nil
+    end
   end
 
   defp pi_executable, do: Application.get_env(:rinto_pmo, :pi_executable, "pi")
