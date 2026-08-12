@@ -124,6 +124,13 @@ defmodule RintoPMO.Agent.PromptBuilder do
   happened in between. Only one level is expanded: conversation references
   inside the replayed turns are dropped rather than followed.
 
+  It also hands back **the topic's own live proposals**, which are not message
+  references and would otherwise be lost. A revived session would see the
+  documents as they now stand and none of its own work against them, and would
+  rewrite from the base -- quietly discarding what it had already put up for
+  review. Nothing asks it to fetch them, because which topic it is answering in
+  is not a fact it should have to know.
+
   Attachments are the one type producing something other than text: the marker
   goes in the message so the model knows what the picture is called, and the
   bytes go in `images`. That pairing is pi's own -- an image passed as `@file`
@@ -350,7 +357,12 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   defp replay_turns(%Conversation{} = conversation) do
     messages = conversations().recent_messages(conversation, setting(:max_conversation_turns))
-    %{conversation: conversation, messages: messages}
+
+    %{
+      conversation: conversation,
+      messages: messages,
+      proposals: documents().live_conversation_proposals(conversation.id)
+    }
   end
 
   # The refs the replayed turns carried, re-expanded against the documents as
@@ -363,10 +375,29 @@ defmodule RintoPMO.Agent.PromptBuilder do
   # transcript that expanded the transcripts it mentions has no bottom.
   defp replay_refs(nil), do: []
 
-  defp replay_refs(%{messages: messages}) do
-    messages
-    |> Enum.flat_map(fn message -> Enum.map(message.refs, & &1.payload) end)
-    |> Enum.reject(&(ref_type(&1) == "conversation"))
+  defp replay_refs(%{messages: messages, proposals: proposals}) do
+    cited =
+      messages
+      |> Enum.flat_map(fn message -> Enum.map(message.refs, & &1.payload) end)
+      |> Enum.reject(&(ref_type(&1) == "conversation"))
+
+    cited ++ standing(proposals)
+  end
+
+  # What this topic currently has proposed, handed back as though it had cited
+  # it. A proposal is not a message reference -- it is a row of its own -- so
+  # without this a revived session would see the documents as they now stand and
+  # none of its own work against them, and would rewrite from the base, quietly
+  # discarding what it had already put up for review.
+  #
+  # Expressed as refs rather than rendered separately so that deduplication,
+  # handles and rendering all apply to it unchanged: they come after the cited
+  # things, which reads as "here is the document, and here is what you proposed
+  # for it".
+  defp standing(proposals) do
+    Enum.map(proposals, fn proposal ->
+      %{"type" => "proposal", "id" => proposal.id, "document_id" => proposal.document_id}
+    end)
   end
 
   defp transcript(nil, _handles), do: []
@@ -563,9 +594,11 @@ defmodule RintoPMO.Agent.PromptBuilder do
       [
         {"ref", handle},
         {"id", proposal.id},
-        {"block_id", proposal.block_id},
+        {"scope", proposal.scope},
         {"status", proposal.status}
-      ] ++ optional_attribute("conversation", proposal_topic(proposal))
+      ] ++
+        optional_attribute("block_id", proposal.block_id) ++
+        optional_attribute("conversation", proposal_topic(proposal))
 
     element("proposal", attributes, proposal.content)
   end

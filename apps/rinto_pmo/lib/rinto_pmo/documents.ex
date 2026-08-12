@@ -187,6 +187,23 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
+  Lists a topic's live proposals, across every document it has touched.
+
+  Not scoped to a document, unlike `list_proposals/2`, because the caller is a
+  topic wanting to know what it currently has standing -- and a topic is not
+  about one document. `RintoPMO.Agent.PromptBuilder` uses it to hand a revived
+  session back its own work.
+  """
+  @impl true
+  def live_conversation_proposals(conversation_id) when is_binary(conversation_id) do
+    BlockProposal
+    |> where([proposal], proposal.conversation_id == ^conversation_id)
+    |> where([proposal], proposal.status == :live)
+    |> order_by([proposal], asc: proposal.id)
+    |> Repo.all()
+  end
+
+  @doc """
   Fetches one proposal scoped to its document.
   """
   @impl true

@@ -42,7 +42,10 @@ defmodule RintoPMO.Agent.PiSessionTest do
 
       session =
         start_session!(
-          fake_pi(tmp_dir, ~s|printf '%s\\n' "$@" > "#{capture}"\nsleep 300\n|) ++
+          fake_pi(
+            tmp_dir,
+            ~s|printf '%s\\n' "$@" > "#{capture}.part" && mv "#{capture}.part" "#{capture}"\nsleep 300\n|
+          ) ++
             [
               provider: "anthropic",
               model: "claude-opus-4",
@@ -69,7 +72,12 @@ defmodule RintoPMO.Agent.PiSessionTest do
       capture = Path.join(tmp_dir, "argv")
 
       session =
-        start_session!(fake_pi(tmp_dir, ~s|printf '%s\\n' "$@" > "#{capture}"\nsleep 300\n|))
+        start_session!(
+          fake_pi(
+            tmp_dir,
+            ~s|printf '%s\\n' "$@" > "#{capture}.part" && mv "#{capture}.part" "#{capture}"\nsleep 300\n|
+          )
+        )
 
       assert eventually(fn -> File.exists?(capture) end)
       argv = argv(capture)
@@ -89,7 +97,10 @@ defmodule RintoPMO.Agent.PiSessionTest do
 
       session =
         start_session!(
-          fake_pi(tmp_dir, ~s|printf '%s\\n' "$@" > "#{capture}"\nsleep 300\n|) ++
+          fake_pi(
+            tmp_dir,
+            ~s|printf '%s\\n' "$@" > "#{capture}.part" && mv "#{capture}.part" "#{capture}"\nsleep 300\n|
+          ) ++
             [provider: "anthropic", model: nil]
         )
 
@@ -445,7 +456,11 @@ defmodule RintoPMO.Agent.PiSessionTest do
 
   defp session_id(session), do: :sys.get_state(session).id
 
-  defp eventually(fun, attempts \\ 100)
+  # Generous on purpose: some of these wait on a spawned shell to write a file,
+  # and process spawning under a loaded suite is slower than anything the wait
+  # is actually testing. The budget only costs time when something is genuinely
+  # broken.
+  defp eventually(fun, attempts \\ 500)
   defp eventually(_fun, 0), do: false
 
   defp eventually(fun, attempts) do

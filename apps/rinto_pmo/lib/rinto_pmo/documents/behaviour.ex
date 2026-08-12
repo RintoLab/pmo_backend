@@ -56,6 +56,7 @@ defmodule RintoPMO.Documents.Behaviour do
 
   @callback list_proposals(Document.t(), proposal_filter()) :: [BlockProposal.t()]
   @callback get_proposal!(Document.t(), UUIDv7.t()) :: BlockProposal.t()
+  @callback live_conversation_proposals(UUIDv7.t()) :: [BlockProposal.t()]
   @callback propose_block(Document.t(), map()) ::
               {:ok, proposed()}
               | {:error, Ecto.Changeset.t()}

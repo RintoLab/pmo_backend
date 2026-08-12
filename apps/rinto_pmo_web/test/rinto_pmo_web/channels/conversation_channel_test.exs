@@ -42,6 +42,9 @@ defmodule RintoPMOWeb.ConversationChannelTest do
     # Heating reads the assistant actor to learn which model to run.
     stub_with(ActorsMock, Actors)
     stub_with(AttachmentsMock, Attachments)
+    # Replay hands a revived session its own standing proposals; these tests have
+    # none.
+    stub(DocumentsMock, :live_conversation_proposals, fn _conversation_id -> [] end)
     :ok
   end
 

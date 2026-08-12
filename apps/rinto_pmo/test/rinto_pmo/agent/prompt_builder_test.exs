@@ -8,6 +8,13 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
   alias RintoPMO.DocumentsMock
   alias RintoPMO.ProjectsMock
 
+  setup do
+    # Replay hands a revived session its own standing proposals; a topic with
+    # none is the ordinary case, so tests about anything else say nothing.
+    stub(DocumentsMock, :live_conversation_proposals, fn _conversation_id -> [] end)
+    :ok
+  end
+
   describe "build/2 without refs" do
     test "passes the message through untouched" do
       assert {:ok, %{message: "hello", images: []}} = PromptBuilder.build("hello", [])
@@ -502,6 +509,97 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
     test "does not touch a body with no refs to resolve against" do
       assert {:ok, %{message: "[document](reference#0) 呢"}} =
                PromptBuilder.build("[document](reference#0) 呢", [])
+    end
+  end
+
+  # A proposal is a row, not a message reference, so replay would otherwise lose
+  # it: a revived session would see the document as it now stands and none of its
+  # own work against it, and would rewrite from the base -- discarding what it had
+  # already put up for review.
+  describe "build/3 replay of a topic's own proposals" do
+    test "hands back the whole-document rewrite it had standing" do
+      conversation = insert(:conversation)
+      document = document_with_blocks(["The current text"])
+
+      proposal =
+        insert(:block_proposal,
+          document: document,
+          conversation: conversation,
+          scope: :document,
+          block_id: nil,
+          content: "## Rewritten\n\nMy version"
+        )
+
+      expect(ConversationsMock, :recent_messages, fn _conversation, _limit -> [] end)
+      expect(DocumentsMock, :live_conversation_proposals, fn _id -> [proposal] end)
+      # Fetched through the ordinary proposal ref path, so it needs its document,
+      # and names the topic that made it -- which for a topic's own proposal is
+      # the topic itself.
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+      expect(DocumentsMock, :get_proposal!, fn ^document, _id -> proposal end)
+      stub(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("carry on", [], replay: conversation)
+
+      assert message =~ ~s(<proposal ref="1" id="#{proposal.id}" scope="document" status="live")
+      assert message =~ "## Rewritten"
+      # No block to name on a whole-document rewrite, so the attribute is absent
+      # rather than empty.
+      refute message =~ ~s(block_id="")
+    end
+
+    test "puts what it proposed after the document it proposed it for" do
+      conversation = insert(:conversation)
+      document = document_with_blocks(["The current text"], "上线流程")
+
+      proposal =
+        insert(:block_proposal,
+          document: document,
+          conversation: conversation,
+          content: "Tighter"
+        )
+
+      message_ref =
+        build(:message_ref,
+          message: nil,
+          ref_type: "document",
+          ref_id: document.id,
+          payload: %{"type" => "document", "id" => document.id}
+        )
+
+      expect(ConversationsMock, :recent_messages, fn _conversation, _limit ->
+        [replayed_message(conversation, :user, 0, "tighten this", [message_ref])]
+      end)
+
+      expect(DocumentsMock, :live_conversation_proposals, fn _id -> [proposal] end)
+      stub(DocumentsMock, :get_document!, fn _id -> document end)
+      expect(DocumentsMock, :get_proposal!, fn ^document, _id -> proposal end)
+      stub(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("carry on", [], replay: conversation)
+
+      # Reads as: here is the document, here is what you proposed for it, here is
+      # what you said.
+      document_at = message |> String.split("<document") |> hd() |> String.length()
+      proposal_at = message |> String.split("<proposal") |> hd() |> String.length()
+      transcript_at = message |> String.split("<conversation") |> hd() |> String.length()
+
+      assert document_at < proposal_at
+      assert proposal_at < transcript_at
+    end
+
+    test "asks for nothing when the topic has nothing standing" do
+      conversation = insert(:conversation)
+
+      expect(ConversationsMock, :recent_messages, fn _conversation, _limit -> [] end)
+      expect(DocumentsMock, :live_conversation_proposals, fn _id -> [] end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("first thing", [], replay: conversation)
+
+      refute message =~ "<proposal"
     end
   end
 

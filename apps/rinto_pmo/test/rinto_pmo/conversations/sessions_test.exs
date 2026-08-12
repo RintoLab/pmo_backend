@@ -153,8 +153,14 @@ defmodule RintoPMO.Conversations.SessionsTest do
     end
   end
 
+  # Written to one side and moved into place, so the file existing means it is
+  # complete: a reader that only waits for the path can otherwise catch it
+  # empty, which reads as "the variable is not set".
   defp dumping_env(tmp_dir, capture) do
-    fake_pi(tmp_dir, ~s|env > "#{capture}"\nsleep 300\n|)
+    fake_pi(
+      tmp_dir,
+      ~s|env > "#{capture}.part" && mv "#{capture}.part" "#{capture}"\nsleep 300\n|
+    )
   end
 
   defp env(capture, name) do
@@ -178,7 +184,11 @@ defmodule RintoPMO.Conversations.SessionsTest do
     Application.put_env(:rinto_pmo, RintoPMO.Conversations, updated)
   end
 
-  defp eventually(fun, attempts \\ 100)
+  # Generous on purpose: some of these wait on a spawned shell to write a file,
+  # and process spawning under a loaded suite is slower than anything the wait
+  # is actually testing. The budget only costs time when something is genuinely
+  # broken.
+  defp eventually(fun, attempts \\ 500)
   defp eventually(_fun, 0), do: false
 
   defp eventually(fun, attempts) do
@@ -191,7 +201,10 @@ defmodule RintoPMO.Conversations.SessionsTest do
   end
 
   defp dumping_pi(tmp_dir, capture) do
-    fake_pi(tmp_dir, ~s|printf '%s\\n' "$@" > "#{capture}"\nsleep 300\n|)
+    fake_pi(
+      tmp_dir,
+      ~s|printf '%s\\n' "$@" > "#{capture}.part" && mv "#{capture}.part" "#{capture}"\nsleep 300\n|
+    )
   end
 
   # Merged, not replaced: this block holds more than one key, and overwriting it
