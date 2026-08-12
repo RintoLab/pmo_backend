@@ -10,6 +10,19 @@ defmodule RintoPMO.Documents do
   topic, so the document never forks -- disagreement is pushed down to the
   block, where it is resolved by a person choosing rather than by merging text.
 
+  ## Who wrote a proposal is not a caller's to say
+
+  Proposing is how an AI writes; a person writes by creating a revision. So the
+  author of a proposal is always the assistant the topic is talking to, and the
+  topic already records which one that is. It is derived here rather than
+  accepted as a parameter, which is the only version of this that cannot be got
+  wrong: a caller able to name an author can name the wrong one, and attributing
+  a model's work to a person erases the distinction the whole review flow rests
+  on -- silently, since nothing downstream could tell.
+
+  The mirror of the rule is that deciding and committing *do* take an actor.
+  Those are a person's actions, and there is no topic to derive them from.
+
   Revisions are produced only by `commit_proposals/2`. That is the one place
   where a new revision, the annotations it settles, and the proposals it
   accepts all move together, and they move in a single transaction because a
@@ -206,8 +219,9 @@ defmodule RintoPMO.Documents do
       latest = latest_revision!(repo, locked_document, preload_blocks?: true)
       block_id = attr(attrs, :block_id, nil)
 
-      with :ok <- ensure_known_block(latest, block_id),
-           {:ok, proposal} <- upsert_proposal(repo, locked_document, latest, attrs) do
+      with {:ok, author_id} <- proposal_author(attrs),
+           :ok <- ensure_known_block(latest, block_id),
+           {:ok, proposal} <- upsert_proposal(repo, locked_document, latest, author_id, attrs) do
         {:ok, %{proposal: proposal, live_proposals: count_live(repo, locked_document, block_id)}}
       end
     end)
@@ -236,7 +250,9 @@ defmodule RintoPMO.Documents do
 
       latest = latest_revision!(repo, locked_document, preload_blocks?: false)
 
-      with {:ok, proposal} <- upsert_scoped_proposal(repo, locked_document, latest, :title, attrs) do
+      with {:ok, author_id} <- proposal_author(attrs),
+           {:ok, proposal} <-
+             upsert_scoped_proposal(repo, locked_document, latest, :title, author_id, attrs) do
         {:ok,
          %{proposal: proposal, live_proposals: count_live_scope(repo, locked_document, :title)}}
       end
@@ -273,10 +289,18 @@ defmodule RintoPMO.Documents do
 
       latest = latest_revision!(repo, locked_document, preload_blocks?: true)
 
-      with {:ok, contents} <- split_proposed_markdown(attrs),
-           {:ok, operations} <- compile_operations(latest, contents, attrs),
+      with {:ok, author_id} <- proposal_author(attrs),
+           {:ok, contents} <- split_proposed_markdown(attrs),
+           {:ok, operations} <- compile_operations(latest, contents, author_id),
            {:ok, proposal} <-
-             upsert_document_proposal(repo, locked_document, latest, operations, attrs) do
+             upsert_document_proposal(
+               repo,
+               locked_document,
+               latest,
+               operations,
+               author_id,
+               attrs
+             ) do
         {:ok,
          %{
            proposal: proposal,
@@ -344,8 +368,10 @@ defmodule RintoPMO.Documents do
          {:ok, contents} <- merge_onto(base, wanted, parent),
          attrs = rebased_attrs(proposal, contents),
          {:ok, split} <- split_proposed_markdown(attrs),
-         {:ok, operations} <- compile_operations(parent, split, attrs) do
-      upsert_document_proposal(repo, document, parent, operations, attrs)
+         {:ok, operations} <- compile_operations(parent, split, proposal.actor_id) do
+      # The original proposer, not whoever the topic is talking to now: carrying
+      # a proposal across a revision is a merge, not somebody writing again.
+      upsert_document_proposal(repo, document, parent, operations, proposal.actor_id, attrs)
     end
   end
 
@@ -369,7 +395,6 @@ defmodule RintoPMO.Documents do
   defp rebased_attrs(%BlockProposal{} = proposal, contents) do
     %{
       conversation_id: proposal.conversation_id,
-      actor_id: proposal.actor_id,
       content: Enum.join(contents, "\n\n"),
       change_summary: proposal.change_summary
     }
@@ -869,11 +894,10 @@ defmodule RintoPMO.Documents do
     end
   end
 
-  defp upsert_proposal(repo, document, latest, attrs) do
+  defp upsert_proposal(repo, document, latest, actor_id, attrs) do
     block_id = attr(attrs, :block_id, nil)
     conversation_id = attr(attrs, :conversation_id, nil)
     content = attr(attrs, :content, nil)
-    actor_id = attr(attrs, :actor_id, nil)
 
     case live_proposal(repo, document, block_id, conversation_id) do
       nil ->
@@ -915,10 +939,9 @@ defmodule RintoPMO.Documents do
   # The document-level twin of `upsert_proposal/4`. The slot is keyed by scope
   # rather than by block, and no `block_id` is written -- the check constraint
   # and the changeset both refuse one here.
-  defp upsert_scoped_proposal(repo, document, latest, scope, attrs) do
+  defp upsert_scoped_proposal(repo, document, latest, scope, actor_id, attrs) do
     conversation_id = attr(attrs, :conversation_id, nil)
     content = attr(attrs, :content, nil)
-    actor_id = attr(attrs, :actor_id, nil)
 
     case live_scoped_proposal(repo, document, scope, conversation_id) do
       nil ->
@@ -952,6 +975,33 @@ defmodule RintoPMO.Documents do
 
   defp live_scoped_proposal(_repo, _document, _scope, _conversation_id), do: nil
 
+  # Who a proposal is by. Not a parameter: see "Who wrote a proposal is not a
+  # caller's to say" above.
+  defp proposal_author(attrs) do
+    case attr(attrs, :conversation_id, nil) do
+      conversation_id when is_binary(conversation_id) ->
+        assistant_of(conversation_id)
+
+      _absent ->
+        # A proposal without a topic has nobody to be by, and the changeset says
+        # so in the caller's own vocabulary.
+        {:ok, nil}
+    end
+  end
+
+  defp assistant_of(conversation_id) do
+    case conversations().get_conversation!(conversation_id) do
+      %{assistant_actor_id: nil} ->
+        {:error, {:assistant_actor_required, %{conversation_id: conversation_id}}}
+
+      %{assistant_actor_id: actor_id} ->
+        {:ok, actor_id}
+    end
+  rescue
+    Ecto.NoResultsError ->
+      {:error, {:conversation_not_found, %{conversation_id: conversation_id}}}
+  end
+
   # Cut by the same rules as a new document's body, because the grain is this
   # layer's decision and a proposal choosing its own would drift from every
   # revision around it.
@@ -972,20 +1022,20 @@ defmodule RintoPMO.Documents do
     end
   end
 
-  defp compile_operations(_latest, :absent, _attrs), do: {:ok, []}
+  defp compile_operations(_latest, :absent, _actor_id), do: {:ok, []}
 
-  defp compile_operations(%DocumentRevision{} = latest, contents, attrs) do
-    case BlockDiff.compile(ordered_blocks(latest), contents, attr(attrs, :actor_id, nil)) do
+  defp compile_operations(%DocumentRevision{} = latest, contents, actor_id) do
+    case BlockDiff.compile(ordered_blocks(latest), contents, actor_id) do
       [] -> {:error, {:no_change_proposed, %{}}}
       operations -> {:ok, operations}
     end
   end
 
-  defp upsert_document_proposal(repo, document, latest, operations, attrs) do
+  defp upsert_document_proposal(repo, document, latest, operations, actor_id, attrs) do
     conversation_id = attr(attrs, :conversation_id, nil)
 
     compiled = %{
-      actor_id: attr(attrs, :actor_id, nil),
+      actor_id: actor_id,
       content: attr(attrs, :content, nil),
       block_ops: storable_operations(operations),
       base_revision_id: latest.id,
@@ -1206,4 +1256,8 @@ defmodule RintoPMO.Documents do
   defp unwrap_error({:error, {code, details}}), do: {:error, code, details}
 
   defp annotations, do: Utils.module(:annotations)
+
+  # The one thing this context asks of another: which assistant a topic is
+  # talking to, so a proposal can be attributed without a caller saying.
+  defp conversations, do: Utils.module(:conversations)
 end

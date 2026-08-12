@@ -13,6 +13,14 @@ defmodule RintoPMO.Conversations.TitlesTest do
   alias RintoPMO.DocumentsMock
   alias RintoPMO.Settings
 
+  # A topic carries an assistant by default now, and naming falls back to it when
+  # no naming actor is configured -- so the real context answers unless a test
+  # says otherwise.
+  setup do
+    stub_with(ActorsMock, Actors)
+    :ok
+  end
+
   describe "eligibility" do
     test "an empty topic is created unnamed and stays that way" do
       assert {:ok, conversation} = Conversations.create_conversation(%{})

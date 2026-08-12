@@ -38,7 +38,12 @@ defmodule RintoPMOWeb.V1.BlockProposalController do
         "status",
         "decided_by_actor_id",
         "decided_at",
-        "block_ops"
+        "block_ops",
+        # Who a proposal is by is derived from the topic, never asserted: see
+        # `RintoPMO.Documents`. Sent anyway, it is dropped rather than refused --
+        # a client that has always sent it keeps working, and cannot get it
+        # wrong.
+        "actor_id"
       ])
 
     with {:ok, proposed} <- propose(document, attrs) do

@@ -3,6 +3,8 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
   alias RintoPMO.Annotations
   alias RintoPMO.AnnotationsMock
+  alias RintoPMO.Conversations
+  alias RintoPMO.ConversationsMock
   alias RintoPMO.Documents
   alias RintoPMO.Documents.BlockOps
   alias RintoPMO.Documents.BlockProposal
@@ -11,6 +13,8 @@ defmodule RintoPMO.Documents.ProposalsTest do
     # Commit resolves annotations through the injected context; these tests are
     # about what actually lands in the database, so it runs for real.
     stub_with(AnnotationsMock, Annotations)
+    # A proposal's author is read off the topic, so the real context answers.
+    stub_with(ConversationsMock, Conversations)
     :ok
   end
 
@@ -18,28 +22,29 @@ defmodule RintoPMO.Documents.ProposalsTest do
     test "records a topic's proposal and reports it stands alone" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One", "Two"])
       conversation = insert(:conversation)
-      actor = insert(:actor)
 
       assert {:ok, %{proposal: %BlockProposal{} = proposal, live_proposals: 1}} =
-               propose(document, block.block_id, conversation, actor, "Tighter one")
+               propose(document, block.block_id, conversation, "Tighter one")
 
       assert proposal.status == :live
       assert proposal.block_id == block.block_id
       assert proposal.conversation_id == conversation.id
-      assert proposal.actor_id == actor.id
       assert proposal.content == "Tighter one"
       assert proposal.base_revision_id == latest_revision_id(document)
+
+      # Proposing is how an AI writes, so the author is the assistant this topic
+      # is talking to -- derived here, never supplied.
+      assert proposal.actor_id == conversation.assistant_actor_id
     end
 
     test "a topic revising the same block keeps exactly one live proposal" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
       conversation = insert(:conversation)
-      actor = insert(:actor)
 
       ids =
         for round <- 1..5 do
           assert {:ok, %{proposal: proposal, live_proposals: 1}} =
-                   propose(document, block.block_id, conversation, actor, "Attempt #{round}")
+                   propose(document, block.block_id, conversation, "Attempt #{round}")
 
           proposal.id
         end
@@ -56,13 +61,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
       first = insert(:conversation)
       second = insert(:conversation)
-      actor = insert(:actor)
 
       assert {:ok, %{live_proposals: 1}} =
-               propose(document, block.block_id, first, actor, "Version A")
+               propose(document, block.block_id, first, "Version A")
 
       assert {:ok, %{live_proposals: 2}} =
-               propose(document, block.block_id, second, actor, "Version B")
+               propose(document, block.block_id, second, "Version B")
 
       assert [%{block_id: block_id, proposals: proposals}] = Documents.contentions(document)
       assert block_id == block.block_id
@@ -74,10 +78,8 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document, blocks: [first_block, second_block]} =
         document_with_blocks(["One", "Two"])
 
-      actor = insert(:actor)
-
-      {:ok, _} = propose(document, first_block.block_id, insert(:conversation), actor, "A")
-      {:ok, _} = propose(document, second_block.block_id, insert(:conversation), actor, "B")
+      {:ok, _} = propose(document, first_block.block_id, insert(:conversation), "A")
+      {:ok, _} = propose(document, second_block.block_id, insert(:conversation), "B")
 
       assert Documents.contentions(document) == []
     end
@@ -87,7 +89,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       stray = UUIDv7.generate()
 
       assert {:error, :unknown_block, %{block_id: ^stray}} =
-               propose(document, stray, insert(:conversation), insert(:actor), "Nowhere")
+               propose(document, stray, insert(:conversation), "Nowhere")
     end
 
     test "requires a topic, an actor and content" do
@@ -109,10 +111,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
       mine = insert(:conversation)
       theirs = insert(:conversation)
-      actor = insert(:actor)
 
-      {:ok, _} = propose(document, first_block.block_id, mine, actor, "My version")
-      {:ok, _} = propose(document, first_block.block_id, theirs, actor, "Their version")
+      {:ok, _} = propose(document, first_block.block_id, mine, "My version")
+      {:ok, _} = propose(document, first_block.block_id, theirs, "Their version")
 
       assert [first, second] = Documents.blocks_for_conversation(document, mine.id)
 
@@ -135,7 +136,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       theirs = insert(:conversation)
       bystander = insert(:conversation)
 
-      {:ok, _} = propose(document, block.block_id, theirs, insert(:actor), "Their version")
+      {:ok, _} = propose(document, block.block_id, theirs, "Their version")
 
       assert [only] = Documents.blocks_for_conversation(document, bystander.id)
       assert only.content == "## Original"
@@ -150,10 +151,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       {:ok, %{proposal: keeper}} =
-        propose(document, block.block_id, insert(:conversation), actor, "Version A")
+        propose(document, block.block_id, insert(:conversation), "Version A")
 
       {:ok, %{proposal: loser}} =
-        propose(document, block.block_id, insert(:conversation), actor, "Version B")
+        propose(document, block.block_id, insert(:conversation), "Version B")
 
       assert {:ok, adopted} =
                Documents.decide_block(document, block.block_id, keeper.id, actor.id)
@@ -190,11 +191,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
         document_with_blocks(["Original one", "Original two"])
 
       conversation = insert(:conversation)
-      author = insert(:actor)
       committer = insert(:actor)
 
       {:ok, %{proposal: proposal}} =
-        propose(document, first_block.block_id, conversation, author, "Rewritten one")
+        propose(document, first_block.block_id, conversation, "Rewritten one")
 
       assert {:ok, revision} =
                Documents.commit_proposals(document, %{
@@ -211,8 +211,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert Enum.map(blocks, & &1.content) == ["Rewritten one", "## Original two"]
       # Block identity survives the rewrite; only the snapshot is new.
       assert Enum.map(blocks, & &1.block_id) == [first_block.block_id, second_block.block_id]
-      # The block is attributed to whoever wrote the text, not whoever approved.
-      assert Enum.map(blocks, & &1.actor_id) == [author.id, second_block.actor_id]
+      # The block is attributed to whoever wrote the text -- the topic's assistant
+      # -- and not to whoever approved it.
+      assert Enum.map(blocks, & &1.actor_id) ==
+               [conversation.assistant_actor_id, second_block.actor_id]
+
+      refute committer.id in Enum.map(blocks, & &1.actor_id)
 
       accepted = Repo.get!(BlockProposal, proposal.id)
       assert accepted.status == :accepted
@@ -224,7 +228,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       settled = insert(:annotation, document: document)
       untouched = insert(:annotation, document: document)
 
-      {:ok, _} = propose(document, block.block_id, insert(:conversation), insert(:actor), "New")
+      {:ok, _} = propose(document, block.block_id, insert(:conversation), "New")
 
       assert {:ok, revision} =
                Documents.commit_proposals(document, %{
@@ -250,9 +254,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
       first = insert(:conversation)
       second = insert(:conversation)
 
-      {:ok, _} = propose(document, contended_block.block_id, first, actor, "Version A")
-      {:ok, _} = propose(document, contended_block.block_id, second, actor, "Version B")
-      {:ok, _} = propose(document, quiet_block.block_id, first, actor, "Uncontested")
+      {:ok, _} = propose(document, contended_block.block_id, first, "Version A")
+      {:ok, _} = propose(document, contended_block.block_id, second, "Version B")
+      {:ok, _} = propose(document, quiet_block.block_id, first, "Uncontested")
 
       contended_id = contended_block.block_id
 
@@ -284,9 +288,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
       first = insert(:conversation)
       second = insert(:conversation)
 
-      {:ok, _} = propose(document, contended_block.block_id, first, actor, "Version A")
-      {:ok, _} = propose(document, contended_block.block_id, second, actor, "Version B")
-      {:ok, _} = propose(document, quiet_block.block_id, first, actor, "Uncontested")
+      {:ok, _} = propose(document, contended_block.block_id, first, "Version A")
+      {:ok, _} = propose(document, contended_block.block_id, second, "Version B")
+      {:ok, _} = propose(document, quiet_block.block_id, first, "Uncontested")
 
       assert {:ok, revision} =
                Documents.commit_proposals(document, %{
@@ -307,9 +311,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       {:ok, %{proposal: keeper}} =
-        propose(document, block.block_id, insert(:conversation), actor, "Version A")
+        propose(document, block.block_id, insert(:conversation), "Version A")
 
-      {:ok, _} = propose(document, block.block_id, insert(:conversation), actor, "Version B")
+      {:ok, _} = propose(document, block.block_id, insert(:conversation), "Version B")
 
       {:ok, _adopted} = Documents.decide_block(document, block.block_id, keeper.id, actor.id)
 
@@ -327,12 +331,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
       stale = latest_revision_id(document)
 
-      {:ok, _} = propose(document, block.block_id, insert(:conversation), actor, "First")
+      {:ok, _} = propose(document, block.block_id, insert(:conversation), "First")
 
       {:ok, _committed} =
         Documents.commit_proposals(document, %{actor_id: actor.id, base_revision_id: stale})
 
-      {:ok, _} = propose(document, block.block_id, insert(:conversation), actor, "Second")
+      {:ok, _} = propose(document, block.block_id, insert(:conversation), "Second")
 
       assert {:error, :stale_document, %{current_revision_id: current}} =
                Documents.commit_proposals(document, %{
@@ -360,7 +364,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       {:ok, %{proposal: proposal}} =
-        propose(document, block.block_id, insert(:conversation), actor, "New text")
+        propose(document, block.block_id, insert(:conversation), "New text")
 
       revisions_before = length(Documents.list_revisions(document))
 
@@ -384,10 +388,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       {:ok, %{proposal: keeper}} =
-        propose(document, block.block_id, insert(:conversation), actor, "Kept")
+        propose(document, block.block_id, insert(:conversation), "Kept")
 
       {:ok, %{proposal: loser}} =
-        propose(document, block.block_id, insert(:conversation), actor, "Dropped")
+        propose(document, block.block_id, insert(:conversation), "Dropped")
 
       {:ok, _} = Documents.decide_block(document, block.block_id, keeper.id, actor.id)
 
@@ -409,10 +413,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
     test "a block proposal defaults to the block scope" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
       conversation = insert(:conversation)
-      actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose(document, block.block_id, conversation, actor, "Tighter")
+               propose(document, block.block_id, conversation, "Tighter")
 
       assert proposal.scope == :block
     end
@@ -476,7 +479,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       conversation = insert(:conversation)
       actor = insert(:actor)
 
-      assert {:ok, _proposed} = propose(document, block.block_id, conversation, actor, "Tighter")
+      assert {:ok, _proposed} = propose(document, block.block_id, conversation, "Tighter")
 
       assert {:ok, _document_scope} =
                insert_proposal(
@@ -504,14 +507,105 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  # Proposing is how an AI writes; a person writes by creating a revision. So the
+  # author is the assistant the topic is talking to, and a caller cannot say
+  # otherwise -- one that could would eventually say the wrong thing, and
+  # attributing a model's work to a person erases the distinction the review flow
+  # rests on.
+  describe "who a proposal is by" do
+    test "ignores an actor a caller tries to supply" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      impostor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               Documents.propose_block(document, %{
+                 block_id: block.block_id,
+                 conversation_id: conversation.id,
+                 actor_id: impostor.id,
+                 content: "Tighter"
+               })
+
+      assert proposal.actor_id == conversation.assistant_actor_id
+      refute proposal.actor_id == impostor.id
+    end
+
+    for scope <- [:title, :document] do
+      test "the #{scope} scope is attributed the same way" do
+        %{document: document} = document_with_blocks(["One"])
+        conversation = insert(:conversation)
+
+        assert {:ok, %{proposal: proposal}} =
+                 propose_scope(unquote(scope), document, conversation, "## Rewritten")
+
+        assert proposal.actor_id == conversation.assistant_actor_id
+      end
+    end
+
+    test "refuses a topic with no assistant, having nobody to attribute it to" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      conversation = insert(:conversation, assistant_actor: nil)
+
+      assert {:error, :assistant_actor_required, details} =
+               propose(document, block.block_id, conversation, "Tighter")
+
+      assert details.conversation_id == conversation.id
+    end
+
+    test "refuses a topic that does not exist" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      stray = UUIDv7.generate()
+
+      assert {:error, :conversation_not_found, %{conversation_id: ^stray}} =
+               Documents.propose_block(document, %{
+                 block_id: block.block_id,
+                 conversation_id: stray,
+                 content: "Nowhere"
+               })
+    end
+
+    # A merge is not somebody writing again, so it keeps the original proposer
+    # even if the topic is talking to a different assistant by then.
+    test "a rebase keeps the original proposer" do
+      %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
+      conversation = insert(:conversation)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, conversation, "## One\n\n## Two, mine")
+
+      original = proposal.actor_id
+
+      assert {:ok, _proposed} =
+               propose(document, first.block_id, insert(:conversation), "## One, theirs")
+
+      assert {:ok, _landed} = commit(document, insert(:actor))
+
+      # The topic switches to a different assistant in the meantime.
+      {:ok, _conversation} =
+        Conversations.update_conversation(conversation, %{
+          assistant_actor_id: insert(:actor, kind: :ai).id
+        })
+
+      assert {:ok, rebased} = Documents.rebase_document_proposal(document, proposal.id)
+      assert rebased.actor_id == original
+    end
+  end
+
+  defp propose_scope(:title, document, conversation, _markdown) do
+    propose_title(document, conversation, "Renamed")
+  end
+
+  defp propose_scope(:document, document, conversation, markdown) do
+    propose_document(document, conversation, markdown)
+  end
+
   describe "propose_title/2" do
     test "records what a topic wants the document called" do
       %{document: document} = document_with_blocks(["One"])
       conversation = insert(:conversation)
-      actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal, live_proposals: 1}} =
-               propose_title(document, conversation, actor, "标题去重验证")
+               propose_title(document, conversation, "标题去重验证")
 
       assert proposal.scope == :title
       assert proposal.block_id == nil
@@ -523,12 +617,11 @@ defmodule RintoPMO.Documents.ProposalsTest do
     test "a topic rewriting its title iterates on one row" do
       %{document: document} = document_with_blocks(["One"])
       conversation = insert(:conversation)
-      actor = insert(:actor)
 
-      assert {:ok, %{proposal: first}} = propose_title(document, conversation, actor, "First try")
+      assert {:ok, %{proposal: first}} = propose_title(document, conversation, "First try")
 
       assert {:ok, %{proposal: second, live_proposals: 1}} =
-               propose_title(document, conversation, actor, "Second try")
+               propose_title(document, conversation, "Second try")
 
       assert second.id == first.id
       assert second.content == "Second try"
@@ -536,13 +629,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
     test "two topics wanting different titles is a contention" do
       %{document: document} = document_with_blocks(["One"])
-      actor = insert(:actor)
 
       assert {:ok, %{live_proposals: 1}} =
-               propose_title(document, insert(:conversation), actor, "Mine")
+               propose_title(document, insert(:conversation), "Mine")
 
       assert {:ok, %{live_proposals: 2}} =
-               propose_title(document, insert(:conversation), actor, "No, mine")
+               propose_title(document, insert(:conversation), "No, mine")
     end
   end
 
@@ -550,10 +642,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
     test "compiles the body into the operations that would produce it" do
       %{document: document, blocks: [first, second]} = document_with_blocks(["One", "Two"])
       conversation = insert(:conversation)
-      actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal, live_proposals: 1}} =
-               propose_document(document, conversation, actor, "## One\n\n## Two, tighter")
+               propose_document(document, conversation, "## One\n\n## Two, tighter")
 
       assert proposal.scope == :document
       assert proposal.block_id == nil
@@ -574,12 +665,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document} = document_with_blocks(["One"])
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(
-                 document,
-                 insert(:conversation),
-                 insert(:actor),
-                 "## One\n\n## Two"
-               )
+               propose_document(document, insert(:conversation), "## One\n\n## Two")
 
       assert [%{"op" => "insert_after"}] = proposal.block_ops
     end
@@ -594,7 +680,6 @@ defmodule RintoPMO.Documents.ProposalsTest do
                propose_document(
                  document,
                  insert(:conversation),
-                 insert(:actor),
                  "## Zero\n\n## One\n\n## Two, tighter"
                )
 
@@ -612,11 +697,11 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: first}} =
-               propose_document(document, conversation, actor, "## One, tighter\n\n## Two")
+               propose_document(document, conversation, "## One, tighter\n\n## Two")
 
       # Something else lands underneath it.
       assert {:ok, _proposed} =
-               propose(document, block.block_id, insert(:conversation), actor, "## One, theirs")
+               propose(document, block.block_id, insert(:conversation), "## One, theirs")
 
       assert {:ok, revision} = commit(document, actor)
 
@@ -624,7 +709,6 @@ defmodule RintoPMO.Documents.ProposalsTest do
                propose_document(
                  document,
                  conversation,
-                 actor,
                  "## One, theirs\n\n## Two, tighter"
                )
 
@@ -638,12 +722,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document} = document_with_blocks(["One", "Two"])
 
       assert {:error, :no_change_proposed, _details} =
-               propose_document(
-                 document,
-                 insert(:conversation),
-                 insert(:actor),
-                 "## One\n\n## Two"
-               )
+               propose_document(document, insert(:conversation), "## One\n\n## Two")
     end
 
     # A body that is not a string at all -- the same thing `create_document/1`
@@ -652,18 +731,17 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document} = document_with_blocks(["One"])
 
       assert {:error, :invalid_markdown, _details} =
-               propose_document(document, insert(:conversation), insert(:actor), %{"nope" => true})
+               propose_document(document, insert(:conversation), %{"nope" => true})
     end
 
     test "two topics rewriting one document is a contention" do
       %{document: document} = document_with_blocks(["One"])
-      actor = insert(:actor)
 
       assert {:ok, %{live_proposals: 1}} =
-               propose_document(document, insert(:conversation), actor, "## Mine")
+               propose_document(document, insert(:conversation), "## Mine")
 
       assert {:ok, %{live_proposals: 2}} =
-               propose_document(document, insert(:conversation), actor, "## Theirs")
+               propose_document(document, insert(:conversation), "## Theirs")
     end
 
     # Different things, so one topic may hold both -- the index has `scope` in it
@@ -671,12 +749,11 @@ defmodule RintoPMO.Documents.ProposalsTest do
     test "a topic may rewrite the body and rename the document at once" do
       %{document: document} = document_with_blocks(["One"])
       conversation = insert(:conversation)
-      actor = insert(:actor)
 
       assert {:ok, %{proposal: body}} =
-               propose_document(document, conversation, actor, "## Rewritten")
+               propose_document(document, conversation, "## Rewritten")
 
-      assert {:ok, %{proposal: title}} = propose_title(document, conversation, actor, "Renamed")
+      assert {:ok, %{proposal: title}} = propose_title(document, conversation, "Renamed")
 
       assert body.scope == :document
       assert title.scope == :title
@@ -687,14 +764,13 @@ defmodule RintoPMO.Documents.ProposalsTest do
   describe "decide_title/3" do
     test "settles the argument and leaves the winner live" do
       %{document: document} = document_with_blocks(["One"])
-      actor = insert(:actor)
       decider = insert(:actor)
 
       assert {:ok, %{proposal: mine}} =
-               propose_title(document, insert(:conversation), actor, "Mine")
+               propose_title(document, insert(:conversation), "Mine")
 
       assert {:ok, %{proposal: theirs}} =
-               propose_title(document, insert(:conversation), actor, "Theirs")
+               propose_title(document, insert(:conversation), "Theirs")
 
       assert {:ok, adopted} = Documents.decide_title(document, theirs.id, decider.id)
 
@@ -712,7 +788,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: block_proposal}} =
-               propose(document, block.block_id, conversation, actor, "Tighter")
+               propose(document, block.block_id, conversation, "Tighter")
 
       assert {:error, :proposal_not_found, details} =
                Documents.decide_title(document, block_proposal.id, actor.id)
@@ -731,10 +807,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
       decider = insert(:actor)
 
       assert {:ok, %{proposal: mine}} =
-               propose_document(document, insert(:conversation), actor, "## Mine")
+               propose_document(document, insert(:conversation), "## Mine")
 
       assert {:ok, %{proposal: theirs}} =
-               propose_document(document, insert(:conversation), actor, "## Theirs")
+               propose_document(document, insert(:conversation), "## Theirs")
 
       assert {:ok, adopted} = Documents.decide_document(document, theirs.id, decider.id)
 
@@ -756,7 +832,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: block_proposal}} =
-               propose(document, block.block_id, insert(:conversation), actor, "Tighter")
+               propose(document, block.block_id, insert(:conversation), "Tighter")
 
       assert {:error, :proposal_not_found, details} =
                Documents.decide_document(document, block_proposal.id, actor.id)
@@ -772,7 +848,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_title(document, conversation, actor, "上线流程")
+               propose_title(document, conversation, "上线流程")
 
       assert {:ok, revision} = commit(document, actor)
 
@@ -786,7 +862,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, _proposed} =
-               propose_title(document, insert(:conversation), actor, "Renamed")
+               propose_title(document, insert(:conversation), "Renamed")
 
       assert {:ok, revision} = commit(document, actor)
       assert revision.title == "Renamed"
@@ -798,8 +874,8 @@ defmodule RintoPMO.Documents.ProposalsTest do
       conversation = insert(:conversation)
       actor = insert(:actor)
 
-      assert {:ok, _proposed} = propose(document, block.block_id, conversation, actor, "Tighter")
-      assert {:ok, _proposed} = propose_title(document, conversation, actor, "Renamed")
+      assert {:ok, _proposed} = propose(document, block.block_id, conversation, "Tighter")
+      assert {:ok, _proposed} = propose_title(document, conversation, "Renamed")
 
       assert {:ok, revision} = commit(document, actor)
       assert revision.title == "Renamed"
@@ -813,13 +889,13 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, _proposed} =
-               propose(document, block.block_id, insert(:conversation), actor, "Tighter")
+               propose(document, block.block_id, insert(:conversation), "Tighter")
 
       assert {:ok, %{proposal: mine}} =
-               propose_title(document, insert(:conversation), actor, "Mine")
+               propose_title(document, insert(:conversation), "Mine")
 
       assert {:ok, %{proposal: theirs}} =
-               propose_title(document, insert(:conversation), actor, "Theirs")
+               propose_title(document, insert(:conversation), "Theirs")
 
       assert {:ok, revision} = commit(document, actor)
 
@@ -836,7 +912,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_title(document, insert(:conversation), actor, "Proposed")
+               propose_title(document, insert(:conversation), "Proposed")
 
       assert {:ok, revision} =
                Documents.commit_proposals(document, %{
@@ -865,10 +941,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, conversation, actor, "## One\n\n## Two, mine")
+               propose_document(document, conversation, "## One\n\n## Two, mine")
 
       assert {:ok, _proposed} =
-               propose(document, first.block_id, insert(:conversation), actor, "## One, theirs")
+               propose(document, first.block_id, insert(:conversation), "## One, theirs")
 
       assert {:ok, landed} = commit(document, actor)
       assert {:error, :stale_proposal, _details} = commit_document(document, actor, proposal)
@@ -889,10 +965,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, conversation, actor, "## One\n\n## Middle\n\n## Two")
+               propose_document(document, conversation, "## One\n\n## Middle\n\n## Two")
 
       assert {:ok, _proposed} =
-               propose(document, first.block_id, insert(:conversation), actor, "## One, theirs")
+               propose(document, first.block_id, insert(:conversation), "## One, theirs")
 
       assert {:ok, _landed} = commit(document, actor)
       assert {:ok, rebased} = Documents.rebase_document_proposal(document, proposal.id)
@@ -911,10 +987,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), actor, "## One, mine\n\n## Two")
+               propose_document(document, insert(:conversation), "## One, mine\n\n## Two")
 
       assert {:ok, _proposed} =
-               propose(document, first.block_id, insert(:conversation), actor, "## One, theirs")
+               propose(document, first.block_id, insert(:conversation), "## One, theirs")
 
       assert {:ok, _landed} = commit(document, actor)
 
@@ -932,7 +1008,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document} = document_with_blocks(["One"])
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), insert(:actor), "## Rewritten")
+               propose_document(document, insert(:conversation), "## Rewritten")
 
       assert {:ok, same} = Documents.rebase_document_proposal(document, proposal.id)
       assert same.base_revision_id == proposal.base_revision_id
@@ -945,10 +1021,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), actor, "## One, same\n\n## Two")
+               propose_document(document, insert(:conversation), "## One, same\n\n## Two")
 
       assert {:ok, _proposed} =
-               propose(document, first.block_id, insert(:conversation), actor, "## One, same")
+               propose(document, first.block_id, insert(:conversation), "## One, same")
 
       assert {:ok, _landed} = commit(document, actor)
 
@@ -960,7 +1036,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
 
       assert {:ok, %{proposal: block_proposal}} =
-               propose(document, block.block_id, insert(:conversation), insert(:actor), "Tighter")
+               propose(document, block.block_id, insert(:conversation), "Tighter")
 
       assert {:error, :proposal_not_found, _details} =
                Documents.rebase_document_proposal(document, block_proposal.id)
@@ -973,10 +1049,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), actor, "## One\n\n## Two, mine")
+               propose_document(document, insert(:conversation), "## One\n\n## Two, mine")
 
       assert {:ok, _proposed} =
-               propose(document, first.block_id, insert(:conversation), actor, "## One, theirs")
+               propose(document, first.block_id, insert(:conversation), "## One, theirs")
 
       assert {:ok, _landed} = commit(document, actor)
       assert {:ok, rebased} = Documents.rebase_document_proposal(document, proposal.id)
@@ -993,20 +1069,19 @@ defmodule RintoPMO.Documents.ProposalsTest do
   describe "scope_contentions/1" do
     test "reports each document-level scope more than one topic is arguing over" do
       %{document: document} = document_with_blocks(["One"])
-      actor = insert(:actor)
 
-      assert {:ok, _proposed} = propose_title(document, insert(:conversation), actor, "Mine")
-      assert {:ok, _proposed} = propose_title(document, insert(:conversation), actor, "Theirs")
+      assert {:ok, _proposed} = propose_title(document, insert(:conversation), "Mine")
+      assert {:ok, _proposed} = propose_title(document, insert(:conversation), "Theirs")
 
       assert {:ok, _proposed} =
-               propose_document(document, insert(:conversation), actor, "## Mine")
+               propose_document(document, insert(:conversation), "## Mine")
 
       assert [%{scope: :title, proposals: proposals}] = Documents.scope_contentions(document)
       assert length(proposals) == 2
 
       # One rewrite is not an argument.
       assert {:ok, _proposed} =
-               propose_document(document, insert(:conversation), actor, "## Theirs")
+               propose_document(document, insert(:conversation), "## Theirs")
 
       assert Enum.map(Documents.scope_contentions(document), & &1.scope) == [:document, :title]
     end
@@ -1015,10 +1090,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
     # not reported as one.
     test "stays out of the block-level contention list" do
       %{document: document} = document_with_blocks(["One"])
-      actor = insert(:actor)
 
-      assert {:ok, _proposed} = propose_title(document, insert(:conversation), actor, "Mine")
-      assert {:ok, _proposed} = propose_title(document, insert(:conversation), actor, "Theirs")
+      assert {:ok, _proposed} = propose_title(document, insert(:conversation), "Mine")
+      assert {:ok, _proposed} = propose_title(document, insert(:conversation), "Theirs")
 
       assert Documents.contentions(document) == []
     end
@@ -1029,10 +1103,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document} = document_with_blocks(["One"])
       mine = insert(:conversation)
       theirs = insert(:conversation)
-      actor = insert(:actor)
 
-      assert {:ok, %{proposal: proposal}} = propose_document(document, mine, actor, "## Mine")
-      assert {:ok, _proposed} = propose_document(document, theirs, actor, "## Theirs")
+      assert {:ok, %{proposal: proposal}} = propose_document(document, mine, "## Mine")
+      assert {:ok, _proposed} = propose_document(document, theirs, "## Theirs")
 
       assert Documents.document_proposal_for_conversation(document, mine.id).id == proposal.id
       refute Documents.document_proposal_for_conversation(document, insert(:conversation).id)
@@ -1044,7 +1117,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, conversation, actor, "## Rewritten")
+               propose_document(document, conversation, "## Rewritten")
 
       assert {:ok, _revision} = commit_document(document, actor, proposal)
       refute Documents.document_proposal_for_conversation(document, conversation.id)
@@ -1060,7 +1133,6 @@ defmodule RintoPMO.Documents.ProposalsTest do
                propose_document(
                  document,
                  insert(:conversation),
-                 actor,
                  "## Zero\n\n## One\n\n## Two, tighter"
                )
 
@@ -1078,7 +1150,6 @@ defmodule RintoPMO.Documents.ProposalsTest do
                propose_document(
                  document,
                  insert(:conversation),
-                 actor,
                  "## One\n\n## Two, tighter"
                )
 
@@ -1095,7 +1166,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, _proposed} =
-               propose_document(document, insert(:conversation), actor, "## Rewritten")
+               propose_document(document, insert(:conversation), "## Rewritten")
 
       assert {:error, :nothing_to_commit, _details} = commit(document, actor)
     end
@@ -1107,13 +1178,13 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: theirs}} =
-               propose(document, block.block_id, insert(:conversation), actor, "Their block")
+               propose(document, block.block_id, insert(:conversation), "Their block")
 
       assert {:ok, %{proposal: rival}} =
-               propose_document(document, insert(:conversation), actor, "## Rival rewrite")
+               propose_document(document, insert(:conversation), "## Rival rewrite")
 
       assert {:ok, %{proposal: mine}} =
-               propose_document(document, insert(:conversation), actor, "## My rewrite")
+               propose_document(document, insert(:conversation), "## My rewrite")
 
       assert {:ok, _revision} = commit_document(document, actor, mine)
 
@@ -1130,9 +1201,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
       conversation = insert(:conversation)
 
       assert {:ok, %{proposal: body}} =
-               propose_document(document, conversation, actor, "## Rewritten")
+               propose_document(document, conversation, "## Rewritten")
 
-      assert {:ok, %{proposal: title}} = propose_title(document, conversation, actor, "Renamed")
+      assert {:ok, %{proposal: title}} = propose_title(document, conversation, "Renamed")
 
       assert {:ok, revision} = commit_document(document, actor, body)
 
@@ -1145,13 +1216,13 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: body}} =
-               propose_document(document, insert(:conversation), actor, "## Rewritten")
+               propose_document(document, insert(:conversation), "## Rewritten")
 
       assert {:ok, %{proposal: mine}} =
-               propose_title(document, insert(:conversation), actor, "Mine")
+               propose_title(document, insert(:conversation), "Mine")
 
       assert {:ok, %{proposal: theirs}} =
-               propose_title(document, insert(:conversation), actor, "Theirs")
+               propose_title(document, insert(:conversation), "Theirs")
 
       assert {:ok, revision} = commit_document(document, actor, body)
 
@@ -1168,11 +1239,11 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), actor, "## One\n\n## Two, mine")
+               propose_document(document, insert(:conversation), "## One\n\n## Two, mine")
 
       # Something else lands underneath it.
       assert {:ok, _proposed} =
-               propose(document, block.block_id, insert(:conversation), actor, "## One, theirs")
+               propose(document, block.block_id, insert(:conversation), "## One, theirs")
 
       assert {:ok, landed} = commit(document, actor)
 
@@ -1191,15 +1262,15 @@ defmodule RintoPMO.Documents.ProposalsTest do
       conversation = insert(:conversation)
 
       assert {:ok, _proposed} =
-               propose_document(document, conversation, actor, "## One\n\n## Two, mine")
+               propose_document(document, conversation, "## One\n\n## Two, mine")
 
       assert {:ok, _proposed} =
-               propose(document, block.block_id, insert(:conversation), actor, "## One, theirs")
+               propose(document, block.block_id, insert(:conversation), "## One, theirs")
 
       assert {:ok, _landed} = commit(document, actor)
 
       assert {:ok, %{proposal: refreshed}} =
-               propose_document(document, conversation, actor, "## One, theirs\n\n## Two, mine")
+               propose_document(document, conversation, "## One, theirs\n\n## Two, mine")
 
       assert {:ok, revision} = commit_document(document, actor, refreshed)
       assert Enum.map(revision.blocks, & &1.content) == ["## One, theirs", "## Two, mine"]
@@ -1210,7 +1281,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), actor, "## Rewritten")
+               propose_document(document, insert(:conversation), "## Rewritten")
 
       assert {:error, :conflicting_commit, _details} =
                Documents.commit_proposals(document, %{
@@ -1226,7 +1297,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: block_proposal}} =
-               propose(document, block.block_id, insert(:conversation), actor, "Tighter")
+               propose(document, block.block_id, insert(:conversation), "Tighter")
 
       assert {:error, :proposal_not_found, details} =
                commit_document(document, actor, block_proposal)
@@ -1259,18 +1330,16 @@ defmodule RintoPMO.Documents.ProposalsTest do
     })
   end
 
-  defp propose_document(document, conversation, actor, markdown) do
+  defp propose_document(document, conversation, markdown) do
     Documents.propose_document(document, %{
       conversation_id: conversation.id,
-      actor_id: actor.id,
       content: markdown
     })
   end
 
-  defp propose_title(document, conversation, actor, content) do
+  defp propose_title(document, conversation, content) do
     Documents.propose_title(document, %{
       conversation_id: conversation.id,
-      actor_id: actor.id,
       content: content
     })
   end
@@ -1301,11 +1370,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
     |> Enum.sort_by(& &1.position)
   end
 
-  defp propose(document, block_id, conversation, actor, content) do
+  # No actor: a proposal is attributed to the topic's assistant, and a caller
+  # able to name an author could name the wrong one.
+  defp propose(document, block_id, conversation, content) do
     Documents.propose_block(document, %{
       block_id: block_id,
       conversation_id: conversation.id,
-      actor_id: actor.id,
       content: content
     })
   end

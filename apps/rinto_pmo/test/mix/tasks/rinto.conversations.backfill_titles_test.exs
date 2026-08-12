@@ -4,6 +4,8 @@ defmodule Mix.Tasks.Rinto.Conversations.BackfillTitlesTest do
   use RintoPMO.DataCase, async: false
 
   alias Mix.Tasks.Rinto.Conversations.BackfillTitles
+  alias RintoPMO.Actors
+  alias RintoPMO.ActorsMock
   alias RintoPMO.Agent.TitleGeneratorMock
   alias RintoPMO.Conversations
   alias RintoPMO.Conversations.Conversation
@@ -12,6 +14,8 @@ defmodule Mix.Tasks.Rinto.Conversations.BackfillTitlesTest do
     previous = Mix.shell()
     Mix.shell(Mix.Shell.Process)
     on_exit(fn -> Mix.shell(previous) end)
+    # Naming reads the topic's assistant to decide which model to ask.
+    stub_with(ActorsMock, Actors)
     :ok
   end
 

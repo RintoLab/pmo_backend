@@ -4,6 +4,8 @@ defmodule RintoPMO.Documents.SessionTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias RintoPMO.Annotations
   alias RintoPMO.AnnotationsMock
+  alias RintoPMO.Conversations
+  alias RintoPMO.ConversationsMock
   alias RintoPMO.Documents
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.Session
@@ -12,6 +14,9 @@ defmodule RintoPMO.Documents.SessionTest do
 
   setup do
     stub_with(AnnotationsMock, Annotations)
+    # Proposing attributes itself to the topic's assistant, so it reads the real
+    # context rather than asserting an author.
+    stub_with(ConversationsMock, Conversations)
     :ok
   end
 
@@ -222,6 +227,10 @@ defmodule RintoPMO.Documents.SessionTest do
   defp start_session!(document) do
     {:ok, pid} = Session.Supervisor.start_session(document_id: document.id)
     Sandbox.allow(RintoPMO.Repo, self(), pid)
+    # Mox is private, and a GenServer started under a supervisor is not in this
+    # test's caller chain, so the stubs have to be lent to it by hand.
+    Mox.allow(ConversationsMock, self(), pid)
+    Mox.allow(AnnotationsMock, self(), pid)
     on_exit(fn -> Session.discard(document.id) end)
     pid
   end

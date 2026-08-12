@@ -110,7 +110,7 @@ defmodule RintoPMOWeb.ConversationChannelTest do
   end
 
   defp conversation! do
-    insert(:conversation, assistant_actor_id: insert(:actor, kind: :ai).id)
+    insert(:conversation, assistant_actor: build(:actor, kind: :ai))
   end
 
   # A topic already carried by a live process, so `ensure_hot` finds it hot and
@@ -216,7 +216,7 @@ defmodule RintoPMOWeb.ConversationChannelTest do
     end
 
     test "a topic with no AI actor says so rather than starting one" do
-      conversation = insert(:conversation, assistant_actor_id: nil)
+      conversation = insert(:conversation, assistant_actor: nil)
       socket = join!(conversation)
 
       ref = push(socket, "prompt", %{"message" => "hello"})

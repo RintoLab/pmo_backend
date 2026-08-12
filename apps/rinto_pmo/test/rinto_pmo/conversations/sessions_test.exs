@@ -63,7 +63,7 @@ defmodule RintoPMO.Conversations.SessionsTest do
           system_prompt: "You review architecture."
         )
 
-      conversation = insert(:conversation, assistant_actor_id: actor.id)
+      conversation = insert(:conversation, assistant_actor: actor)
 
       {:ok, _conversation, :revived} =
         Sessions.ensure_hot(conversation,
@@ -294,7 +294,7 @@ defmodule RintoPMO.Conversations.SessionsTest do
     end
 
     test "refuses to heat a topic with no AI persona to answer as" do
-      conversation = insert(:conversation, assistant_actor_id: nil)
+      conversation = insert(:conversation, assistant_actor: nil)
 
       assert {:error, :assistant_actor_required} = Sessions.ensure_hot(conversation)
     end

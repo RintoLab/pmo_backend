@@ -29,6 +29,9 @@ defmodule RintoPMOWeb.ErrorJSON do
     proposal_not_found: {422, "The proposal is not live in that slot."},
     invalid_scope: {422, "The proposal scope is not one this endpoint accepts."},
     annotation_not_found: {422, "The annotation does not belong to this document."},
+    conversation_not_found: {422, "The topic the proposal names does not exist."},
+    assistant_actor_required:
+      {422, "The topic has no assistant configured, so nothing in it can propose."},
     task_blocked: {422, "The task is blocked by unfinished dependencies."},
     review_round_open: {422, "The document already has an open review round."},
     invalid_block_op: {422, "The block operation is invalid."},

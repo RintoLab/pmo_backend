@@ -43,6 +43,11 @@ defmodule RintoPMOWeb.ErrorJSONTest do
        %{scope: "wormhole", allowed: ["block", "title"]}},
     annotation_not_found:
       {422, "The annotation does not belong to this document.", %{annotation_id: "annotation-1"}},
+    conversation_not_found:
+      {422, "The topic the proposal names does not exist.", %{conversation_id: "topic-1"}},
+    assistant_actor_required:
+      {422, "The topic has no assistant configured, so nothing in it can propose.",
+       %{conversation_id: "topic-1"}},
     task_blocked:
       {422, "The task is blocked by unfinished dependencies.", %{blocking_tasks: ["task-1"]}},
     review_round_open:
