@@ -37,10 +37,6 @@ pub struct CreateArgs {
     #[arg(long, value_name = "TEXT")]
     change_summary: Option<String>,
 
-    /// Create it as a scratch document, for a person to adopt later or leave
-    #[arg(long)]
-    fleeting: bool,
-
     /// Show how the body splits into blocks without creating anything
     #[arg(long)]
     dry_run: bool,
@@ -129,24 +125,16 @@ fn create(client: &Client, config: &Config, args: CreateArgs) -> Result<()> {
     if let Some(change_summary) = args.change_summary {
         payload.insert("change_summary".to_string(), json!(change_summary));
     }
-    if args.fleeting {
-        payload.insert("fleeting".to_string(), json!(true));
-    }
-
     let document = client::data(client.post("/documents", Value::Object(payload))?)?;
     let id = document
         .get("id")
         .and_then(Value::as_str)
         .unwrap_or("(no id returned)");
 
-    // Named in the output because it changes what the document is, and the
-    // caller is usually a model about to tell somebody what it just did.
-    if args.fleeting {
-        println!("created fleeting document {id}");
-    } else {
-        println!("created document {id}");
-    }
-
+    // Said every time, because the caller is usually a model about to report
+    // what it just did, and "created a document" overstates it: nobody has
+    // adopted this yet, and only a person can.
+    println!("created fleeting document {id}");
     Ok(())
 }
 
@@ -371,10 +359,10 @@ fn list(client: &Client, args: ListArgs) -> Result<()> {
             .and_then(Value::as_str)
             .unwrap_or("(untitled)");
 
-        // Marked in a mixed list, because "is this a scratch note" decides
-        // whether the document can be cited at all.
-        if document.get("fleeting").and_then(Value::as_bool) == Some(true) {
-            println!("{id}  {title}  (fleeting)");
+        // The adopted ones carry the mark. Everything is created fleeting, so
+        // marking those would mark almost every row and say nothing.
+        if document.get("fleeting").and_then(Value::as_bool) == Some(false) {
+            println!("{id}  {title}  (formal)");
         } else {
             println!("{id}  {title}");
         }

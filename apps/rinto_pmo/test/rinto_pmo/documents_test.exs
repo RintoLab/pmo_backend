@@ -189,17 +189,23 @@ defmodule RintoPMO.DocumentsTest do
     end
   end
 
-  # Fleeting says a document has not been adopted yet, nothing about its
-  # content. So it has to be visible by default -- a scratch note a model just
-  # wrote is exactly the thing somebody is about to go looking for.
+  # Writing something down is not vouching for it, so a document is fleeting
+  # until a person says otherwise. That makes fleeting the common case, which is
+  # the whole reason such documents have to stay visible: filtering them out by
+  # default would hide nearly the entire corpus.
   describe "fleeting documents" do
-    test "documents are formal unless asked for otherwise" do
-      assert {:ok, document} = Documents.create_document(%{title: "Formal"})
-      refute document.fleeting
+    test "every document is created fleeting" do
+      assert {:ok, document} = Documents.create_document(%{title: "Written down"})
+      assert document.fleeting
+      assert Documents.get_document!(document.id).fleeting
     end
 
-    test "creates a fleeting document when asked" do
-      assert {:ok, document} = Documents.create_document(%{title: "Scratch", fleeting: true})
+    # The same rule as block attribution: a caller that could declare its own
+    # work adopted would be declaring that the review never needed to happen.
+    test "ignores a caller trying to create a document already adopted" do
+      assert {:ok, document} =
+               Documents.create_document(%{title: "Claims to count", fleeting: false})
+
       assert document.fleeting
       assert Documents.get_document!(document.id).fleeting
     end
@@ -207,25 +213,26 @@ defmodule RintoPMO.DocumentsTest do
     test "lists both kinds together, or either one alone" do
       project = insert(:project)
 
-      {:ok, formal} = create_document(project, %{title: "Formal"})
-      {:ok, scratch} = create_document(project, %{title: "Scratch", fleeting: true})
+      {:ok, scratch} = create_document(project, %{title: "Scratch"})
+      {:ok, adopted} = create_document(project, %{title: "Adopted"})
+      {:ok, adopted} = Documents.formalize_document(adopted)
 
       assert document_ids(Documents.list_documents(%{project: project.id})) ==
-               MapSet.new([formal.id, scratch.id])
+               MapSet.new([scratch.id, adopted.id])
 
       assert document_ids(Documents.list_documents(%{fleeting: true})) ==
                MapSet.new([scratch.id])
 
       assert document_ids(Documents.list_documents(%{fleeting: false})) ==
-               MapSet.new([formal.id])
+               MapSet.new([adopted.id])
 
-      assert document_ids(Documents.list_documents(%{project: project.id, fleeting: true})) ==
-               MapSet.new([scratch.id])
+      assert document_ids(Documents.list_documents(%{project: project.id, fleeting: false})) ==
+               MapSet.new([adopted.id])
     end
 
     test "formalizes a fleeting document idempotently, touching nothing else" do
       project = insert(:project)
-      {:ok, document} = create_document(project, %{title: "Scratch", fleeting: true})
+      {:ok, document} = create_document(project, %{title: "Scratch"})
 
       assert {:ok, formal} = Documents.formalize_document(document)
       refute formal.fleeting
@@ -239,12 +246,38 @@ defmodule RintoPMO.DocumentsTest do
       assert Documents.get_document!(document.id).latest_revision.title == "Scratch"
     end
 
-    test "formalizing a document that was never fleeting is a no-op" do
-      {:ok, document} = Documents.create_document(%{title: "Formal"})
+    # Adoption is about standing, so it survives everything the content does.
+    # Nothing in the write path can put a document back to fleeting.
+    test "a new revision does not return an adopted document to fleeting" do
+      project = insert(:project)
+      actor = insert(:actor)
 
-      assert {:ok, formal} = Documents.formalize_document(document)
-      refute formal.fleeting
-      assert formal.updated_at == document.updated_at
+      {:ok, document} =
+        create_document(project, %{
+          title: "Adopted",
+          actor_id: actor.id,
+          markdown: "## One\n\nText"
+        })
+
+      {:ok, document} = Documents.formalize_document(document)
+
+      document = Documents.get_document!(document.id)
+      [block] = document.latest_revision.blocks
+
+      assert {:ok, _revision} =
+               Documents.create_revision(document, %{
+                 base_revision_id: document.latest_revision.id,
+                 block_ops: [
+                   %{
+                     op: :update,
+                     block_id: block.block_id,
+                     actor_id: actor.id,
+                     content: "Rewritten"
+                   }
+                 ]
+               })
+
+      refute Documents.get_document!(document.id).fleeting
     end
   end
 

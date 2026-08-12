@@ -668,12 +668,12 @@ defmodule RintoPMO.Agent.PromptBuilder do
     end
   end
 
-  # A fleeting document is indexed like any other -- it is a document, and one
-  # the agent may have written itself minutes ago -- but marked, because an
-  # index that cannot tell a scratch note from an adopted one invites the agent
-  # to cite the first as though it were the second.
-  defp document_row(%Document{fleeting: true} = document) do
-    "- #{document.id} #{document_title(document)} (fleeting)"
+  # The adopted ones are what get marked, not the fleeting ones. Every document
+  # starts fleeting, so a mark on those would sit on nearly every row and stop
+  # carrying information; what is worth the characters is that somebody has since
+  # signed off on this one.
+  defp document_row(%Document{fleeting: false} = document) do
+    "- #{document.id} #{document_title(document)} (formal)"
   end
 
   defp document_row(%Document{} = document) do

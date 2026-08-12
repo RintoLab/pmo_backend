@@ -49,10 +49,10 @@ defmodule RintoPMO.Documents do
   Lists non-archived documents with their latest revision, newest first.
 
   `filter` accepts `:project` -- a project id, or `:unassigned` for documents
-  belonging to none -- and `:fleeting`. An absent key filters nothing, so
-  fleeting documents are listed alongside formal ones unless asked otherwise:
-  they are documents, and a list that quietly dropped them would leave whatever
-  an agent just wrote nowhere to be found.
+  belonging to none -- and `:fleeting`. An absent key filters nothing, which is
+  the only sane default here: every document is created fleeting, so a list that
+  quietly dropped them would hide nearly everything, starting with whatever was
+  written most recently.
   """
   @impl true
   def list_documents(filter) when is_map(filter) do
@@ -97,6 +97,9 @@ defmodule RintoPMO.Documents do
 
   A missing or blank body is allowed: an empty document is a legitimate
   starting point, and there is nothing to credit to an actor either.
+
+  Every document is created fleeting, and `attrs` has no say in it -- see
+  `RintoPMO.Documents.Document`. Only `formalize_document/1` clears the flag.
   """
   @impl true
   def create_document(attrs) do
@@ -140,12 +143,14 @@ defmodule RintoPMO.Documents do
   @doc """
   Idempotently adopts a fleeting document as a formal one.
 
-  A person's action, and only a person's: the flag records that somebody looked
-  at a scratch document and decided it counts, which is not a judgement an agent
-  can make on its own behalf. Nothing about the content moves -- no revision, no
-  proposal -- because adoption is about standing, not text.
+  The one way out of the state every document is created in, and a person's
+  action alone: the flag records that somebody looked at a document and decided
+  it counts, which is not a judgement its author can make on its own behalf.
+  Nothing about the content moves -- no revision, no proposal -- because adoption
+  is about standing, not text.
 
-  One way, by design; see `RintoPMO.Documents.Document`.
+  There is no way back. A document that turns out not to be worth keeping is
+  archived, not returned to fleeting; see `RintoPMO.Documents.Document`.
   """
   @impl true
   def formalize_document(%Document{} = document) do

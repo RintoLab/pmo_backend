@@ -567,10 +567,10 @@ paths:
           in: query
           required: false
           description: >-
-            Filter by adoption: `true` for fleeting documents only, `false` for formal
-            ones only. Omit to list both -- a fleeting document is a document, and
-            hiding it by default would leave what an agent just wrote nowhere to be
-            found. Combines with `project_id`.
+            Filter by adoption: `true` for fleeting documents only, `false` for the
+            adopted ones only. Omit to list both -- every document is created
+            fleeting, so filtering them out by default would hide nearly the whole
+            corpus. Combines with `project_id`.
           schema:
             type: boolean
       responses:
@@ -590,9 +590,15 @@ paths:
       tags: [Documents]
       operationId: createDocument
       summary: Create a document and its initial revision
-      description: >-
+      description: >
         The body is sent as one Markdown document and cut into blocks by the server.
         See `DocumentCreateInput.markdown` for where it cuts.
+
+
+        The document is always created with `fleeting: true` and there is no way to
+        ask for anything else -- writing something down is not the same as vouching
+        for it. Only a person clears the flag, with
+        `POST /documents/{document_id}/formalize`.
       requestBody:
         $ref: "#/components/requestBodies/DocumentCreate"
       responses:
@@ -668,19 +674,21 @@ paths:
       operationId: formalizeDocument
       summary: Adopt a fleeting document as a formal one
       description: >
-        Clears `fleeting`, idempotently. A person's action and only a person's: the
-        flag records that somebody looked at a scratch document and decided it counts,
-        which is not a judgement an agent can make on its own behalf -- so this has no
-        counterpart in the agent CLI.
+        Clears `fleeting`, idempotently. The only way out of the state every document
+        is created in, and a person's action alone: the flag records that somebody
+        looked at the document and decided it counts, which is not a judgement its
+        author can make on its own behalf -- so this has no counterpart in the agent
+        CLI.
 
 
         Nothing about the content moves. No revision is created and no proposal is
-        touched, because adoption is about standing, not text.
+        touched, because adoption is about standing, not text. Later revisions do not
+        undo it either.
 
 
-        One way, by design. There is no route back to fleeting: a document other work
-        already leans on must not quietly become a scratch note again. Archive what is
-        not worth keeping.
+        There is no route back. A document other work already leans on must not
+        quietly become a scratch note again, so one that turns out not to be worth
+        keeping is archived with `DELETE /documents/{document_id}` instead.
       responses:
         "200":
           description: Document with its latest revision and blocks, now formal
@@ -2718,15 +2726,6 @@ components:
         change_summary:
           type: string
           nullable: true
-        fleeting:
-          type: boolean
-          default: false
-          description: >-
-            Create this as a scratch document -- one nobody has vouched for yet. It is
-            a real document with a real revision history; the flag says only that it
-            has not been adopted. A person adopts it with
-            `POST /documents/{document_id}/formalize`, and that is the only way the
-            flag ever clears.
         actor_id:
           type: string
           format: uuid
@@ -2889,8 +2888,9 @@ components:
         fleeting:
           type: boolean
           description: >-
-            True while nobody has vouched for this document. Cleared for good by
-            `POST /documents/{document_id}/formalize`.
+            True while nobody has vouched for this document, which is how every
+            document starts. Cleared for good by
+            `POST /documents/{document_id}/formalize`, and never set again.
         latest_revision:
           $ref: "#/components/schemas/DocumentRevisionSummary"
         inserted_at:
@@ -2918,8 +2918,9 @@ components:
         fleeting:
           type: boolean
           description: >-
-            True while nobody has vouched for this document. Cleared for good by
-            `POST /documents/{document_id}/formalize`.
+            True while nobody has vouched for this document, which is how every
+            document starts. Cleared for good by
+            `POST /documents/{document_id}/formalize`, and never set again.
         latest_revision:
           $ref: "#/components/schemas/DocumentRevision"
         inserted_at:

@@ -15,7 +15,7 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
 
     assert [data] = json_response(conn, 200)["data"]
     assert data["id"] == document.id
-    assert data["fleeting"] == false
+    assert data["fleeting"] == true
     assert data["latest_revision"]["title"] == "Plan"
     refute Map.has_key?(data["latest_revision"], "blocks")
   end

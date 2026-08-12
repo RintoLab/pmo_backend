@@ -8,15 +8,22 @@ defmodule RintoPMO.Documents.Document do
 
   ## Fleeting
 
-  A fleeting document is one nobody has vouched for yet -- a scratch note, a
-  draft an agent put somewhere so it could be read. It is a real document with a
-  real revision history; the flag says only that it has not been adopted.
+  Every document starts fleeting. Writing something down is not the same as
+  vouching for it, and the flag records only that nobody has vouched yet -- the
+  document itself is ordinary, with a real revision history from its first
+  revision on.
 
-  Adoption goes one way. `formalize_changeset/1` clears the flag and there is no
-  changeset that sets it back, because the transition is a person saying "this
-  counts" -- and once said, un-saying it silently would leave a document other
-  work already leans on looking like a scratch note again. Something genuinely
-  not worth keeping gets archived, which is what archiving is for.
+  `creation_changeset/2` cannot set the flag, deliberately: it is not cast, so a
+  caller that supplies it is simply not heard, the same way an author cannot name
+  who a block is credited to. Adoption is a person looking at a document and
+  deciding it counts, and a caller able to declare its own work adopted would be
+  declaring the review never needed to happen.
+
+  `formalize_changeset/1` is the only thing that clears it, and nothing sets it
+  back. Once a document is adopted, other work starts leaning on it; letting it
+  quietly become a scratch note again would pull the ground out from under that.
+  Something not worth keeping gets archived instead, which is what archiving is
+  for.
   """
 
   use RintoPMO, :schema
@@ -30,7 +37,7 @@ defmodule RintoPMO.Documents.Document do
 
   schema "documents" do
     field :archived_at, :utc_datetime_usec
-    field :fleeting, :boolean, default: false
+    field :fleeting, :boolean, default: true
     field :latest_revision, :any, virtual: true
 
     belongs_to :project, Project
@@ -44,7 +51,7 @@ defmodule RintoPMO.Documents.Document do
   @doc false
   def creation_changeset(%__MODULE__{} = document, attrs) do
     document
-    |> cast(nest_initial_revision(attrs), [:project_id, :fleeting])
+    |> cast(nest_initial_revision(attrs), [:project_id])
     |> foreign_key_constraint(:project_id)
     |> cast_assoc(:revisions, with: &DocumentRevision.initial_changeset/2, required: true)
   end

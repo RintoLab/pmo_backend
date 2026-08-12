@@ -240,20 +240,23 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
     end
 
     # The index is where the agent picks what to read and cite, so it is the one
-    # place the distinction has to survive.
-    test "marks a fleeting document in the index rather than hiding it" do
+    # place the distinction has to survive. Fleeting is the unremarkable state
+    # and stays unmarked; having been adopted is the part worth saying.
+    test "marks an adopted document in the index, leaving fleeting ones plain" do
       project = insert(:project)
       scratch = %{document_with_blocks(["Content"], "Notes") | fleeting: true}
+      adopted = %{document_with_blocks(["Content"], "Charter") | fleeting: false}
 
       expect(ProjectsMock, :get_project_by_slug!, fn _slug -> project end)
-      expect(DocumentsMock, :list_documents, fn _filter -> [scratch] end)
+      expect(DocumentsMock, :list_documents, fn _filter -> [scratch, adopted] end)
 
       assert {:ok, %{message: message}} =
                PromptBuilder.build("what is this?", [
                  %{"type" => "project", "slug" => project.slug}
                ])
 
-      assert message =~ "- #{scratch.id} Notes (fleeting)"
+      assert message =~ "- #{scratch.id} Notes\n"
+      assert message =~ "- #{adopted.id} Charter (formal)"
     end
 
     test "says so plainly when a project has no documents" do
