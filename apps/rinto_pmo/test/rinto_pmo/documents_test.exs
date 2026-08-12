@@ -160,13 +160,14 @@ defmodule RintoPMO.DocumentsTest do
       {:ok, unassigned} = Documents.create_document(%{title: "Unassigned"})
       {:ok, _archived} = Documents.archive_document(archived)
 
-      assert document_ids(Documents.list_documents(:all)) ==
+      assert document_ids(Documents.list_documents(%{})) ==
                MapSet.new([assigned.id, other.id, unassigned.id])
 
-      assert document_ids(Documents.list_documents({:project, project.id})) ==
+      assert document_ids(Documents.list_documents(%{project: project.id})) ==
                MapSet.new([assigned.id])
 
-      assert document_ids(Documents.list_documents(:unassigned)) == MapSet.new([unassigned.id])
+      assert document_ids(Documents.list_documents(%{project: :unassigned})) ==
+               MapSet.new([unassigned.id])
     end
 
     test "fetches a top-level document by id" do
@@ -184,7 +185,66 @@ defmodule RintoPMO.DocumentsTest do
       assert %DateTime{} = archived.archived_at
       assert {:ok, archived_again} = Documents.archive_document(archived)
       assert archived_again.archived_at == archived.archived_at
-      assert Documents.list_documents({:project, project.id}) == []
+      assert Documents.list_documents(%{project: project.id}) == []
+    end
+  end
+
+  # Fleeting says a document has not been adopted yet, nothing about its
+  # content. So it has to be visible by default -- a scratch note a model just
+  # wrote is exactly the thing somebody is about to go looking for.
+  describe "fleeting documents" do
+    test "documents are formal unless asked for otherwise" do
+      assert {:ok, document} = Documents.create_document(%{title: "Formal"})
+      refute document.fleeting
+    end
+
+    test "creates a fleeting document when asked" do
+      assert {:ok, document} = Documents.create_document(%{title: "Scratch", fleeting: true})
+      assert document.fleeting
+      assert Documents.get_document!(document.id).fleeting
+    end
+
+    test "lists both kinds together, or either one alone" do
+      project = insert(:project)
+
+      {:ok, formal} = create_document(project, %{title: "Formal"})
+      {:ok, scratch} = create_document(project, %{title: "Scratch", fleeting: true})
+
+      assert document_ids(Documents.list_documents(%{project: project.id})) ==
+               MapSet.new([formal.id, scratch.id])
+
+      assert document_ids(Documents.list_documents(%{fleeting: true})) ==
+               MapSet.new([scratch.id])
+
+      assert document_ids(Documents.list_documents(%{fleeting: false})) ==
+               MapSet.new([formal.id])
+
+      assert document_ids(Documents.list_documents(%{project: project.id, fleeting: true})) ==
+               MapSet.new([scratch.id])
+    end
+
+    test "formalizes a fleeting document idempotently, touching nothing else" do
+      project = insert(:project)
+      {:ok, document} = create_document(project, %{title: "Scratch", fleeting: true})
+
+      assert {:ok, formal} = Documents.formalize_document(document)
+      refute formal.fleeting
+      assert formal.id == document.id
+
+      assert {:ok, formal_again} = Documents.formalize_document(formal)
+      refute formal_again.fleeting
+
+      revisions = Documents.list_revisions(document)
+      assert length(revisions) == 1
+      assert Documents.get_document!(document.id).latest_revision.title == "Scratch"
+    end
+
+    test "formalizing a document that was never fleeting is a no-op" do
+      {:ok, document} = Documents.create_document(%{title: "Formal"})
+
+      assert {:ok, formal} = Documents.formalize_document(document)
+      refute formal.fleeting
+      assert formal.updated_at == document.updated_at
     end
   end
 

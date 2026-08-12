@@ -36,6 +36,10 @@ defmodule RintoPMOWeb.Router do
     # The split happens here, so this is where an author checks it.
     post "/documents/preview_blocks", DocumentController, :preview_blocks
 
+    # Adopting a scratch document as a formal one. A person's action, so it has
+    # no counterpart in the agent CLI.
+    post "/documents/:id/formalize", DocumentController, :formalize
+
     resources "/documents", DocumentController, only: [:index, :show, :create, :delete] do
       resources "/revisions", DocumentRevisionController,
         only: [:index, :show, :create],

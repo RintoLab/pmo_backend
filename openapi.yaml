@@ -563,6 +563,16 @@ paths:
                 format: uuid
               - type: string
                 enum: [none]
+        - name: fleeting
+          in: query
+          required: false
+          description: >-
+            Filter by adoption: `true` for fleeting documents only, `false` for formal
+            ones only. Omit to list both -- a fleeting document is a document, and
+            hiding it by default would leave what an agent just wrote nowhere to be
+            found. Combines with `project_id`.
+          schema:
+            type: boolean
       responses:
         "200":
           description: Document summaries with their latest revision
@@ -571,7 +581,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/DocumentListResponse"
         "400":
-          description: Invalid project filter
+          description: Invalid project or fleeting filter
           content:
             application/json:
               schema:
@@ -650,6 +660,38 @@ paths:
           description: Document archived
         "404":
           $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/formalize:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Documents]
+      operationId: formalizeDocument
+      summary: Adopt a fleeting document as a formal one
+      description: >
+        Clears `fleeting`, idempotently. A person's action and only a person's: the
+        flag records that somebody looked at a scratch document and decided it counts,
+        which is not a judgement an agent can make on its own behalf -- so this has no
+        counterpart in the agent CLI.
+
+
+        Nothing about the content moves. No revision is created and no proposal is
+        touched, because adoption is about standing, not text.
+
+
+        One way, by design. There is no route back to fleeting: a document other work
+        already leans on must not quietly become a scratch note again. Archive what is
+        not worth keeping.
+      responses:
+        "200":
+          description: Document with its latest revision and blocks, now formal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /documents/{document_id}/revisions:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -2676,6 +2718,15 @@ components:
         change_summary:
           type: string
           nullable: true
+        fleeting:
+          type: boolean
+          default: false
+          description: >-
+            Create this as a scratch document -- one nobody has vouched for yet. It is
+            a real document with a real revision history; the flag says only that it
+            has not been adopted. A person adopts it with
+            `POST /documents/{document_id}/formalize`, and that is the only way the
+            flag ever clears.
         actor_id:
           type: string
           format: uuid
@@ -2822,7 +2873,7 @@ components:
       additionalProperties: false
     DocumentSummary:
       type: object
-      required: [id, project_id, archived_at, latest_revision, inserted_at, updated_at]
+      required: [id, project_id, archived_at, fleeting, latest_revision, inserted_at, updated_at]
       properties:
         id:
           type: string
@@ -2835,6 +2886,11 @@ components:
           type: string
           format: date-time
           nullable: true
+        fleeting:
+          type: boolean
+          description: >-
+            True while nobody has vouched for this document. Cleared for good by
+            `POST /documents/{document_id}/formalize`.
         latest_revision:
           $ref: "#/components/schemas/DocumentRevisionSummary"
         inserted_at:
@@ -2846,7 +2902,7 @@ components:
       additionalProperties: false
     Document:
       type: object
-      required: [id, project_id, archived_at, latest_revision, inserted_at, updated_at]
+      required: [id, project_id, archived_at, fleeting, latest_revision, inserted_at, updated_at]
       properties:
         id:
           type: string
@@ -2859,6 +2915,11 @@ components:
           type: string
           format: date-time
           nullable: true
+        fleeting:
+          type: boolean
+          description: >-
+            True while nobody has vouched for this document. Cleared for good by
+            `POST /documents/{document_id}/formalize`.
         latest_revision:
           $ref: "#/components/schemas/DocumentRevision"
         inserted_at:

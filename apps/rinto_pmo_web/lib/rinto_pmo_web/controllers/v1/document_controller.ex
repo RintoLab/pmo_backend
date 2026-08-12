@@ -4,7 +4,7 @@ defmodule RintoPMOWeb.V1.DocumentController do
   alias RintoPMO.Utils
 
   def index(conn, params) do
-    with {:ok, filter} <- document_filter(Map.get(params, "project_id")) do
+    with {:ok, filter} <- document_filter(params) do
       documents = Utils.module(:documents).list_documents(filter)
       render(conn, :index, documents: documents)
     end
@@ -49,13 +49,48 @@ defmodule RintoPMOWeb.V1.DocumentController do
     end
   end
 
-  defp document_filter(nil), do: {:ok, :all}
-  defp document_filter("none"), do: {:ok, :unassigned}
+  @doc """
+  Adopts a fleeting document as a formal one.
 
-  defp document_filter(project_id) do
+  A person's action -- see `RintoPMO.Documents.formalize_document/1` -- so it is
+  reachable only here and not from the agent CLI.
+  """
+  def formalize(conn, %{"id" => id}) do
+    context = Utils.module(:documents)
+    document = context.get_document!(id)
+
+    with {:ok, document} <- context.formalize_document(document) do
+      render(conn, :show, document: document)
+    end
+  end
+
+  defp document_filter(params) do
+    with {:ok, filter} <- project_filter(params) do
+      fleeting_filter(filter, params)
+    end
+  end
+
+  defp project_filter(params) do
+    case Map.get(params, "project_id") do
+      nil -> {:ok, %{}}
+      "none" -> {:ok, %{project: :unassigned}}
+      project_id -> cast_project_id(project_id)
+    end
+  end
+
+  defp cast_project_id(project_id) do
     case UUIDv7.cast(project_id) do
-      {:ok, project_id} -> {:ok, {:project, project_id}}
+      {:ok, project_id} -> {:ok, %{project: project_id}}
       :error -> {:error, :bad_request, %{project_id: ["is invalid"]}}
+    end
+  end
+
+  defp fleeting_filter(filter, params) do
+    case Map.get(params, "fleeting") do
+      nil -> {:ok, filter}
+      "true" -> {:ok, Map.put(filter, :fleeting, true)}
+      "false" -> {:ok, Map.put(filter, :fleeting, false)}
+      _other -> {:error, :bad_request, %{fleeting: ["is invalid"]}}
     end
   end
 end

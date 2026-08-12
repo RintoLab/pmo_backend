@@ -37,6 +37,10 @@ pub struct CreateArgs {
     #[arg(long, value_name = "TEXT")]
     change_summary: Option<String>,
 
+    /// Create it as a scratch document, for a person to adopt later or leave
+    #[arg(long)]
+    fleeting: bool,
+
     /// Show how the body splits into blocks without creating anything
     #[arg(long)]
     dry_run: bool,
@@ -90,6 +94,10 @@ pub struct ListArgs {
     /// Only documents in this project; pass `none` for unassigned ones
     #[arg(long, value_name = "UUID|none")]
     project_id: Option<String>,
+
+    /// true for scratch documents, false for adopted ones; omit for both
+    #[arg(long, value_name = "BOOL")]
+    fleeting: Option<bool>,
 }
 
 pub fn run(command: DocCommand) -> Result<()> {
@@ -121,6 +129,9 @@ fn create(client: &Client, config: &Config, args: CreateArgs) -> Result<()> {
     if let Some(change_summary) = args.change_summary {
         payload.insert("change_summary".to_string(), json!(change_summary));
     }
+    if args.fleeting {
+        payload.insert("fleeting".to_string(), json!(true));
+    }
 
     let document = client::data(client.post("/documents", Value::Object(payload))?)?;
     let id = document
@@ -128,7 +139,14 @@ fn create(client: &Client, config: &Config, args: CreateArgs) -> Result<()> {
         .and_then(Value::as_str)
         .unwrap_or("(no id returned)");
 
-    println!("created document {id}");
+    // Named in the output because it changes what the document is, and the
+    // caller is usually a model about to tell somebody what it just did.
+    if args.fleeting {
+        println!("created fleeting document {id}");
+    } else {
+        println!("created document {id}");
+    }
+
     Ok(())
 }
 
@@ -321,12 +339,22 @@ fn content_of(block: &Value) -> &str {
     block.get("content").and_then(Value::as_str).unwrap_or("")
 }
 
-fn list(client: &Client, args: ListArgs) -> Result<()> {
-    let query: Vec<(&str, &str)> = match args.project_id.as_deref() {
-        Some(project_id) => vec![("project_id", project_id)],
-        None => vec![],
-    };
+fn list_query(args: &ListArgs) -> Vec<(&str, &str)> {
+    let mut query = Vec::new();
 
+    if let Some(project_id) = args.project_id.as_deref() {
+        query.push(("project_id", project_id));
+    }
+
+    if let Some(fleeting) = args.fleeting {
+        query.push(("fleeting", if fleeting { "true" } else { "false" }));
+    }
+
+    query
+}
+
+fn list(client: &Client, args: ListArgs) -> Result<()> {
+    let query = list_query(&args);
     let documents = client::data(client.get("/documents", &query)?)?;
     let documents = documents.as_array().map(Vec::as_slice).unwrap_or_default();
 
@@ -343,7 +371,13 @@ fn list(client: &Client, args: ListArgs) -> Result<()> {
             .and_then(Value::as_str)
             .unwrap_or("(untitled)");
 
-        println!("{id}  {title}");
+        // Marked in a mixed list, because "is this a scratch note" decides
+        // whether the document can be cited at all.
+        if document.get("fleeting").and_then(Value::as_bool) == Some(true) {
+            println!("{id}  {title}  (fleeting)");
+        } else {
+            println!("{id}  {title}");
+        }
     }
 
     Ok(())
@@ -371,8 +405,35 @@ fn read(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{scope, ProposeArgs};
+    use super::{list_query, scope, ListArgs, ProposeArgs};
     use std::path::PathBuf;
+
+    fn list_args(project_id: Option<&str>, fleeting: Option<bool>) -> ListArgs {
+        ListArgs {
+            project_id: project_id.map(str::to_string),
+            fleeting,
+        }
+    }
+
+    // Absent means "both kinds", not "the adopted ones" -- a scratch document
+    // somebody is looking for has to be findable without knowing to ask.
+    #[test]
+    fn an_omitted_filter_is_not_sent_at_all() {
+        assert_eq!(list_query(&list_args(None, None)), vec![]);
+    }
+
+    #[test]
+    fn list_passes_the_project_and_fleeting_filters_using_the_api_names() {
+        assert_eq!(
+            list_query(&list_args(Some("project-1"), Some(true))),
+            vec![("project_id", "project-1"), ("fleeting", "true")]
+        );
+
+        assert_eq!(
+            list_query(&list_args(None, Some(false))),
+            vec![("fleeting", "false")]
+        );
+    }
 
     fn args(body: Option<&str>, block: Option<&str>, title: Option<&str>) -> ProposeArgs {
         ProposeArgs {

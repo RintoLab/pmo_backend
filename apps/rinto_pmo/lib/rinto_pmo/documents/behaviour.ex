@@ -5,7 +5,10 @@ defmodule RintoPMO.Documents.Behaviour do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
 
-  @type filter :: :all | :unassigned | {:project, UUIDv7.t()}
+  @type filter :: %{
+          optional(:project) => :unassigned | UUIDv7.t(),
+          optional(:fleeting) => boolean()
+        }
 
   @type proposal_filter :: %{
           optional(:status) => BlockProposal.status(),
@@ -45,6 +48,8 @@ defmodule RintoPMO.Documents.Behaviour do
               {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
   @callback preview_blocks(String.t()) :: {:ok, [String.t()]} | {:error, term()}
   @callback archive_document(Document.t()) ::
+              {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
+  @callback formalize_document(Document.t()) ::
               {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
 
   @callback list_revisions(Document.t()) :: [DocumentRevision.t()]

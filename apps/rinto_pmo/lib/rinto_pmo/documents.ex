@@ -47,9 +47,15 @@ defmodule RintoPMO.Documents do
 
   @doc """
   Lists non-archived documents with their latest revision, newest first.
+
+  `filter` accepts `:project` -- a project id, or `:unassigned` for documents
+  belonging to none -- and `:fleeting`. An absent key filters nothing, so
+  fleeting documents are listed alongside formal ones unless asked otherwise:
+  they are documents, and a list that quietly dropped them would leave whatever
+  an agent just wrote nowhere to be found.
   """
   @impl true
-  def list_documents(filter) do
+  def list_documents(filter) when is_map(filter) do
     latest_revision_query =
       from revision in DocumentRevision,
         where: revision.document_id == parent_as(:document).id,
@@ -128,6 +134,23 @@ defmodule RintoPMO.Documents do
   def archive_document(%Document{} = document) do
     document
     |> Document.archive_changeset()
+    |> Repo.update()
+  end
+
+  @doc """
+  Idempotently adopts a fleeting document as a formal one.
+
+  A person's action, and only a person's: the flag records that somebody looked
+  at a scratch document and decided it counts, which is not a judgement an agent
+  can make on its own behalf. Nothing about the content moves -- no revision, no
+  proposal -- because adoption is about standing, not text.
+
+  One way, by design; see `RintoPMO.Documents.Document`.
+  """
+  @impl true
+  def formalize_document(%Document{} = document) do
+    document
+    |> Document.formalize_changeset()
     |> Repo.update()
   end
 
@@ -799,14 +822,20 @@ defmodule RintoPMO.Documents do
     |> Changeset.add_error(:markdown, "is invalid")
   end
 
-  defp filter_documents(query, :all), do: query
+  defp filter_documents(query, filter) do
+    Enum.reduce(filter, query, fn
+      {:project, :unassigned}, query ->
+        where(query, [document], is_nil(document.project_id))
 
-  defp filter_documents(query, :unassigned) do
-    where(query, [document], is_nil(document.project_id))
-  end
+      {:project, project_id}, query ->
+        where(query, [document], document.project_id == ^project_id)
 
-  defp filter_documents(query, {:project, project_id}) do
-    where(query, [document], document.project_id == ^project_id)
+      {:fleeting, fleeting}, query ->
+        where(query, [document], document.fleeting == ^fleeting)
+
+      {_other, _value}, query ->
+        query
+    end)
   end
 
   defp insert_revision(repo, document, parent, attrs) do

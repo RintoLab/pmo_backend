@@ -3,7 +3,20 @@ defmodule RintoPMO.Documents.Document do
   The stable identity of a document.
 
   Mutable document content and titles live in immutable revisions. Documents
-  only carry optional project ownership and their archive lifecycle.
+  only carry optional project ownership, their archive lifecycle, and whether
+  they are still fleeting.
+
+  ## Fleeting
+
+  A fleeting document is one nobody has vouched for yet -- a scratch note, a
+  draft an agent put somewhere so it could be read. It is a real document with a
+  real revision history; the flag says only that it has not been adopted.
+
+  Adoption goes one way. `formalize_changeset/1` clears the flag and there is no
+  changeset that sets it back, because the transition is a person saying "this
+  counts" -- and once said, un-saying it silently would leave a document other
+  work already leans on looking like a scratch note again. Something genuinely
+  not worth keeping gets archived, which is what archiving is for.
   """
 
   use RintoPMO, :schema
@@ -17,6 +30,7 @@ defmodule RintoPMO.Documents.Document do
 
   schema "documents" do
     field :archived_at, :utc_datetime_usec
+    field :fleeting, :boolean, default: false
     field :latest_revision, :any, virtual: true
 
     belongs_to :project, Project
@@ -30,7 +44,7 @@ defmodule RintoPMO.Documents.Document do
   @doc false
   def creation_changeset(%__MODULE__{} = document, attrs) do
     document
-    |> cast(nest_initial_revision(attrs), [:project_id])
+    |> cast(nest_initial_revision(attrs), [:project_id, :fleeting])
     |> foreign_key_constraint(:project_id)
     |> cast_assoc(:revisions, with: &DocumentRevision.initial_changeset/2, required: true)
   end
@@ -41,6 +55,9 @@ defmodule RintoPMO.Documents.Document do
   end
 
   def archive_changeset(%__MODULE__{} = document), do: change(document)
+
+  @doc false
+  def formalize_changeset(%__MODULE__{} = document), do: change(document, fleeting: false)
 
   defp nest_initial_revision(attrs) when is_map(attrs) do
     attrs = stringify_keys(attrs)

@@ -224,7 +224,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
         project
       end)
 
-      expect(DocumentsMock, :list_documents, fn {:project, project_id} ->
+      expect(DocumentsMock, :list_documents, fn %{project: project_id} ->
         assert project_id == project.id
         [document]
       end)
@@ -237,6 +237,23 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
       assert message =~ ~s(<project ref="1" slug="#{project.slug}" name="Alpha" status="active">)
       assert message =~ "The alpha project"
       assert message =~ "- #{document.id} Charter"
+    end
+
+    # The index is where the agent picks what to read and cite, so it is the one
+    # place the distinction has to survive.
+    test "marks a fleeting document in the index rather than hiding it" do
+      project = insert(:project)
+      scratch = %{document_with_blocks(["Content"], "Notes") | fleeting: true}
+
+      expect(ProjectsMock, :get_project_by_slug!, fn _slug -> project end)
+      expect(DocumentsMock, :list_documents, fn _filter -> [scratch] end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("what is this?", [
+                 %{"type" => "project", "slug" => project.slug}
+               ])
+
+      assert message =~ "- #{scratch.id} Notes (fleeting)"
     end
 
     test "says so plainly when a project has no documents" do

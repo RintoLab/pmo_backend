@@ -24,6 +24,7 @@ defmodule RintoPMOWeb.V1.DocumentJSON do
       id: document.id,
       project_id: document.project_id,
       archived_at: document.archived_at,
+      fleeting: document.fleeting,
       latest_revision: DocumentRevisionJSON.summary(document.latest_revision),
       inserted_at: document.inserted_at,
       updated_at: document.updated_at

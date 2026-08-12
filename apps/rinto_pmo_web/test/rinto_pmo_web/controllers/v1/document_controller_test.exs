@@ -6,12 +6,16 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
   test "GET /api/v1/documents lists all document summaries", %{conn: conn} do
     document = document_with_revision()
 
-    expect(DocumentsMock, :list_documents, fn :all -> [document] end)
+    expect(DocumentsMock, :list_documents, fn %{} = filter ->
+      assert filter == %{}
+      [document]
+    end)
 
     conn = get(conn, ~p"/api/v1/documents")
 
     assert [data] = json_response(conn, 200)["data"]
     assert data["id"] == document.id
+    assert data["fleeting"] == false
     assert data["latest_revision"]["title"] == "Plan"
     refute Map.has_key?(data["latest_revision"], "blocks")
   end
@@ -19,7 +23,7 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
   test "GET /api/v1/documents filters by project id", %{conn: conn} do
     project = insert(:project)
 
-    expect(DocumentsMock, :list_documents, fn {:project, project_id} ->
+    expect(DocumentsMock, :list_documents, fn %{project: project_id} ->
       assert project_id == project.id
       []
     end)
@@ -29,10 +33,39 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
   end
 
   test "GET /api/v1/documents filters unassigned documents", %{conn: conn} do
-    expect(DocumentsMock, :list_documents, fn :unassigned -> [] end)
+    expect(DocumentsMock, :list_documents, fn %{project: :unassigned} -> [] end)
 
     conn = get(conn, ~p"/api/v1/documents?project_id=none")
     assert json_response(conn, 200)["data"] == []
+  end
+
+  test "GET /api/v1/documents filters on fleeting, alongside the project", %{conn: conn} do
+    project = insert(:project)
+
+    expect(DocumentsMock, :list_documents, fn filter ->
+      assert filter == %{project: project.id, fleeting: true}
+      []
+    end)
+
+    conn = get(conn, ~p"/api/v1/documents?project_id=#{project.id}&fleeting=true")
+    assert json_response(conn, 200)["data"] == []
+
+    expect(DocumentsMock, :list_documents, fn filter ->
+      assert filter == %{fleeting: false}
+      []
+    end)
+
+    conn = get(conn, ~p"/api/v1/documents?fleeting=false")
+    assert json_response(conn, 200)["data"] == []
+  end
+
+  test "GET /api/v1/documents rejects a fleeting filter that is not a boolean", %{conn: conn} do
+    conn = get(conn, ~p"/api/v1/documents?fleeting=maybe")
+
+    assert %{
+             "error" => "bad_request",
+             "details" => %{"fleeting" => ["is invalid"]}
+           } = json_response(conn, 400)
   end
 
   test "GET /api/v1/documents rejects an invalid project id", %{conn: conn} do
@@ -117,6 +150,23 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
 
     assert %{"error" => "bad_request", "details" => %{"markdown" => ["can't be blank"]}} =
              json_response(conn, 400)
+  end
+
+  test "POST /api/v1/documents/:id/formalize adopts a fleeting document", %{conn: conn} do
+    document = document_with_revision()
+    fleeting = %{document | fleeting: true}
+    formal = %{document | fleeting: false}
+
+    expect(DocumentsMock, :get_document!, fn id ->
+      assert id == document.id
+      fleeting
+    end)
+
+    expect(DocumentsMock, :formalize_document, fn ^fleeting -> {:ok, formal} end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/formalize")
+
+    assert json_response(conn, 200)["data"]["fleeting"] == false
   end
 
   test "DELETE /api/v1/documents/:id archives idempotently", %{conn: conn} do

@@ -653,19 +653,31 @@ defmodule RintoPMO.Agent.PromptBuilder do
   end
 
   defp project_documents(%Project{} = project) do
-    documents = documents().list_documents({:project, project.id})
+    documents = documents().list_documents(%{project: project.id})
     limit = setting(:max_project_documents)
 
     listing =
       documents
       |> Enum.take(limit)
-      |> Enum.map_join("\n", fn document -> "- #{document.id} #{document_title(document)}" end)
+      |> Enum.map_join("\n", &document_row/1)
 
     cond do
       documents == [] -> "documents: none"
       length(documents) > limit -> "documents (#{limit} of #{length(documents)}):\n#{listing}"
       true -> "documents:\n#{listing}"
     end
+  end
+
+  # A fleeting document is indexed like any other -- it is a document, and one
+  # the agent may have written itself minutes ago -- but marked, because an
+  # index that cannot tell a scratch note from an adopted one invites the agent
+  # to cite the first as though it were the second.
+  defp document_row(%Document{fleeting: true} = document) do
+    "- #{document.id} #{document_title(document)} (fleeting)"
+  end
+
+  defp document_row(%Document{} = document) do
+    "- #{document.id} #{document_title(document)}"
   end
 
   defp document_title(%Document{latest_revision: %DocumentRevision{title: title}}), do: title
