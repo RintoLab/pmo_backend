@@ -15,6 +15,8 @@ pub enum DocCommand {
     Show(ShowArgs),
     /// List documents that have not been archived
     List(ListArgs),
+    /// Propose a change to a document, for a person to review
+    Propose(ProposeArgs),
 }
 
 #[derive(Args)]
@@ -40,6 +42,39 @@ pub struct CreateArgs {
     dry_run: bool,
 }
 
+/// A change put up for review, never applied.
+///
+/// Three shapes, and which one this is follows from what is passed:
+///
+///   * `--body` alone rewrites the whole document. The only shape that can
+///     split a section, merge two, add one or drop one -- the server works out
+///     the operations from the new body, and blocks whose text is unchanged keep
+///     their identity, so annotations on them survive.
+///   * `--body` with `--block` changes one block and nothing else.
+///   * `--title` renames the document. A title is a field of its own and is
+///     never read out of the body, so it cannot travel inside one.
+#[derive(Args)]
+pub struct ProposeArgs {
+    /// Document id
+    document_id: String,
+
+    /// Markdown file holding the new text: the whole document, or one block with `--block`
+    #[arg(long, value_name = "FILE", conflicts_with = "title")]
+    body: Option<PathBuf>,
+
+    /// Change only this block; omit to rewrite the whole document
+    #[arg(long, value_name = "BLOCK_ID", requires = "body")]
+    block: Option<String>,
+
+    /// Propose this as the document's title
+    #[arg(long, value_name = "TEXT")]
+    title: Option<String>,
+
+    /// What this change does, shown to whoever reviews it
+    #[arg(long, value_name = "TEXT")]
+    change_summary: Option<String>,
+}
+
 #[derive(Args)]
 pub struct ShowArgs {
     /// Document id
@@ -62,13 +97,14 @@ pub fn run(command: DocCommand) -> Result<()> {
     let client = &Client::new(config.api())?;
 
     match command {
-        DocCommand::Create(args) => create(client, config.actor_id(), args),
+        DocCommand::Create(args) => create(client, &config, args),
         DocCommand::Show(args) => show(client, args),
         DocCommand::List(args) => list(client, args),
+        DocCommand::Propose(args) => propose(client, &config, args),
     }
 }
 
-fn create(client: &Client, actor_id: &str, args: CreateArgs) -> Result<()> {
+fn create(client: &Client, config: &Config, args: CreateArgs) -> Result<()> {
     let markdown = read(&args.body)?;
 
     if args.dry_run {
@@ -77,8 +113,8 @@ fn create(client: &Client, actor_id: &str, args: CreateArgs) -> Result<()> {
 
     let mut payload = Map::new();
     payload.insert("title".to_string(), json!(args.title));
-    payload.insert("actor_id".to_string(), json!(actor_id));
     payload.insert("markdown".to_string(), json!(markdown));
+    attribute(&mut payload, config)?;
     if let Some(project_id) = args.project_id {
         payload.insert("project_id".to_string(), json!(project_id));
     }
@@ -165,6 +201,122 @@ fn show(client: &Client, args: ShowArgs) -> Result<()> {
     Ok(())
 }
 
+/// Puts a change up for review.
+///
+/// A proposal belongs to a topic -- that is what makes it one topic's opinion
+/// rather than an edit -- so this only works inside one. Outside a topic there
+/// is nothing to attach it to and no assistant to attribute it to, and saying so
+/// is more use than a validation error from the server.
+fn propose(client: &Client, config: &Config, args: ProposeArgs) -> Result<()> {
+    let conversation_id = config.conversation_id().ok_or_else(|| {
+        Error::Input(
+            "a proposal belongs to a topic, and this is not running inside one; \
+             a change made outside a topic is a revision, not a proposal"
+                .to_string(),
+        )
+    })?;
+
+    let mut payload = Map::new();
+    payload.insert("conversation_id".to_string(), json!(conversation_id));
+    payload.insert("scope".to_string(), json!(scope(&args)?));
+    payload.insert("content".to_string(), json!(content(&args)?));
+
+    if let Some(block_id) = &args.block {
+        payload.insert("block_id".to_string(), json!(block_id));
+    }
+    if let Some(change_summary) = &args.change_summary {
+        payload.insert("change_summary".to_string(), json!(change_summary));
+    }
+
+    let path = format!("/documents/{}/proposals", args.document_id);
+    let answer = client.post(&path, Value::Object(payload))?;
+    report(&answer)
+}
+
+/// Which of the three shapes this is. `--body` alone means the whole document.
+fn scope(args: &ProposeArgs) -> Result<&'static str> {
+    match (&args.title, &args.body, &args.block) {
+        (Some(_title), None, None) => Ok("title"),
+        (None, Some(_body), Some(_block)) => Ok("block"),
+        (None, Some(_body), None) => Ok("document"),
+        _nothing_to_propose => Err(Error::Input(
+            "nothing to propose: pass --body to rewrite the document, \
+             --body with --block to change one block, or --title to rename it"
+                .to_string(),
+        )),
+    }
+}
+
+fn content(args: &ProposeArgs) -> Result<String> {
+    match (&args.title, &args.body) {
+        (Some(title), _none) => Ok(title.clone()),
+        (None, Some(body)) => read(body),
+        (None, None) => Err(Error::Input("nothing to propose".to_string())),
+    }
+}
+
+/// What the server made of it.
+///
+/// The contention count is the part worth printing: it says somebody else is
+/// also changing this, which the model should know before building further on
+/// the assumption that its version is the one that will land. The operations are
+/// summarised rather than listed -- the shape of the change is the useful part,
+/// and the diff itself is for whoever reviews it.
+fn report(answer: &Value) -> Result<()> {
+    let proposal = client::data(answer.clone())?;
+    let id = proposal.get("id").and_then(Value::as_str).unwrap_or("?");
+    let scope = proposal.get("scope").and_then(Value::as_str).unwrap_or("?");
+
+    println!("proposed {scope} change {id}, awaiting review");
+
+    if let Some(operations) = proposal.get("block_ops").and_then(Value::as_array) {
+        let mut updated = 0;
+        let mut inserted = 0;
+        let mut deleted = 0;
+
+        for operation in operations {
+            match operation.get("op").and_then(Value::as_str) {
+                Some("update") => updated += 1,
+                Some("insert_after") => inserted += 1,
+                Some("delete") => deleted += 1,
+                _other => {}
+            }
+        }
+
+        println!("  {updated} changed, {inserted} added, {deleted} removed");
+    }
+
+    let live = answer
+        .get("live_proposals")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+
+    if live > 1 {
+        println!("  {live} topics have a change standing here; a person decides between them");
+    }
+
+    Ok(())
+}
+
+/// Says who is writing, in the only way this program is allowed to.
+///
+/// Inside a topic it names the topic and nothing else: the author is that
+/// topic's assistant and the server derives it, so a caller that also named an
+/// actor could name the wrong one. Outside a topic there is nobody to derive
+/// from, and the configured human is the author.
+fn attribute(payload: &mut Map<String, Value>, config: &Config) -> Result<()> {
+    match config.conversation_id() {
+        Some(conversation_id) => {
+            payload.insert("conversation_id".to_string(), json!(conversation_id));
+        }
+        None => {
+            payload.insert("actor_id".to_string(), json!(config.actor_id()?));
+        }
+    }
+
+    Ok(())
+}
+
 fn content_of(block: &Value) -> &str {
     block.get("content").and_then(Value::as_str).unwrap_or("")
 }
@@ -215,4 +367,53 @@ fn read(path: &Path) -> Result<String> {
     }
 
     Ok(source)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{scope, ProposeArgs};
+    use std::path::PathBuf;
+
+    fn args(body: Option<&str>, block: Option<&str>, title: Option<&str>) -> ProposeArgs {
+        ProposeArgs {
+            document_id: "doc-1".to_string(),
+            body: body.map(PathBuf::from),
+            block: block.map(str::to_string),
+            title: title.map(str::to_string),
+            change_summary: None,
+        }
+    }
+
+    // A body on its own is the whole document, which is the shape that can
+    // restructure it. Naming a block narrows it to that block.
+    #[test]
+    fn a_body_alone_rewrites_the_document() {
+        assert_eq!(
+            scope(&args(Some("body.md"), None, None)).unwrap(),
+            "document"
+        );
+    }
+
+    #[test]
+    fn a_body_with_a_block_changes_that_block() {
+        assert_eq!(
+            scope(&args(Some("body.md"), Some("block-1"), None)).unwrap(),
+            "block"
+        );
+    }
+
+    #[test]
+    fn a_title_renames_the_document() {
+        assert_eq!(scope(&args(None, None, Some("Renamed"))).unwrap(), "title");
+    }
+
+    // Better here than as a validation error from the server: the fix is in the
+    // command line, so the message should be about the command line.
+    #[test]
+    fn nothing_at_all_is_refused_with_the_shapes_named() {
+        let error = scope(&args(None, None, None)).unwrap_err().to_string();
+
+        assert!(error.contains("--body"), "{error}");
+        assert!(error.contains("--title"), "{error}");
+    }
 }

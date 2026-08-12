@@ -135,13 +135,13 @@ pub fn run(command: TaskCommand) -> Result<()> {
     let client = &Client::new(config.api())?;
 
     match command {
-        TaskCommand::List(args) => list(client, config.actor_id(), args),
+        TaskCommand::List(args) => list(client, config.actor_id()?, args),
         TaskCommand::Show(args) => show(client, args),
         TaskCommand::Stats(args) => stats(client, args),
         TaskCommand::Create(args) => create(client, args),
         TaskCommand::Update(args) => update(client, args),
         TaskCommand::Assign(args) => assign(client, args),
-        TaskCommand::Claim(args) => claim(client, config.actor_id(), args),
+        TaskCommand::Claim(args) => claim(client, config.actor_id()?, args),
         TaskCommand::Release(args) => release(client, args),
         TaskCommand::Split(args) => split(client, args),
         TaskCommand::Start(args) => transition(client, args, "start", "started"),

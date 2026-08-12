@@ -7,30 +7,54 @@ use crate::client::{self, Client};
 use crate::error::{Error, Result};
 
 const API_ENV: &str = "RINTO_API";
+const CONVERSATION_ENV: &str = "RINTO_CONVERSATION_ID";
 const CONFIG_ENV: &str = "RINTO_CONFIG";
 const CONFIG_DIR: &str = "rinto-pmo";
 const CONFIG_FILE: &str = "config.json";
 
+/// Where this run is happening, and as whom.
+///
+/// Two situations, and they are configured differently on purpose.
+///
+/// A developer runs this on their own machine: `config init` writes a file
+/// naming the API and the one human actor, and writes are theirs.
+///
+/// The agent inside a topic runs it with an environment instead. The backend
+/// spawns that process and injects the topic, because which topic it is
+/// answering in is a fact about the process rather than something to ask a model
+/// to carry. There is no actor: a write made inside a topic is by that topic's
+/// assistant, and the server derives it -- see `RintoPMO.Documents`. This
+/// program never names an author.
 pub struct Config {
     api: String,
-    actor_id: String,
+    actor_id: Option<String>,
+    conversation_id: Option<String>,
 }
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let path = path()?;
-        let source = std::fs::read_to_string(&path).map_err(|err| {
-            Error::Config(format!(
-                "could not read {}: {err}; run `rinto-pmo config init --api <URL>` first",
-                path.display()
-            ))
-        })?;
-        let value: Value = serde_json::from_str(&source)
-            .map_err(|err| Error::Config(format!("{} is not valid JSON: {err}", path.display())))?;
+        let file = read_file()?;
+        let api = std::env::var(API_ENV)
+            .ok()
+            .filter(|api| !api.trim().is_empty())
+            .or_else(|| {
+                file.as_ref()
+                    .and_then(|(value, _path)| string(value, "api"))
+            })
+            .ok_or_else(|| {
+                Error::Config(format!(
+                    "no API URL: set {API_ENV}, or run `rinto-pmo config init --api <URL>`"
+                ))
+            })?;
 
         Ok(Self {
-            api: required_string(&value, "api", &path)?,
-            actor_id: required_string(&value, "actor_id", &path)?,
+            api,
+            actor_id: file
+                .as_ref()
+                .and_then(|(value, _path)| string(value, "actor_id")),
+            conversation_id: std::env::var(CONVERSATION_ENV)
+                .ok()
+                .filter(|id| !id.trim().is_empty()),
         })
     }
 
@@ -38,9 +62,55 @@ impl Config {
         &self.api
     }
 
-    pub fn actor_id(&self) -> &str {
-        &self.actor_id
+    /// The topic this run is happening inside, if it is happening inside one.
+    pub fn conversation_id(&self) -> Option<&str> {
+        self.conversation_id.as_deref()
     }
+
+    /// The human this CLI is configured as.
+    ///
+    /// Only needed for a write made outside any topic -- inside one, the author
+    /// is the topic's assistant and the server works it out. So the error names
+    /// the case rather than assuming the configuration is simply missing.
+    pub fn actor_id(&self) -> Result<&str> {
+        self.actor_id.as_deref().ok_or_else(|| {
+            Error::Config(format!(
+                "no actor configured; run `rinto-pmo config init --api <URL>`, \
+                 or set {CONVERSATION_ENV} to write as a topic's assistant"
+            ))
+        })
+    }
+}
+
+/// The configuration file, when there is one.
+///
+/// Absent is not an error here: the agent inside a topic has an environment and
+/// no file, and asking it to run `config init` would configure it as a person.
+fn read_file() -> Result<Option<(Value, PathBuf)>> {
+    let path = path()?;
+
+    match std::fs::read_to_string(&path) {
+        Ok(source) => {
+            let value: Value = serde_json::from_str(&source).map_err(|err| {
+                Error::Config(format!("{} is not valid JSON: {err}", path.display()))
+            })?;
+
+            Ok(Some((value, path)))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(Error::Config(format!(
+            "could not read {}: {err}",
+            path.display()
+        ))),
+    }
+}
+
+fn string(value: &Value, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|found| !found.trim().is_empty())
 }
 
 #[derive(Subcommand)]
@@ -110,22 +180,18 @@ fn show() -> Result<()> {
     let config = Config::load()?;
     println!("config: {}", path()?.display());
     println!("api: {}", config.api());
-    println!("actor_id: {}", config.actor_id());
-    Ok(())
-}
 
-fn required_string(value: &Value, field: &str, path: &Path) -> Result<String> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToString::to_string)
-        .ok_or_else(|| {
-            Error::Config(format!(
-                "{} has no non-empty {field:?} field; run `rinto-pmo config init --api <URL>` again",
-                path.display()
-            ))
-        })
+    match config.actor_id() {
+        Ok(actor_id) => println!("actor_id: {actor_id}"),
+        Err(_no_actor) => println!("actor_id: (none; writes are by the topic's assistant)"),
+    }
+
+    match config.conversation_id() {
+        Some(conversation_id) => println!("conversation_id: {conversation_id}"),
+        None => println!("conversation_id: (none; not running inside a topic)"),
+    }
+
+    Ok(())
 }
 
 fn path() -> Result<PathBuf> {
