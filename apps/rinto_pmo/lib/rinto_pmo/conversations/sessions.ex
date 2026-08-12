@@ -209,6 +209,7 @@ defmodule RintoPMO.Conversations.Sessions do
     session_opts =
       conversation
       |> persona_opts()
+      |> Keyword.put(:env, agent_env(conversation))
       |> Keyword.merge(Keyword.get(opts, :session_opts, []))
       |> Keyword.put(:id, session_id)
 
@@ -223,6 +224,33 @@ defmodule RintoPMO.Conversations.Sessions do
       # it is carried as diagnostic text under one code the caller can act on.
       {:error, reason} ->
         {:error, :agent_unavailable, %{reason: inspect(reason)}}
+    end
+  end
+
+  # What the CLI this agent reaches for needs to find in its environment.
+  #
+  # The topic is here rather than left to the model because it is not the model's
+  # to know: which topic it is answering in is a fact about the process it runs
+  # in, and a model asked to carry an id would eventually carry the wrong one.
+  # Writing through the CLI then attributes itself correctly without anybody
+  # naming an author -- see `RintoPMO.Documents`.
+  #
+  # This is a convenience, not a boundary. pi runs with its own tools, so a model
+  # can set an environment variable itself; nothing here could stop it. What
+  # makes the attribution safe is that the server derives the author from the
+  # topic and never believes a caller about it.
+  #
+  # The API address is injected only when configured. The backend does not
+  # otherwise know its own public address, and inventing one would be worse than
+  # letting the image that carries the CLI say where to call.
+  defp agent_env(%Conversation{} = conversation) do
+    [{"RINTO_CONVERSATION_ID", conversation.id}] ++ api_env()
+  end
+
+  defp api_env do
+    case setting(:agent_api_url) do
+      url when is_binary(url) and url != "" -> [{"RINTO_API", url}]
+      _unset -> []
     end
   end
 

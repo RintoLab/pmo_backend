@@ -48,7 +48,12 @@ config :rinto_pmo, RintoPMO.Attachments,
 config :rinto_pmo, RintoPMO.Conversations,
   # Simultaneously running pi processes. Topics are unlimited; processes are
   # not, and nothing else in the system stops one from being started.
-  max_active_sessions: 8
+  max_active_sessions: 8,
+  # Where the CLI an agent reaches for should call this API. Injected into the
+  # agent's environment when set; left to whatever carries the CLI when not,
+  # because the backend does not otherwise know its own public address and a
+  # guessed one is worse than an absent one.
+  agent_api_url: nil
 
 config :rinto_pmo, RintoPMO.Conversations.Titles,
   # Automatic naming of topics from their first user message. Turning this off

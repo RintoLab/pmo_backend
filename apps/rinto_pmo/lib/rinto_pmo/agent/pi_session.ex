@@ -103,6 +103,7 @@ defmodule RintoPMO.Agent.PiSession do
           | {:model, String.t() | nil}
           | {:thinking, String.t() | nil}
           | {:system_prompt, String.t() | nil}
+          | {:env, [{String.t(), String.t()}]}
 
   # Public API
 
@@ -211,6 +212,10 @@ defmodule RintoPMO.Agent.PiSession do
       id: "pi-session-#{id}",
       cmd: Keyword.get_lazy(opts, :executable, &pi_executable/0),
       args: pi_args(session_dir, opts),
+      # Passed through without inspection: what a tool pi runs needs to find in
+      # its environment is the caller's business, not this module's. It speaks
+      # pi's command line; it has no opinion about the rest of the system.
+      env: Keyword.get(opts, :env, []),
       owner: self(),
       framing: :lines,
       stderr: :discard

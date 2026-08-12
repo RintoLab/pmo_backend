@@ -112,6 +112,72 @@ defmodule RintoPMO.Conversations.SessionsTest do
     end
   end
 
+  describe "what the agent's environment carries" do
+    # Which topic it is answering in is a fact about the process, not something a
+    # model should be asked to carry -- one that carried an id would eventually
+    # carry the wrong one. Writing through the CLI then attributes itself
+    # correctly without anybody naming an author.
+    test "names the topic", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "env")
+      conversation = insert(:conversation)
+
+      {:ok, _conversation, :revived} =
+        Sessions.ensure_hot(conversation, session_opts: dumping_env(tmp_dir, capture))
+
+      assert eventually(fn -> File.exists?(capture) end)
+      assert env(capture, "RINTO_CONVERSATION_ID") == conversation.id
+    end
+
+    test "carries the API address when one is configured", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "env")
+      set_api_url("http://backend.internal/api/v1")
+
+      {:ok, _conversation, :revived} =
+        Sessions.ensure_hot(insert(:conversation), session_opts: dumping_env(tmp_dir, capture))
+
+      assert eventually(fn -> File.exists?(capture) end)
+      assert env(capture, "RINTO_API") == "http://backend.internal/api/v1"
+    end
+
+    # The backend does not otherwise know its own public address, and a guessed
+    # one is worse than none: whatever carries the CLI can say where to call.
+    test "leaves the API address alone when none is configured", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "env")
+      set_api_url(nil)
+
+      {:ok, _conversation, :revived} =
+        Sessions.ensure_hot(insert(:conversation), session_opts: dumping_env(tmp_dir, capture))
+
+      assert eventually(fn -> File.exists?(capture) end)
+      refute env(capture, "RINTO_API")
+    end
+  end
+
+  defp dumping_env(tmp_dir, capture) do
+    fake_pi(tmp_dir, ~s|env > "#{capture}"\nsleep 300\n|)
+  end
+
+  defp env(capture, name) do
+    capture
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.find_value(fn line ->
+      case String.split(line, "=", parts: 2) do
+        [^name, value] -> value
+        _other -> nil
+      end
+    end)
+  end
+
+  defp set_api_url(url) do
+    updated =
+      :rinto_pmo
+      |> Application.fetch_env!(RintoPMO.Conversations)
+      |> Keyword.put(:agent_api_url, url)
+
+    Application.put_env(:rinto_pmo, RintoPMO.Conversations, updated)
+  end
+
   defp eventually(fun, attempts \\ 100)
   defp eventually(_fun, 0), do: false
 
@@ -128,8 +194,15 @@ defmodule RintoPMO.Conversations.SessionsTest do
     fake_pi(tmp_dir, ~s|printf '%s\\n' "$@" > "#{capture}"\nsleep 300\n|)
   end
 
+  # Merged, not replaced: this block holds more than one key, and overwriting it
+  # wholesale would drop the others.
   defp set_limit(limit) do
-    Application.put_env(:rinto_pmo, RintoPMO.Conversations, max_active_sessions: limit)
+    updated =
+      :rinto_pmo
+      |> Application.fetch_env!(RintoPMO.Conversations)
+      |> Keyword.put(:max_active_sessions, limit)
+
+    Application.put_env(:rinto_pmo, RintoPMO.Conversations, updated)
   end
 
   # The AI persona a topic talks to lives on the topic, so heating needs
