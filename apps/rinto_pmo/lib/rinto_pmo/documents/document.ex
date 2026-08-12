@@ -48,11 +48,12 @@ defmodule RintoPMO.Documents.Document do
     revision = %{
       "title" => attrs["title"],
       "change_summary" => attrs["change_summary"],
+      "source_conversation_id" => attrs["conversation_id"],
       "blocks" => Map.get(attrs, "blocks", [])
     }
 
     attrs
-    |> Map.drop(["title", "change_summary", "blocks"])
+    |> Map.drop(["title", "change_summary", "conversation_id", "blocks"])
     |> Map.put("revisions", [revision])
   end
 

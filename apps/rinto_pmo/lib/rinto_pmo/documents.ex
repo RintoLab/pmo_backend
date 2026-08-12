@@ -94,7 +94,8 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def create_document(attrs) do
-    with {:ok, attrs} <- split_markdown(attrs) do
+    with {:ok, author_id} <- document_author(attrs),
+         {:ok, attrs} <- split_markdown(attrs, author_id) do
       %Document{}
       |> Document.creation_changeset(attrs)
       |> Repo.insert()
@@ -106,6 +107,7 @@ defmodule RintoPMO.Documents do
           {:error, changeset}
       end
     end
+    |> unwrap_error()
   end
 
   @doc """
@@ -737,27 +739,36 @@ defmodule RintoPMO.Documents do
     |> maybe_put(:change_summary, attr(attrs, :change_summary, nil) || proposal.change_summary)
   end
 
-  defp split_markdown(attrs) do
+  defp split_markdown(attrs, author_id) do
     case attr(attrs, :markdown, nil) do
       nil ->
-        {:ok, put_blocks(attrs, [])}
+        {:ok, put_blocks(attrs, [], author_id)}
 
       markdown when is_binary(markdown) ->
         case Markdown.split(markdown) do
-          {:ok, contents} -> {:ok, put_blocks(attrs, contents)}
-          {:error, _reason} -> {:error, invalid_markdown(attrs)}
+          {:ok, contents} -> {:ok, put_blocks(attrs, contents, author_id)}
+          {:error, _reason} -> {:error, invalid_markdown(attrs, author_id)}
         end
 
       _other ->
-        {:error, invalid_markdown(attrs)}
+        {:error, invalid_markdown(attrs, author_id)}
+    end
+  end
+
+  # Who a new document's blocks are credited to. The same rule proposals follow,
+  # with the one difference that a document can be created outside any topic: a
+  # person writing one directly is its author, and says so.
+  defp document_author(attrs) do
+    case attr(attrs, :conversation_id, nil) do
+      conversation_id when is_binary(conversation_id) -> assistant_of(conversation_id)
+      _absent -> {:ok, attr(attrs, :actor_id, nil)}
     end
   end
 
   # Every block of a new document is credited to the one actor that wrote the
   # body. Per-block authorship only starts to differ once revisions land, and
   # those carry their own `actor_id` per operation.
-  defp put_blocks(attrs, contents) do
-    actor_id = attr(attrs, :actor_id, nil)
+  defp put_blocks(attrs, contents, actor_id) do
     blocks = Enum.map(contents, &%{actor_id: actor_id, content: &1})
 
     attrs
@@ -765,9 +776,9 @@ defmodule RintoPMO.Documents do
     |> Map.put(:blocks, blocks)
   end
 
-  defp invalid_markdown(attrs) do
+  defp invalid_markdown(attrs, author_id) do
     %Document{}
-    |> Document.creation_changeset(put_blocks(attrs, []))
+    |> Document.creation_changeset(put_blocks(attrs, [], author_id))
     |> Changeset.add_error(:markdown, "is invalid")
   end
 

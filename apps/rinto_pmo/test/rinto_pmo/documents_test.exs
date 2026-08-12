@@ -1,9 +1,82 @@
 defmodule RintoPMO.DocumentsTest do
   use RintoPMO.DataCase, async: true
 
+  alias RintoPMO.Conversations
+  alias RintoPMO.ConversationsMock
   alias RintoPMO.Documents
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
+
+  setup do
+    # Creating a document inside a topic reads that topic to learn who wrote it.
+    stub_with(ConversationsMock, Conversations)
+    :ok
+  end
+
+  # A write made inside a topic is by that topic's assistant; one made outside
+  # any topic is by whoever says so. The CLI is configured with the server's
+  # human actor, so without this the pi running inside a topic would have
+  # credited its documents to a person.
+  describe "who a new document is by" do
+    test "credits the topic's assistant, ignoring an actor the caller supplies" do
+      conversation = insert(:conversation)
+      impostor = insert(:actor)
+
+      assert {:ok, document} =
+               Documents.create_document(%{
+                 title: "Written by a model",
+                 conversation_id: conversation.id,
+                 actor_id: impostor.id,
+                 markdown: "## One\n\nText"
+               })
+
+      blocks = Documents.get_document!(document.id).latest_revision.blocks
+      assert Enum.map(blocks, & &1.actor_id) == [conversation.assistant_actor_id]
+      refute impostor.id in Enum.map(blocks, & &1.actor_id)
+    end
+
+    test "credits the named actor when there is no topic" do
+      actor = insert(:actor)
+
+      assert {:ok, document} =
+               Documents.create_document(%{
+                 title: "Written by a person",
+                 actor_id: actor.id,
+                 markdown: "## One\n\nText"
+               })
+
+      blocks = Documents.get_document!(document.id).latest_revision.blocks
+      assert Enum.map(blocks, & &1.actor_id) == [actor.id]
+    end
+
+    # The same question every later revision can answer, and no reason for the
+    # first one to be the exception.
+    test "records which topic produced it" do
+      conversation = insert(:conversation)
+
+      assert {:ok, document} =
+               Documents.create_document(%{
+                 title: "From a discussion",
+                 conversation_id: conversation.id,
+                 markdown: "## One\n\nText"
+               })
+
+      assert document.latest_revision.source_conversation_id == conversation.id
+    end
+
+    test "refuses a topic with no assistant, having nobody to credit" do
+      conversation = insert(:conversation, assistant_actor: nil)
+
+      assert {:error, :assistant_actor_required, details} =
+               Documents.create_document(%{
+                 title: "Nobody wrote this",
+                 conversation_id: conversation.id,
+                 markdown: "## One\n\nText"
+               })
+
+      assert details.conversation_id == conversation.id
+    end
+  end
 
   describe "documents" do
     test "creates a project document with an initial revision, cutting the body into blocks" do

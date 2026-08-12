@@ -36,10 +36,14 @@ defmodule RintoPMO.Documents.DocumentRevision do
   @doc false
   def initial_changeset(%__MODULE__{} = revision, attrs) do
     revision
-    |> cast(attrs, [:title, :change_summary])
+    # `source_conversation_id` for the same reason every later revision carries
+    # one: "what did that discussion produce" should not stop being answerable
+    # at the first revision just because that one had no parent.
+    |> cast(attrs, [:title, :change_summary, :source_conversation_id])
     |> validate_required([:title])
     |> validate_length(:title, min: 1)
     |> foreign_key_constraint(:document_id)
+    |> foreign_key_constraint(:source_conversation_id)
     |> cast_assoc(:blocks, with: &DocumentBlock.initial_changeset/2)
     |> assign_block_positions()
   end
