@@ -1,8 +1,28 @@
 openapi: 3.0.3
 info:
   title: Rinto PMO API
-  description: JSON REST API for Rinto PMO.
+  description: >
+    JSON REST API for Rinto PMO.
+
+
+    Every endpoint requires the actor token as `Authorization: Bearer <token>`.
+    There are no anonymous routes and nothing to bootstrap from over HTTP: the
+    server operator issues the token on the machine with
+    `mix rinto.actors.setup_human`, which prints it. This system assumes a
+    single person operating it, so the token answers "who is calling" outright
+    and there is no session to establish.
+
+
+    The token also supplies human attribution. `POST /attachments`,
+    `POST /conversations`, `POST /tasks/{id}/claim` and
+    `POST /documents/{id}/proposals/{id}/decide` credit the token holder and
+    ignore any `actor_id` in the body. Endpoints naming *another* actor --
+    `POST /tasks/{id}/assign`, `PUT /settings/{key}`, an assistant switch, and
+    anything an AI can author -- still take one, because they are about
+    somebody other than the caller.
   version: 0.1.0
+security:
+  - ActorToken: []
 servers:
   - url: http://localhost:4000/api/v1
     description: Development
@@ -86,34 +106,56 @@ paths:
                 $ref: "#/components/schemas/ActorResponse"
         "422":
           $ref: "#/components/responses/ValidationError"
-  /actors/human:
+  /actors/me:
     get:
       tags: [Actors]
-      operationId: getHumanActor
-      summary: Get the system's only human participant
+      operationId: getCurrentActor
+      summary: Get the actor the request's token belongs to
       description: >
-        Bootstrap identity for local clients before user authentication exists.
-        AI actors are ignored. The request fails rather than choosing when no
-        human exists or when several humans make the identity ambiguous.
+        The whole of "log in": there is no session to establish, so a client
+        resolves its identity once at startup and then has no further use for
+        it -- nothing it sends says who it is any more. The token is never in
+        the response.
       responses:
         "200":
-          description: The only human actor
+          description: The authenticated actor
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ActorResponse"
-        "404":
-          description: No human actor is configured
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /actors/me/token:
+    put:
+      tags: [Actors]
+      operationId: rotateActorToken
+      summary: Replace the caller's token
+      description: >
+        Rotating requires the token being replaced, so there is no recovery
+        path here: an actor that has lost its token gets a new one from
+        `mix rinto.actors.setup_human --rotate` on the server.
+
+
+        Takes no body. A token a caller could choose is a token somebody
+        eventually chooses badly, and this one is the whole of authentication --
+        no rate limit in front of it and no second factor behind it. Generating
+        is the only way in, so its strength is not a decision anybody has to
+        get right.
+
+
+        The new token is in this response and nowhere else. The old one stops
+        working immediately, and any open WebSocket carrying it is
+        disconnected -- a replaced token must not go on working merely because
+        it is already attached to something.
+      responses:
+        "200":
+          description: The new token
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/APIError"
-        "409":
-          description: More than one human actor exists
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIError"
+                $ref: "#/components/schemas/ActorTokenResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /actors/{id}:
     parameters:
       - $ref: "#/components/parameters/ActorId"
@@ -1206,12 +1248,12 @@ paths:
         The only other way out of a contention is to open a topic about it.
         There is no manual merge -- a third version nobody asked for is exactly
         what this refuses to produce.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DecideInput"
+
+
+        Who decided is the token holder and cannot be sent. Deciding is the one
+        thing in this system only a person does, and `decided_by_actor_id` is
+        the record of which person -- a body able to name somebody else would
+        let an agent stamp its own change as agreed to.
       responses:
         "200":
           description: The adopted proposal, still live
@@ -1632,8 +1674,11 @@ paths:
         the write are a single conditional UPDATE, so two agents claiming at
         once produce one winner and one refusal rather than two winners. Do not
         retry a `task_already_claimed` -- pick a different task.
-      requestBody:
-        $ref: "#/components/requestBodies/TaskActor"
+
+
+        Names nobody: pulling means the claimant is the caller, and the server
+        reads that from the token. `assign` is the half that still names
+        somebody, because it pushes work at them.
       responses:
         "200":
           description: Task claimed
@@ -2005,6 +2050,15 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 components:
+  securitySchemes:
+    ActorToken:
+      type: http
+      scheme: bearer
+      description: >
+        The actor token, issued by `mix rinto.actors.setup_human` on the
+        server. Only the `Bearer` scheme is read: a bare token in the header,
+        or one in the query string, would end up in access logs and in the
+        shell history of anyone who copied the URL.
   requestBodies:
     ProjectCreate:
       required: true
@@ -2249,6 +2303,18 @@ components:
   responses:
     BadRequest:
       description: The request is invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    Unauthorized:
+      description: >
+        `unauthorized`: the request carried no token, or one nobody holds.
+        `token_not_configured`: nobody has been issued a token at all, so this
+        is a server that has not had `mix rinto.actors.setup_human` run against
+        it. The two are told apart deliberately -- an installation with no
+        token has nothing in it for the distinction to give away, and saying so
+        saves an afternoon.
       content:
         application/json:
           schema:
@@ -2526,6 +2592,27 @@ components:
         data:
           $ref: "#/components/schemas/Actor"
       additionalProperties: false
+    ActorTokenResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [actor_id, token]
+          properties:
+            actor_id:
+              type: string
+              format: uuid
+            token:
+              type: string
+              description: >
+                The only response that carries a token. It is deliberately not
+                part of the ordinary actor payload: `GET /actors` renders every
+                actor to anybody holding a token, and an actor payload that
+                sometimes contains a credential is one refactor away from being
+                logged.
+          additionalProperties: false
+      additionalProperties: false
     ActorListResponse:
       type: object
       required: [data]
@@ -2716,7 +2803,17 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: Optional project association. Omission or null creates an unassigned document.
+          description: >
+            Optional. Omitting it, or sending null, files the document in the
+            project reserved as the default (slug `personal`) rather than
+            leaving it belonging to nothing -- most notes are not written with
+            a project in mind, and a document filed nowhere is one nothing
+            lists. Sending one still wins.
+
+
+            `422 default_project_missing` when that project does not exist,
+            which means the reserved slug has been renamed or
+            `mix rinto.actors.setup_human` was never run.
         title:
           type: string
           minLength: 1
@@ -3769,15 +3866,6 @@ components:
           type: string
           minLength: 1
       additionalProperties: false
-    DecideInput:
-      type: object
-      required: [actor_id]
-      properties:
-        actor_id:
-          type: string
-          format: uuid
-          description: Who ended the argument. Recorded on the rejected proposals.
-      additionalProperties: false
     Contention:
       type: object
       required: [block_id, proposals]
@@ -4014,11 +4102,6 @@ components:
             (`title_source: manual`) and is never replaced by the automatic
             one. Omit it, or send null, to have the topic named from its first
             message.
-        actor_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: Who is starting the topic.
         assistant_actor_id:
           type: string
           format: uuid
@@ -4273,12 +4356,8 @@ components:
       additionalProperties: false
     AttachmentCreateInput:
       type: object
-      required: [actor_id, file]
+      required: [file]
       properties:
-        actor_id:
-          type: string
-          format: uuid
-          description: Actor the upload is attributed to.
         file:
           type: string
           format: binary
@@ -4353,20 +4432,21 @@ components:
       description: Stable machine-readable error code.
       enum:
         - bad_request
+        - unauthorized
+        - token_not_configured
         - not_found
         - image_too_large
         - unsupported_image
         - stale_document
         - task_already_claimed
         - task_state_conflict
-        - human_actor_not_found
-        - human_actor_ambiguous
         - dependency_cycle
         - validation_error
         - task_blocked
         - review_round_open
         - invalid_block_op
         - invalid_markdown
+        - default_project_missing
         - invalid_estimate
         - task_not_splittable
         - corrupt_image

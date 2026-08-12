@@ -8,6 +8,8 @@ defmodule RintoPMO.Documents.ProposalsTest do
   alias RintoPMO.Documents
   alias RintoPMO.Documents.BlockOps
   alias RintoPMO.Documents.BlockProposal
+  alias RintoPMO.Projects
+  alias RintoPMO.ProjectsMock
 
   setup do
     # Commit resolves annotations through the injected context; these tests are
@@ -15,6 +17,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
     stub_with(AnnotationsMock, Annotations)
     # A proposal's author is read off the topic, so the real context answers.
     stub_with(ConversationsMock, Conversations)
+    # A document created without a project is filed in the default one, which
+    # therefore has to exist.
+    stub_with(ProjectsMock, Projects)
+    insert(:default_project)
     :ok
   end
 

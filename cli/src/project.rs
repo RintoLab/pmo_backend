@@ -23,7 +23,7 @@ pub struct ShowArgs {
 
 pub fn run(command: ProjectCommand) -> Result<()> {
     let config = Config::load()?;
-    let client = &Client::new(config.api())?;
+    let client = &Client::new(config.api(), config.token()?)?;
 
     match command {
         ProjectCommand::List => list(client),

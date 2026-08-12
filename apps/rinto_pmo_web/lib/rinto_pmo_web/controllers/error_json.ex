@@ -3,12 +3,16 @@ defmodule RintoPMOWeb.ErrorJSON do
 
   @errors %{
     bad_request: {400, "The request is invalid."},
+    unauthorized: {401, "The request carries no valid actor token."},
+    # Told apart from a wrong token deliberately: this is a server nobody has
+    # run `mix rinto.actors.setup_human` against, and there is nothing in it
+    # yet for the distinction to give away.
+    token_not_configured:
+      {401, "No actor has been issued a token yet. Run `mix rinto.actors.setup_human`."},
     not_found: {404, "The requested resource was not found."},
-    human_actor_not_found: {404, "The system has no human actor configured."},
     image_too_large: {413, "The image exceeds the size accepted for inline use."},
     unsupported_image: {415, "The file is not an image format that can be sent to a model."},
     stale_document: {409, "The document has changed since the provided base revision."},
-    human_actor_ambiguous: {409, "The system has more than one human actor."},
     task_state_conflict: {409, "The task is no longer in the expected state."},
     # Losing a claim race is not a validation failure and not a retry: the task
     # has an owner now, and the answer is to pick a different one.
@@ -36,6 +40,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     review_round_open: {422, "The document already has an open review round."},
     invalid_block_op: {422, "The block operation is invalid."},
     invalid_markdown: {422, "The Markdown body could not be parsed."},
+    # A document with no project of its own has nowhere to go. The reserved
+    # slug has been renamed, or the setup task was never run.
+    default_project_missing:
+      {422, "The default project does not exist. Run `mix rinto.actors.setup_human`."},
     no_change_proposed: {422, "The proposed body is the document that already exists."},
     stale_proposal:
       {409, "The whole-document proposal was written against an older revision. Propose again."},
@@ -54,6 +62,7 @@ defmodule RintoPMOWeb.ErrorJSON do
 
   @template_codes %{
     "400.json" => :bad_request,
+    "401.json" => :unauthorized,
     "404.json" => :not_found,
     "422.json" => :validation_error,
     "500.json" => :internal_server_error

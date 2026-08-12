@@ -17,10 +17,14 @@ defmodule RintoPMOWeb.V1.AttachmentController do
 
   alias Plug.Upload
   alias RintoPMO.Utils
+  alias RintoPMOWeb.Plugs.ActorToken
 
-  def create(conn, %{"actor_id" => actor_id, "file" => %Upload{} = upload}) do
+  # The uploader is the token holder, and the body no longer says. An upload is
+  # something a person did at a file picker; there is no case where one arrives
+  # on somebody else's behalf.
+  def create(conn, %{"file" => %Upload{} = upload}) do
     attrs = %{
-      "actor_id" => actor_id,
+      "actor_id" => ActorToken.current_actor!(conn).id,
       "filename" => upload.filename,
       "path" => upload.path
     }
@@ -33,7 +37,7 @@ defmodule RintoPMOWeb.V1.AttachmentController do
   end
 
   def create(_conn, _params) do
-    {:error, :bad_request, %{"file" => ["is required"], "actor_id" => ["is required"]}}
+    {:error, :bad_request, %{"file" => ["is required"]}}
   end
 
   def show(conn, %{"id" => id}) do

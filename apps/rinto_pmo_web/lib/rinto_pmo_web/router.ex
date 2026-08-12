@@ -3,12 +3,24 @@ defmodule RintoPMOWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    # No route is exempt, including the one that replaces the token: there is
+    # nothing to bootstrap from over HTTP. A fresh database is opened with
+    # `mix rinto.actors.setup_human`, on the machine, by the person who owns it.
+    plug RintoPMOWeb.Plugs.ActorToken
   end
 
   scope "/api/v1", RintoPMOWeb.V1 do
     pipe_through :api
 
-    get "/actors/human", ActorController, :human
+    # Who the token says you are. This is the whole of "log in": there is no
+    # session to establish, so a client resolves its identity once and keeps it.
+    get "/actors/me", ActorController, :me
+
+    # Replacing the token, with the old one. Rotating is the only thing that
+    # can be done to it -- there is no delete, because an actor without a token
+    # could not ask for a new one.
+    put "/actors/me/token", ActorController, :rotate_token
+
     resources "/actors", ActorController, only: [:index, :show, :create, :update]
 
     # Which actor does a job that belongs to no single topic -- naming them, so

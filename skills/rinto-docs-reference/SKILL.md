@@ -11,15 +11,18 @@ Rinto 里的 Task 是要交付的工作，Document 是这项工作的决策依�
 
 ## 前提
 
-CLI 首次使用时需要配置 API：
+CLI 首次使用时需要配置 API 和 token：
 
 ```sh
-rinto-pmo config init --api http://localhost:4000/api/v1
+rinto-pmo config init --api http://localhost:4000/api/v1 --token <TOKEN>
 ```
 
-这条命令会在服务端找出唯一的 `human` actor，并把 API 地址和用户 id 写入 CLI 配置文件。
+token 由服务端管理员执行 `mix rinto.actors.setup_human` 打印出来，**每个请求都要带它**，
+没有它服务端一条接口都不会回应。`config init` 会用这个 token 反查 `/actors/me`
+确认它有效，然后把 API 地址、token 和用户 id 写进 CLI 配置文件（权限 0600）。
+
 后续命令自动读取，不要手工拼 actor id，也不要把远程 AI actor 当成本地执行者。
-可以用 `rinto-pmo config show` 检查当前配置。
+可以用 `rinto-pmo config show` 检查当前配置 —— 它只会显示 token 是否配好，不会打印 token 本身。
 
 ## 1. 找到项目和任务
 
@@ -61,7 +64,7 @@ rinto-pmo task claim <task-id>
 rinto-pmo task show <task-id>
 ```
 
-`claim` 自动使用配置文件中的 human actor id，并且是并发安全的。
+`claim` 不需要指定领取人 —— 服务端从 token 认出你是谁，并且是并发安全的。
 如果返回 `task_already_claimed`，说明别人先拿到了：**不要重试抢同一个任务**，重新列任务池并选别的任务。
 
 领取成功后重新 `show`，确认这些信息：

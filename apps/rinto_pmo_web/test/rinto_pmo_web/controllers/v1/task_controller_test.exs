@@ -264,23 +264,23 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
       assert %{"assignee_id" => ^actor_id} = json_response(conn, 200)["data"]
     end
 
-    test "claims a task", %{conn: conn} do
+    # Pulling, so the claimant is the caller. `assign` is the one that still
+    # names somebody, because it pushes work at them.
+    test "claims a task for the token holder", %{conn: conn, current_actor: actor} do
       task = insert(:task)
-      actor = insert(:actor)
       actor_id = actor.id
       claimed = %{task | assignee_id: actor.id}
 
       expect(TasksMock, :get_task!, fn _id -> task end)
       expect(TasksMock, :claim_task, fn ^task, ^actor_id -> {:ok, claimed} end)
 
-      conn = post(conn, ~p"/api/v1/tasks/#{task.id}/claim", %{"actor_id" => actor.id})
+      conn = post(conn, ~p"/api/v1/tasks/#{task.id}/claim", %{"actor_id" => insert(:actor).id})
 
       assert %{"assignee_id" => ^actor_id} = json_response(conn, 200)["data"]
     end
 
     test "losing a claim race is a 409 naming the winner", %{conn: conn} do
       task = insert(:task)
-      actor = insert(:actor)
       winner = insert(:actor)
       winner_id = winner.id
 
@@ -290,7 +290,7 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
         {:error, :task_already_claimed, %{assignee_id: winner.id, status: :open}}
       end)
 
-      conn = post(conn, ~p"/api/v1/tasks/#{task.id}/claim", %{"actor_id" => actor.id})
+      conn = post(conn, ~p"/api/v1/tasks/#{task.id}/claim", %{})
 
       assert %{
                "error" => "task_already_claimed",

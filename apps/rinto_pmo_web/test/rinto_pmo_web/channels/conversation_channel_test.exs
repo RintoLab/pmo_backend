@@ -14,7 +14,6 @@ defmodule RintoPMOWeb.ConversationChannelTest do
   alias RintoPMO.Conversations.Titles
   alias RintoPMO.ConversationsMock
   alias RintoPMO.DocumentsMock
-  alias RintoPMOWeb.PiSocket
 
   @moduletag :capture_log
   @moduletag :tmp_dir
@@ -133,10 +132,8 @@ defmodule RintoPMOWeb.ConversationChannelTest do
     Conversations.get_conversation!(conversation.id)
   end
 
-  defp connect_socket do
-    {:ok, socket} = Phoenix.ChannelTest.connect(PiSocket, %{})
-    socket
-  end
+  # A connection for the actor the case set up, already carrying its token.
+  defp connect_socket, do: connect_as()
 
   defp join!(%{id: conversation_id}, params \\ %{}) do
     {:ok, _reply, socket} =
@@ -369,18 +366,20 @@ defmodule RintoPMOWeb.ConversationChannelTest do
   end
 
   describe "recording and replay" do
-    test "records the raw message and its refs, not the expanded prelude", %{tmp_dir: tmp_dir} do
+    test "records the raw message and its refs, not the expanded prelude", %{
+      tmp_dir: tmp_dir,
+      current_actor: actor
+    } do
       conversation = hot_conversation!(echo_pi(tmp_dir))
       socket = join!(conversation)
       document = document_with_block("The quarterly plan")
-      actor = insert(:actor)
 
       expect(DocumentsMock, :get_document!, fn _id -> document end)
 
       ref =
         push(socket, "prompt", %{
           "message" => "summarise it",
-          "actor_id" => actor.id,
+          "record" => true,
           "refs" => [document_ref(document)]
         })
 
@@ -388,6 +387,8 @@ defmodule RintoPMOWeb.ConversationChannelTest do
 
       assert [message] = Conversations.list_messages(conversation, %{})
       assert message.role == :user
+      # Whose turn it is comes from the connection's token, never from the
+      # payload.
       assert message.actor_id == actor.id
       # Replay re-expands against the document as it stands then, so storing
       # the prelude would feed back a stale snapshot.
@@ -397,7 +398,7 @@ defmodule RintoPMOWeb.ConversationChannelTest do
       assert stored_ref.ref_id == document.id
     end
 
-    test "a prompt naming no actor is not recorded", %{tmp_dir: tmp_dir} do
+    test "a prompt that does not ask to be recorded is not", %{tmp_dir: tmp_dir} do
       conversation = hot_conversation!(echo_pi(tmp_dir))
       socket = join!(conversation)
 

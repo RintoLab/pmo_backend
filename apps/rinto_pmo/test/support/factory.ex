@@ -34,6 +34,16 @@ defmodule RintoPMO.Factory do
     }
   end
 
+  # The project a document with none of its own is filed in. Its slug is the
+  # reserved one, so there can only ever be one of these per test.
+  def default_project_factory do
+    %Project{
+      name: "Personal",
+      slug: RintoPMO.Projects.default_slug(),
+      description: "Notes and documents that belong to no particular project."
+    }
+  end
+
   def document_factory do
     %Document{project: build(:project)}
   end

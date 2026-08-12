@@ -6,11 +6,57 @@ defmodule RintoPMO.DocumentsTest do
   alias RintoPMO.Documents
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Projects
+  alias RintoPMO.ProjectsMock
 
   setup do
     # Creating a document inside a topic reads that topic to learn who wrote it.
     stub_with(ConversationsMock, Conversations)
+    # A document created without a project is filed in the default one, which
+    # therefore has to exist.
+    stub_with(ProjectsMock, Projects)
+    insert(:default_project)
     :ok
+  end
+
+  # Most notes are not written with a project in mind, and asking for one
+  # before anything can be written down is a question at the wrong moment. But
+  # a document filed nowhere is one nothing lists, which is how a note is lost.
+  describe "which project a new document belongs to" do
+    test "files one with no project of its own in the default project" do
+      default = Projects.get_default_project()
+
+      assert {:ok, document} = Documents.create_document(%{title: "A note"})
+      assert document.project_id == default.id
+    end
+
+    test "a project the caller names still wins" do
+      chosen = insert(:project)
+
+      assert {:ok, document} =
+               Documents.create_document(%{title: "A note", project_id: chosen.id})
+
+      assert document.project_id == chosen.id
+    end
+
+    test "reads a string key as readily as an atom one" do
+      chosen = insert(:project)
+
+      assert {:ok, document} =
+               Documents.create_document(%{"title" => "A note", "project_id" => chosen.id})
+
+      assert document.project_id == chosen.id
+    end
+
+    # The reserved slug has been renamed, or the setup task was never run.
+    # Both are things to fix rather than to work around one document at a time,
+    # so this is reported rather than quietly filed nowhere.
+    test "refuses when the default project is not there" do
+      Repo.delete!(Projects.get_default_project())
+
+      assert {:error, :default_project_missing, %{slug: "personal"}} =
+               Documents.create_document(%{title: "A note"})
+    end
   end
 
   # A write made inside a topic is by that topic's assistant; one made outside
@@ -106,9 +152,8 @@ defmodule RintoPMO.DocumentsTest do
       assert Enum.uniq(Enum.map(revision.blocks, & &1.block_id)) |> length() == 2
     end
 
-    test "allows an unassigned document without a body" do
+    test "allows a document without a body" do
       assert {:ok, document} = Documents.create_document(%{title: "Empty draft"})
-      assert document.project_id == nil
       assert %{blocks: []} = document.latest_revision
     end
 
@@ -157,7 +202,11 @@ defmodule RintoPMO.DocumentsTest do
       {:ok, assigned} = create_document(project, %{title: "Assigned"})
       {:ok, archived} = create_document(project, %{title: "Archived"})
       {:ok, other} = create_document(other_project, %{title: "Other"})
-      {:ok, unassigned} = Documents.create_document(%{title: "Unassigned"})
+      # Built rather than created: nothing produces one of these any more, but
+      # rows written before documents had a default project still exist, and
+      # the scope that finds them has to keep working.
+      unassigned = insert(:document, project: nil)
+      insert(:document_revision, document: unassigned)
       {:ok, _archived} = Documents.archive_document(archived)
 
       assert document_ids(Documents.list_documents(%{})) ==

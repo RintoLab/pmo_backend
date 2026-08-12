@@ -3,6 +3,7 @@ defmodule RintoPMOWeb.V1.ConversationController do
 
   alias RintoPMO.Conversations.Sessions
   alias RintoPMO.Utils
+  alias RintoPMOWeb.Plugs.ActorToken
 
   def index(conn, params) do
     with {:ok, filter} <- conversation_filter(params) do
@@ -16,8 +17,13 @@ defmodule RintoPMOWeb.V1.ConversationController do
     render(conn, :show, conversation: conversation)
   end
 
+  # `actor_id` here is who started the topic, which is whoever is calling.
+  # `assistant_actor_id` is a different question -- which AI answers in it --
+  # and stays in the body, where a client chooses it from the actor list.
   def create(conn, params) do
-    with {:ok, conversation} <- conversations_context().create_conversation(params) do
+    attrs = Map.put(params, "actor_id", ActorToken.current_actor!(conn).id)
+
+    with {:ok, conversation} <- conversations_context().create_conversation(attrs) do
       conn
       |> put_status(:created)
       |> render(:show, conversation: conversation)

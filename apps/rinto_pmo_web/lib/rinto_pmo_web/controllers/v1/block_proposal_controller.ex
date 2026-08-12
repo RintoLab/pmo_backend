@@ -11,6 +11,7 @@ defmodule RintoPMOWeb.V1.BlockProposalController do
 
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Utils
+  alias RintoPMOWeb.Plugs.ActorToken
 
   @statuses Map.new(BlockProposal.statuses(), &{Atom.to_string(&1), &1})
 
@@ -118,13 +119,18 @@ defmodule RintoPMOWeb.V1.BlockProposalController do
   Settles a contended block in favour of one proposal.
 
   The winner stays live: this ends the argument, it does not commit the change.
+
+  Who decided is the token holder and cannot be sent: deciding is the one thing
+  in this system only a person does, and `decided_by_actor_id` is the record of
+  which person. A body able to name somebody else would let an agent stamp its
+  own change as agreed to.
   """
-  def decide(conn, %{"document_id" => document_id, "id" => id} = params) do
+  def decide(conn, %{"document_id" => document_id, "id" => id}) do
     document = get_document!(document_id)
     proposal = documents_context().get_proposal!(document, id)
+    actor_id = ActorToken.current_actor!(conn).id
 
-    with {:ok, actor_id} <- cast_id(params["actor_id"], "actor_id"),
-         {:ok, adopted} <- settle(document, proposal, actor_id) do
+    with {:ok, adopted} <- settle(document, proposal, actor_id) do
       render(conn, :show, proposal: adopted)
     end
   end

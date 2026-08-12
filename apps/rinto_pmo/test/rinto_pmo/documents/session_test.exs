@@ -9,6 +9,8 @@ defmodule RintoPMO.Documents.SessionTest do
   alias RintoPMO.Documents
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.Session
+  alias RintoPMO.Projects
+  alias RintoPMO.ProjectsMock
 
   @moduletag :capture_log
 
@@ -17,6 +19,10 @@ defmodule RintoPMO.Documents.SessionTest do
     # Proposing attributes itself to the topic's assistant, so it reads the real
     # context rather than asserting an author.
     stub_with(ConversationsMock, Conversations)
+    # A document created without a project is filed in the default one, which
+    # therefore has to exist.
+    stub_with(ProjectsMock, Projects)
+    insert(:default_project)
     :ok
   end
 

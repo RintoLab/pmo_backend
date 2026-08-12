@@ -7,6 +7,7 @@ use crate::client::{self, Client};
 use crate::error::{Error, Result};
 
 const API_ENV: &str = "RINTO_API";
+const TOKEN_ENV: &str = "RINTO_TOKEN";
 const CONVERSATION_ENV: &str = "RINTO_CONVERSATION_ID";
 const CONFIG_ENV: &str = "RINTO_CONFIG";
 const CONFIG_DIR: &str = "rinto-pmo";
@@ -17,7 +18,7 @@ const CONFIG_FILE: &str = "config.json";
 /// Two situations, and they are configured differently on purpose.
 ///
 /// A developer runs this on their own machine: `config init` writes a file
-/// naming the API and the one human actor, and writes are theirs.
+/// naming the API and carrying the token, and writes are theirs.
 ///
 /// The agent inside a topic runs it with an environment instead. The backend
 /// spawns that process and injects the topic, because which topic it is
@@ -25,8 +26,13 @@ const CONFIG_FILE: &str = "config.json";
 /// to carry. There is no actor: a write made inside a topic is by that topic's
 /// assistant, and the server derives it -- see `RintoPMO.Documents`. This
 /// program never names an author.
+///
+/// The token is required either way. It is what the server answers at all, and
+/// it also decides who a write outside a topic is credited to -- which is why
+/// `actor_id` is now only ever printed, never sent.
 pub struct Config {
     api: String,
+    token: Option<String>,
     actor_id: Option<String>,
     conversation_id: Option<String>,
 }
@@ -49,6 +55,15 @@ impl Config {
 
         Ok(Self {
             api,
+            // Environment first, like the API URL: the backend spawns the
+            // in-topic agent with one and never writes it a file.
+            token: std::env::var(TOKEN_ENV)
+                .ok()
+                .filter(|token| !token.trim().is_empty())
+                .or_else(|| {
+                    file.as_ref()
+                        .and_then(|(value, _path)| string(value, "token"))
+                }),
             actor_id: file
                 .as_ref()
                 .and_then(|(value, _path)| string(value, "actor_id")),
@@ -62,21 +77,33 @@ impl Config {
         &self.api
     }
 
+    /// The token every request carries.
+    pub fn token(&self) -> Result<&str> {
+        self.token.as_deref().ok_or_else(|| {
+            Error::Config(format!(
+                "no API token: set {TOKEN_ENV}, or run \
+                 `rinto-pmo config init --api <URL> --token <TOKEN>`. \
+                 The server prints one from `mix rinto.actors.setup_human`"
+            ))
+        })
+    }
+
     /// The topic this run is happening inside, if it is happening inside one.
     pub fn conversation_id(&self) -> Option<&str> {
         self.conversation_id.as_deref()
     }
 
-    /// The human this CLI is configured as.
+    /// The human this CLI is configured as, as recorded by `config init`.
     ///
-    /// Only needed for a write made outside any topic -- inside one, the author
-    /// is the topic's assistant and the server works it out. So the error names
-    /// the case rather than assuming the configuration is simply missing.
+    /// Nothing sends this any more -- the server reads the token and knows.
+    /// It is kept so that `config show` can say who you are without a request,
+    /// and for the task filters, which ask *about* an actor rather than acting
+    /// as one.
     pub fn actor_id(&self) -> Result<&str> {
         self.actor_id.as_deref().ok_or_else(|| {
             Error::Config(format!(
-                "no actor configured; run `rinto-pmo config init --api <URL>`, \
-                 or set {CONVERSATION_ENV} to write as a topic's assistant"
+                "no actor recorded; run `rinto-pmo config init --api <URL> --token <TOKEN>`, \
+                 or set {CONVERSATION_ENV} to work inside a topic"
             ))
         })
     }
@@ -115,7 +142,7 @@ fn string(value: &Value, field: &str) -> Option<String> {
 
 #[derive(Subcommand)]
 pub enum ConfigCommand {
-    /// Find the server's only human actor and save this CLI's configuration
+    /// Save the API URL and token, and record who the token belongs to
     Init(InitArgs),
     /// Show the active configuration
     Show,
@@ -126,6 +153,10 @@ pub struct InitArgs {
     /// API base URL; falls back to RINTO_API for initial setup
     #[arg(long, value_name = "URL")]
     api: Option<String>,
+    /// API token; falls back to RINTO_TOKEN. The server prints one from
+    /// `mix rinto.actors.setup_human`
+    #[arg(long, value_name = "TOKEN")]
+    token: Option<String>,
 }
 
 pub fn run(command: ConfigCommand) -> Result<()> {
@@ -144,17 +175,30 @@ fn init(args: InitArgs) -> Result<()> {
                 "no API URL supplied; pass --api or set {API_ENV} for initial setup"
             ))
         })?;
-    let client = Client::new(&api)?;
-    let actor = client::data(client.get("/actors/human", &[])?)?;
+    let token = args
+        .token
+        .or_else(|| std::env::var(TOKEN_ENV).ok())
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "no API token supplied; pass --token or set {TOKEN_ENV}. \
+                 The server prints one from `mix rinto.actors.setup_human`"
+            ))
+        })?;
+
+    // The token is checked by using it rather than by being stored on trust:
+    // finding out here beats finding out on the first write.
+    let client = Client::new(&api, &token)?;
+    let actor = client::data(client.get("/actors/me", &[])?)?;
     if actor.get("kind").and_then(Value::as_str) != Some("human") {
         return Err(Error::Network(
-            "the human actor endpoint returned a non-human actor".to_string(),
+            "the token belongs to a non-human actor".to_string(),
         ));
     }
     let actor_id = actor
         .get("id")
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::Network("the human actor had no id".to_string()))?;
+        .ok_or_else(|| Error::Network("the actor had no id".to_string()))?;
     let actor_name = actor
         .get("name")
         .and_then(Value::as_str)
@@ -162,6 +206,7 @@ fn init(args: InitArgs) -> Result<()> {
 
     let config = json!({
         "api": api.trim_end_matches('/'),
+        "token": token.trim(),
         "actor_id": actor_id
     });
     let rendered = serde_json::to_string_pretty(&config)
@@ -180,6 +225,13 @@ fn show() -> Result<()> {
     let config = Config::load()?;
     println!("config: {}", path()?.display());
     println!("api: {}", config.api());
+
+    // Never the token itself. `config show` is the command somebody runs while
+    // screen-sharing to work out why a call is failing.
+    match config.token() {
+        Ok(_configured) => println!("token: (configured)"),
+        Err(_missing) => println!("token: (none; no request will be answered)"),
+    }
 
     match config.actor_id() {
         Ok(actor_id) => println!("actor_id: {actor_id}"),
@@ -228,7 +280,25 @@ fn write_config(path: &Path, content: &str) -> Result<()> {
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, content)
         .map_err(|err| Error::Io(format!("could not write {}: {err}", temporary.display())))?;
+    restrict(&temporary)?;
     std::fs::rename(&temporary, path)
         .map_err(|err| Error::Io(format!("could not replace {}: {err}", path.display())))?;
+    Ok(())
+}
+
+/// Owner-only, because this file now holds the token.
+///
+/// Applied to the temporary file before the rename, so the configuration is
+/// never briefly world-readable at its real path.
+#[cfg(unix)]
+fn restrict(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|err| Error::Io(format!("could not restrict {}: {err}", path.display())))
+}
+
+#[cfg(not(unix))]
+fn restrict(_path: &Path) -> Result<()> {
     Ok(())
 }

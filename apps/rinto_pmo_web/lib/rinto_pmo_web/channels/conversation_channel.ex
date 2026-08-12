@@ -33,10 +33,11 @@ defmodule RintoPMOWeb.ConversationChannel do
 
     * `"prompt"` -- `%{"message" => "..."}`, the ordinary way to talk to the
       agent; optional `"refs"` name things in this system to put in front of
-      the message (see `RintoPMO.Agent.PromptBuilder`), `"actor_id"` records
-      the turn as the human's, `"on_missing_refs"` may be `"skip"` once a
-      person has been shown what is gone and chosen to go ahead, and
-      `"images"` / `"streamingBehavior"` pass straight through
+      the message (see `RintoPMO.Agent.PromptBuilder`), `"record": true` keeps
+      the turn in the transcript as the connected person's,
+      `"on_missing_refs"` may be `"skip"` once a person has been shown what is
+      gone and chosen to go ahead, and `"images"` / `"streamingBehavior"` pass
+      straight through
     * `"command"` -- `%{"type" => "get_state", ...}`, any raw RPC command;
       requires a running process, and will not start one
     * `"answer"` -- `%{"ui_id" => id, "value" | "confirmed" | "cancelled" => _}`
@@ -308,13 +309,18 @@ defmodule RintoPMOWeb.ConversationChannel do
   # its refs cannot be replayed. The raw text is stored, never the expanded
   # one -- replay re-expands against the documents as they stand then.
   #
-  # `actor_id` is what opts a prompt into being recorded: without one there is
-  # nobody to attribute the turn to.
-  defp record_prompt(socket, message, refs, %{"actor_id" => actor_id})
-       when is_binary(actor_id) do
+  # `"record": true` is what opts a prompt into being kept. Whose turn it is is
+  # no longer part of that decision -- the socket's token already answered it
+  # (see `RintoPMOWeb.PiSocket`), and a client that could name somebody else
+  # could put words in their mouth.
+  #
+  # Recording stays opt-in rather than becoming the default. A throwaway
+  # question about a passage is not part of why the passage reads the way it
+  # does, and a transcript that keeps every one of them is worth less to read.
+  defp record_prompt(socket, message, refs, %{"record" => true}) do
     _result =
       conversations().append_message(socket.assigns.conversation, %{
-        actor_id: actor_id,
+        actor_id: socket.assigns.current_actor.id,
         role: :user,
         content: message,
         refs: refs

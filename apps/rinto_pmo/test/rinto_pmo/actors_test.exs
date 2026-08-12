@@ -58,6 +58,85 @@ defmodule RintoPMO.ActorsTest do
     end
   end
 
+  describe "tokens" do
+    test "issues a token and answers with the person holding it" do
+      {:ok, human} = Actors.create_actor(%{kind: :human, name: "User"})
+
+      assert {:ok, %Actor{token: token} = issued} = Actors.issue_token(human)
+      assert is_binary(token)
+      assert {:ok, found} = Actors.authenticate(token)
+      assert found.id == issued.id
+    end
+
+    # A token somebody can choose is a token somebody eventually chooses badly,
+    # and this is the whole of authentication.
+    test "there is no way to supply one" do
+      refute function_exported?(Actors, :put_token, 2)
+      assert {:ok, human} = Actors.create_actor(%{kind: :human, name: "User"})
+      assert {:ok, %Actor{token: token}} = Actors.issue_token(human)
+      # 32 random bytes, URL-safe and unpadded.
+      assert String.length(token) == 43
+    end
+
+    test "the previous token stops working the moment a new one is issued" do
+      {:ok, human} = Actors.create_actor(%{kind: :human, name: "User"})
+      {:ok, %{token: first}} = Actors.issue_token(human)
+      {:ok, %{token: second}} = Actors.issue_token(human)
+
+      assert first != second
+      assert Actors.authenticate(first) == {:error, :unauthorized}
+      assert {:ok, _found} = Actors.authenticate(second)
+    end
+
+    test "refuses a token nobody holds" do
+      {:ok, human} = Actors.create_actor(%{kind: :human, name: "User"})
+      {:ok, _issued} = Actors.issue_token(human)
+
+      assert Actors.authenticate(Actors.generate_token()) == {:error, :unauthorized}
+      assert Actors.authenticate(nil) == {:error, :unauthorized}
+      assert Actors.authenticate(42) == {:error, :unauthorized}
+    end
+
+    # Told apart from a wrong token so that a fresh installation says what to
+    # run instead of looking like a client bug.
+    test "reports a system that has issued none at all" do
+      {:ok, _human} = Actors.create_actor(%{kind: :human, name: "User"})
+
+      assert Actors.authenticate("anything") == {:error, :token_not_configured}
+      assert Actors.authenticate(nil) == {:error, :token_not_configured}
+    end
+
+    test "will not issue one to an AI" do
+      {:ok, ai} = Actors.create_actor(valid_ai_attrs("Assistant"))
+
+      assert {:error, changeset} = Actors.issue_token(ai)
+      assert %{token: ["belongs to a human"]} = errors_on(changeset)
+    end
+
+    # Unreachable through `issue_token/1`, which generates. Asserted at the
+    # constraint, because that is what has to hold once this system stops
+    # assuming there is only one person in it.
+    test "two actors cannot share a token" do
+      {:ok, first} = Actors.create_actor(%{kind: :human, name: "First"})
+      {:ok, second} = Actors.create_actor(%{kind: :human, name: "Second"})
+      {:ok, issued} = Actors.issue_token(first)
+
+      assert {:error, changeset} =
+               second |> Actor.token_changeset(issued.token) |> RintoPMO.Repo.update()
+
+      assert %{token: [_taken]} = errors_on(changeset)
+    end
+
+    test "the token is not part of what an actor update can write" do
+      {:ok, human} = Actors.create_actor(%{kind: :human, name: "User"})
+      {:ok, issued} = Actors.issue_token(human)
+
+      assert {:ok, updated} = Actors.update_actor(issued, %{name: "Renamed", token: "smuggled"})
+      assert updated.name == "Renamed"
+      assert updated.token == issued.token
+    end
+  end
+
   defp valid_ai_attrs(name) do
     %{
       kind: :ai,

@@ -1,7 +1,9 @@
 defmodule RintoPMOWeb.V1.ActorController do
   use RintoPMOWeb, :controller
 
+  alias RintoPMO.Actors
   alias RintoPMO.Utils
+  alias RintoPMOWeb.Plugs.ActorToken
 
   def index(conn, _params) do
     actors = actor_context().list_actors()
@@ -9,9 +11,43 @@ defmodule RintoPMOWeb.V1.ActorController do
     render(conn, :index, actors: actors)
   end
 
-  def human(conn, _params) do
-    with {:ok, actor} <- actor_context().get_unique_human() do
-      render(conn, :show, actor: actor)
+  @doc """
+  The actor the request's token belongs to.
+
+  A client calls this once at startup to learn its own id, which it then has no
+  further use for: nothing it sends says who it is any more.
+  """
+  def me(conn, _params) do
+    render(conn, :show, actor: ActorToken.current_actor!(conn))
+  end
+
+  @doc """
+  Replaces the caller's token with a freshly generated one.
+
+  Takes no body. A token a caller could choose is a token somebody eventually
+  chooses badly, and this one is the whole of authentication -- there is no
+  rate limit in front of it and no second factor behind it. Generating is the
+  only way in, so the strength is not a decision anybody has to get right.
+
+  The new token is in the response and nowhere else, so a client that loses it
+  rotates again. Live WebSocket connections holding the old token are hung up:
+  a token that has been replaced must not go on working merely because it is
+  already attached to something.
+  """
+  # `RintoPMO.Actors` directly, not the injection seam: this is authentication,
+  # and it is answered by the same module the plug reads. See
+  # `RintoPMO.Actors.Behaviour`.
+  def rotate_token(conn, _params) do
+    actor = ActorToken.current_actor!(conn)
+
+    with {:ok, actor} <- Actors.issue_token(actor) do
+      RintoPMOWeb.Endpoint.broadcast(
+        RintoPMOWeb.PiSocket.socket_id(actor.id),
+        "disconnect",
+        %{}
+      )
+
+      render(conn, :token, actor: actor)
     end
   end
 

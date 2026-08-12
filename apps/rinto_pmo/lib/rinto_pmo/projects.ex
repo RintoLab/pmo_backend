@@ -1,12 +1,25 @@
 defmodule RintoPMO.Projects do
   @moduledoc """
   The context for projects and their repository configurations.
+
+  ## The default project
+
+  One slug is reserved: `"personal"`. `mix rinto.actors.setup_human` creates it
+  alongside the person who operates the system, and a document created without
+  a project lands in it (see `RintoPMO.Documents.create_document/1`).
+
+  It is an ordinary project in every other way -- it can hold repositories, be
+  renamed, and be archived. Only its slug is load-bearing, which is also its one
+  sharp edge: change the slug and documents created without a project stop
+  having anywhere to go. That is reported rather than papered over.
   """
 
   use RintoPMO, :context
 
   alias RintoPMO.Projects.Project
   alias RintoPMO.Projects.ProjectRepo
+
+  @default_slug "personal"
 
   defmodule Behaviour do
     @moduledoc false
@@ -15,6 +28,7 @@ defmodule RintoPMO.Projects do
     alias RintoPMO.Projects.ProjectRepo
 
     @callback list_projects() :: [Project.t()]
+    @callback get_default_project() :: Project.t() | nil
     @callback get_project_by_slug!(String.t()) :: Project.t()
     @callback get_active_project_by_slug!(String.t()) :: Project.t()
     @callback create_project(map()) :: {:ok, Project.t()} | {:error, Ecto.Changeset.t()}
@@ -44,6 +58,25 @@ defmodule RintoPMO.Projects do
     |> where([project], project.status == :active)
     |> order_by([project], asc: project.name)
     |> Repo.all()
+  end
+
+  @doc """
+  The slug the default project is found by.
+  """
+  @spec default_slug() :: String.t()
+  def default_slug, do: @default_slug
+
+  @doc """
+  The project a document with no project of its own belongs to, or `nil`.
+
+  Archived counts. Archiving is about a project being finished rather than
+  gone, and refusing to file a note in it would be a strange way to find that
+  out -- the person archived it, and the alternative is a document belonging
+  nowhere.
+  """
+  @impl true
+  def get_default_project do
+    Repo.get_by(Project, slug: @default_slug)
   end
 
   @doc """

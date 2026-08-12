@@ -10,24 +10,29 @@ use crate::error::{Error, Result};
 /// not inside this process.
 pub struct Client {
     base_url: String,
+    token: String,
     agent: ureq::Agent,
 }
 
 impl Client {
-    pub fn new(base_url: &str) -> Result<Self> {
+    pub fn new(base_url: &str, token: &str) -> Result<Self> {
         let base_url = base_url.trim().trim_end_matches('/');
         if base_url.is_empty() {
             return Err(Error::Config("the API base URL is empty".to_string()));
         }
+        if token.trim().is_empty() {
+            return Err(Error::Config("the API token is empty".to_string()));
+        }
 
         Ok(Self {
             base_url: base_url.to_string(),
+            token: token.trim().to_string(),
             agent: ureq::AgentBuilder::new().build(),
         })
     }
 
     pub fn get(&self, path: &str, query: &[(&str, &str)]) -> Result<Value> {
-        let mut request = self.agent.get(&self.url(path));
+        let mut request = self.request("GET", path);
         for (key, value) in query {
             request = request.query(key, value);
         }
@@ -35,21 +40,29 @@ impl Client {
     }
 
     pub fn post(&self, path: &str, body: Value) -> Result<Value> {
-        Self::send(self.agent.post(&self.url(path)).send_json(body))
+        Self::send(self.request("POST", path).send_json(body))
     }
 
     pub fn patch(&self, path: &str, body: Value) -> Result<Value> {
-        Self::send(self.agent.patch(&self.url(path)).send_json(body))
+        Self::send(self.request("PATCH", path).send_json(body))
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {
-        match self.agent.delete(&self.url(path)).call() {
+        match self.request("DELETE", path).call() {
             Ok(_response) => Ok(()),
             Err(ureq::Error::Status(status, response)) => {
                 Err(Self::response_error(status, response))
             }
             Err(ureq::Error::Transport(transport)) => Err(Error::Network(format!("{transport}"))),
         }
+    }
+
+    /// Every request carries the token. The server has no anonymous route, so
+    /// there is nothing to decide per call.
+    fn request(&self, method: &str, path: &str) -> ureq::Request {
+        self.agent
+            .request(method, &self.url(path))
+            .set("Authorization", &format!("Bearer {}", self.token))
     }
 
     fn url(&self, path: &str) -> String {

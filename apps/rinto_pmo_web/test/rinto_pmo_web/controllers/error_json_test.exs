@@ -5,8 +5,10 @@ defmodule RintoPMOWeb.ErrorJSONTest do
 
   @errors %{
     bad_request: {400, "The request is invalid.", %{parameter: "limit", reason: "is invalid"}},
+    unauthorized: {401, "The request carries no valid actor token.", %{}},
+    token_not_configured:
+      {401, "No actor has been issued a token yet. Run `mix rinto.actors.setup_human`.", %{}},
     not_found: {404, "The requested resource was not found.", %{}},
-    human_actor_not_found: {404, "The system has no human actor configured.", %{}},
     image_too_large:
       {413, "The image exceeds the size accepted for inline use.",
        %{byte_size: 9_000_000, limit: 4_500_000}},
@@ -16,8 +18,6 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     stale_document:
       {409, "The document has changed since the provided base revision.",
        %{base_version: 2, current_version: 3, diff: []}},
-    human_actor_ambiguous:
-      {409, "The system has more than one human actor.", %{actor_ids: ["actor-1", "actor-2"]}},
     task_state_conflict:
       {409, "The task is no longer in the expected state.", %{current_status: "in_progress"}},
     task_already_claimed:
@@ -54,6 +54,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {422, "The document already has an open review round.", %{open_round_id: "round-1"}},
     invalid_block_op:
       {422, "The block operation is invalid.", %{op_index: 0, reason: "duplicate block ID"}},
+    default_project_missing:
+      {422, "The default project does not exist. Run `mix rinto.actors.setup_human`.",
+       %{slug: "personal"}},
     invalid_markdown:
       {422, "The Markdown body could not be parsed.", %{markdown: ["is invalid"]}},
     no_change_proposed: {422, "The proposed body is the document that already exists.", %{}},

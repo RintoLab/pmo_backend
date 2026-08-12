@@ -5,12 +5,14 @@ defmodule RintoPMOWeb.V1.AttachmentControllerTest do
   alias RintoPMO.AttachmentsMock
   alias RintoPMO.ImageFixtures
 
-  setup do
-    {:ok, actor: insert(:actor)}
+  # The uploader is whoever the token belongs to, so the case's own actor is
+  # the one every upload here is credited to.
+  setup %{current_actor: actor} do
+    {:ok, actor: actor}
   end
 
   describe "POST /attachments" do
-    test "stores an upload and returns what it turned out to be", %{conn: conn, actor: actor} do
+    test "credits the upload to the token holder", %{conn: conn, actor: actor} do
       attachment = insert(:attachment, actor: actor, width: 640, height: 480)
       attachment_id = attachment.id
 
@@ -23,7 +25,6 @@ defmodule RintoPMOWeb.V1.AttachmentControllerTest do
 
       conn =
         post(conn, ~p"/api/v1/attachments", %{
-          "actor_id" => actor.id,
           "file" => upload("screenshot.png", ImageFixtures.png(640, 480))
         })
 
@@ -35,34 +36,32 @@ defmodule RintoPMOWeb.V1.AttachmentControllerTest do
              } = json_response(conn, 201)["data"]
     end
 
-    test "rejects a request with no file", %{conn: conn, actor: actor} do
-      conn = post(conn, ~p"/api/v1/attachments", %{"actor_id" => actor.id})
+    test "rejects a request with no file", %{conn: conn} do
+      conn = post(conn, ~p"/api/v1/attachments", %{})
 
       assert json_response(conn, 400)["error"] == "bad_request"
     end
 
-    test "reports an unsupported format as 415", %{conn: conn, actor: actor} do
+    test "reports an unsupported format as 415", %{conn: conn} do
       expect(AttachmentsMock, :create_attachment, fn _attrs ->
         {:error, :unsupported_image, %{"supported" => ["image/png"]}}
       end)
 
       conn =
         post(conn, ~p"/api/v1/attachments", %{
-          "actor_id" => actor.id,
           "file" => upload("notes.pdf", "%PDF-1.7")
         })
 
       assert json_response(conn, 415)["error"] == "unsupported_image"
     end
 
-    test "reports an oversize image as 413", %{conn: conn, actor: actor} do
+    test "reports an oversize image as 413", %{conn: conn} do
       expect(AttachmentsMock, :create_attachment, fn _attrs ->
         {:error, :image_too_large, %{"limit" => 4_500_000}}
       end)
 
       conn =
         post(conn, ~p"/api/v1/attachments", %{
-          "actor_id" => actor.id,
           "file" => upload("huge.png", ImageFixtures.png())
         })
 

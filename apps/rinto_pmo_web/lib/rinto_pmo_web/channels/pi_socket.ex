@@ -4,26 +4,51 @@ defmodule RintoPMOWeb.PiSocket do
 
   ## Authentication
 
-  There is none, matching the rest of this application: the REST API under
-  `/api/v1` is equally open and `RintoPMO.Actors.Actor` deliberately carries no
-  authentication fields. `connect/3` is where that changes -- return
-  `{:ok, assign(socket, :actor_id, id)}` for an authenticated connection and
-  `:error` to refuse one, then have the channel authorise per session.
+  The same actor token the REST API takes, passed as a connect parameter
+  because a browser's WebSocket cannot set headers:
 
-  Weigh that sooner rather than later for this socket in particular: it drives
-  an AI agent and answers its confirmation prompts, which is a good deal more
-  than the read-mostly REST surface exposes.
+      new Socket("/socket", {params: {token: "<token>"}})
+
+  A connection without a valid one is refused outright. This socket earns that
+  more than the REST surface does: it drives an AI agent and answers its
+  confirmation prompts, so it can spend money and act on a repository, which no
+  `GET` can.
+
+  The actor is resolved once, at connect, and every channel on the connection
+  reads it from `socket.assigns.current_actor`. A prompt is recorded as that
+  person's turn -- the client never says whose turn it is.
+
+  ## Rotating a token hangs up
+
+  `id/1` names the connection after its actor, so
+  `Endpoint.broadcast("actor_socket:<id>", "disconnect", %{})` drops every live
+  connection that actor holds. `RintoPMOWeb.V1.ActorController.rotate_token/2`
+  does exactly that: a token that has been replaced must not keep working
+  because it happens to already be attached to an open socket.
   """
 
   use Phoenix.Socket
 
+  alias RintoPMO.Actors
+
   channel "conversation:*", RintoPMOWeb.ConversationChannel
 
   @impl true
-  def connect(_params, socket, _connect_info), do: {:ok, socket}
+  def connect(params, socket, _connect_info) do
+    case Actors.authenticate(params["token"]) do
+      {:ok, actor} -> {:ok, assign(socket, :current_actor, actor)}
+      # The handshake has no body to carry a reason in, so the two refusals the
+      # REST side distinguishes collapse into one here.
+      {:error, _unauthorized_or_unconfigured} -> :error
+    end
+  end
 
-  # Anonymous sockets cannot be targeted by `Endpoint.broadcast/3`. Topics are
-  # addressed by conversation id, so nothing needs to.
   @impl true
-  def id(_socket), do: nil
+  def id(socket), do: "actor_socket:#{socket.assigns.current_actor.id}"
+
+  @doc """
+  The topic `id/1` puts a connection on, for hanging up on one actor.
+  """
+  @spec socket_id(UUIDv7.t()) :: String.t()
+  def socket_id(actor_id), do: "actor_socket:#{actor_id}"
 end

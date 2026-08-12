@@ -59,25 +59,34 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
     refute Map.has_key?(data, "annotation_id")
   end
 
-  test "POST conversations starts a topic", %{conn: conn} do
-    actor = insert(:actor)
+  # Who started a topic is the caller, so the body no longer says and one that
+  # tried to would be overruled.
+  test "POST conversations starts a topic under the token holder", %{
+    conn: conn,
+    current_actor: actor
+  } do
     conversation = insert(:conversation, actor: actor, title: "Compare A and B")
     conversation_id = conversation.id
-    params = %{"title" => "Compare A and B", "actor_id" => actor.id}
+    expected = %{"title" => "Compare A and B", "actor_id" => actor.id}
 
-    expect(ConversationsMock, :create_conversation, fn ^params -> {:ok, conversation} end)
+    expect(ConversationsMock, :create_conversation, fn ^expected -> {:ok, conversation} end)
 
-    conn = post(conn, ~p"/api/v1/conversations", params)
+    conn =
+      post(conn, ~p"/api/v1/conversations", %{
+        "title" => "Compare A and B",
+        "actor_id" => insert(:actor).id
+      })
 
     assert %{"id" => ^conversation_id, "title" => "Compare A and B"} =
              json_response(conn, 201)["data"]
   end
 
-  test "POST conversations returns validation errors", %{conn: conn} do
+  test "POST conversations returns validation errors", %{conn: conn, current_actor: actor} do
     params = %{"title" => String.duplicate("x", 300)}
+    expected = Map.put(params, "actor_id", actor.id)
     changeset = Conversation.changeset(params)
 
-    expect(ConversationsMock, :create_conversation, fn ^params -> {:error, changeset} end)
+    expect(ConversationsMock, :create_conversation, fn ^expected -> {:error, changeset} end)
 
     conn = post(conn, ~p"/api/v1/conversations", params)
 

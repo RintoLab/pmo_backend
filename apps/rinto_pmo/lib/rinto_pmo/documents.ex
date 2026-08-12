@@ -100,10 +100,22 @@ defmodule RintoPMO.Documents do
 
   Every document is created fleeting, and `attrs` has no say in it -- see
   `RintoPMO.Documents.Document`. Only `formalize_document/1` clears the flag.
+
+  ## No `project_id` means the default project
+
+  Omitting it files the document in the project reserved as the default (see
+  `RintoPMO.Projects`) rather than leaving it belonging to nothing. Most notes
+  are not written with a project in mind, and asking for one before anything
+  can be written down is a question at exactly the wrong moment -- but a
+  document filed nowhere is one nothing lists, which is how a note is lost.
+
+  Sending `project_id` explicitly still wins, including a client that has
+  always sent one.
   """
   @impl true
   def create_document(attrs) do
-    with {:ok, author_id} <- document_author(attrs),
+    with {:ok, attrs} <- put_default_project(attrs),
+         {:ok, author_id} <- document_author(attrs),
          {:ok, attrs} <- split_markdown(attrs, author_id) do
       %Document{}
       |> Document.creation_changeset(attrs)
@@ -800,6 +812,36 @@ defmodule RintoPMO.Documents do
     end
   end
 
+  # A document with no project of its own goes to the default one. Resolved to
+  # an id here rather than left to the changeset, so that everything downstream
+  # sees a document that belongs somewhere.
+  #
+  # A missing default project is refused rather than quietly filed nowhere: it
+  # means the reserved slug has been renamed or the setup task was never run,
+  # and both are things to fix rather than to work around one document at a
+  # time.
+  defp put_default_project(attrs) do
+    case attr(attrs, :project_id, nil) do
+      nil ->
+        case projects().get_default_project() do
+          nil ->
+            {:error, {:default_project_missing, %{slug: RintoPMO.Projects.default_slug()}}}
+
+          project ->
+            # Both key forms dropped first: `attrs` may carry either, and the
+            # changeset stringifies keys, where two spellings of the same field
+            # would collapse into whichever landed last.
+            attrs
+            |> Map.drop([:project_id, "project_id"])
+            |> Map.put("project_id", project.id)
+            |> then(&{:ok, &1})
+        end
+
+      _named ->
+        {:ok, attrs}
+    end
+  end
+
   # Who a new document's blocks are credited to. The same rule proposals follow,
   # with the one difference that a document can be created outside any topic: a
   # person writing one directly is its author, and says so.
@@ -1322,4 +1364,7 @@ defmodule RintoPMO.Documents do
   # The one thing this context asks of another: which assistant a topic is
   # talking to, so a proposal can be attributed without a caller saying.
   defp conversations, do: Utils.module(:conversations)
+
+  # And which project a document with none of its own belongs to.
+  defp projects, do: Utils.module(:projects)
 end

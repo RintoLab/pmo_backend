@@ -29,7 +29,7 @@ pub struct CreateArgs {
     #[arg(long, value_name = "FILE")]
     body: PathBuf,
 
-    /// Project to file the document under; omit to leave it unassigned
+    /// Project to file the document under; omit to use the default project
     #[arg(long, value_name = "UUID")]
     project_id: Option<String>,
 
@@ -98,7 +98,7 @@ pub struct ListArgs {
 
 pub fn run(command: DocCommand) -> Result<()> {
     let config = Config::load()?;
-    let client = &Client::new(config.api())?;
+    let client = &Client::new(config.api(), config.token()?)?;
 
     match command {
         DocCommand::Create(args) => create(client, &config, args),

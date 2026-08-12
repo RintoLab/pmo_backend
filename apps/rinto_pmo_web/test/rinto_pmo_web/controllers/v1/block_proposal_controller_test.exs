@@ -239,9 +239,14 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
              json_response(conn, 200)["document_scopes"]
   end
 
-  test "POST decide adopts a proposal", %{conn: conn, document: document} do
+  # Deciding is the one thing only a person does, so who decided is the token
+  # holder and an `actor_id` in the body is ignored rather than believed.
+  test "POST decide adopts a proposal, stamped by the token holder", %{
+    conn: conn,
+    document: document,
+    current_actor: actor
+  } do
     proposal = insert(:block_proposal, document: document)
-    actor = insert(:actor)
     actor_id = actor.id
     proposal_id = proposal.id
     block_id = proposal.block_id
@@ -257,7 +262,7 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
 
     conn =
       post(conn, ~p"/api/v1/documents/#{document.id}/proposals/#{proposal.id}/decide", %{
-        "actor_id" => actor.id
+        "actor_id" => insert(:actor).id
       })
 
     assert %{"id" => ^proposal_id, "status" => "live"} = json_response(conn, 200)["data"]
@@ -366,9 +371,12 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
 
   # The proposal says which argument it is in, so a client deciding one names a
   # proposal and nothing else -- the same call it made before scopes existed.
-  test "POST decide settles a title from the proposal alone", %{conn: conn, document: document} do
+  test "POST decide settles a title from the proposal alone", %{
+    conn: conn,
+    document: document,
+    current_actor: actor
+  } do
     proposal = insert(:block_proposal, document: document, scope: :title, block_id: nil)
-    actor = insert(:actor)
     actor_id = actor.id
     proposal_id = proposal.id
 
@@ -379,9 +387,7 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
     end)
 
     conn =
-      post(conn, ~p"/api/v1/documents/#{document.id}/proposals/#{proposal.id}/decide", %{
-        "actor_id" => actor.id
-      })
+      post(conn, ~p"/api/v1/documents/#{document.id}/proposals/#{proposal.id}/decide", %{})
 
     assert %{"id" => ^proposal_id, "scope" => "title"} = json_response(conn, 200)["data"]
   end
@@ -417,17 +423,6 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
 
     assert %{"error" => "rebase_conflict", "details" => %{"block_ids" => [^block_id]}} =
              json_response(conn, 409)
-  end
-
-  test "POST decide requires an actor", %{conn: conn, document: document} do
-    proposal = insert(:block_proposal, document: document)
-
-    expect(DocumentsMock, :get_proposal!, fn ^document, _id -> proposal end)
-
-    conn = post(conn, ~p"/api/v1/documents/#{document.id}/proposals/#{proposal.id}/decide", %{})
-
-    assert %{"error" => "bad_request", "details" => %{"actor_id" => ["is invalid"]}} =
-             json_response(conn, 400)
   end
 
   test "there is no route to edit or delete a proposal", %{conn: conn, document: document} do

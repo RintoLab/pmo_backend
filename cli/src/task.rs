@@ -132,7 +132,7 @@ pub struct SplitArgs {
 
 pub fn run(command: TaskCommand) -> Result<()> {
     let config = Config::load()?;
-    let client = &Client::new(config.api())?;
+    let client = &Client::new(config.api(), config.token()?)?;
 
     match command {
         TaskCommand::List(args) => list(client, config.actor_id()?, args),
@@ -141,7 +141,7 @@ pub fn run(command: TaskCommand) -> Result<()> {
         TaskCommand::Create(args) => create(client, args),
         TaskCommand::Update(args) => update(client, args),
         TaskCommand::Assign(args) => assign(client, args),
-        TaskCommand::Claim(args) => claim(client, config.actor_id()?, args),
+        TaskCommand::Claim(args) => claim(client, args),
         TaskCommand::Release(args) => release(client, args),
         TaskCommand::Split(args) => split(client, args),
         TaskCommand::Start(args) => transition(client, args, "start", "started"),
@@ -247,9 +247,11 @@ fn assign(client: &Client, args: AssignArgs) -> Result<()> {
     Ok(())
 }
 
-fn claim(client: &Client, actor_id: &str, args: TaskIdArgs) -> Result<()> {
+/// Claiming names nobody: the server credits it to whoever the token belongs
+/// to. `assign` still names a target, because it hands work to somebody else.
+fn claim(client: &Client, args: TaskIdArgs) -> Result<()> {
     let path = format!("/tasks/{}/claim", args.task_id);
-    let task = client::data(client.post(&path, json!({"actor_id": actor_id}))?)?;
+    let task = client::data(client.post(&path, json!({}))?)?;
     print_result("claimed", &task);
     Ok(())
 }

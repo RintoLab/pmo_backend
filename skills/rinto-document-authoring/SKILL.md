@@ -33,7 +33,8 @@ description: 在 Rinto 里新建和修改文档。当讨论收敛出了值得固
 
 ## 前提：你不需要配置任何东西
 
-在话题里跑的时候，API 地址和「你是哪个 AI」都已经由环境给好了。
+在话题里跑的时候，API 地址、token 和「你是哪个 AI」都已经由环境给好了
+（`RINTO_API` / `RINTO_TOKEN` / `RINTO_CONVERSATION_ID`）。
 `rinto-pmo config show` 能看到当前状态，其中 `conversation_id` 非空就说明你在一个话题里。
 
 **不要运行 `config init`。** 那条命令是给人在自己机器上用的，

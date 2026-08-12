@@ -192,6 +192,10 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
   describe "importing a Markdown body end to end" do
     setup do
       stub_with(DocumentsMock, RintoPMO.Documents)
+      # A document posted without a project is filed in the default one, which
+      # therefore has to exist.
+      stub_with(RintoPMO.ProjectsMock, RintoPMO.Projects)
+      insert(:default_project)
       :ok
     end
 

@@ -3,6 +3,7 @@ defmodule RintoPMOWeb.V1.TaskController do
 
   alias RintoPMO.Tasks.Task
   alias RintoPMO.Utils
+  alias RintoPMOWeb.Plugs.ActorToken
 
   @statuses Map.new(Task.statuses(), &{Atom.to_string(&1), &1})
   @kinds Map.new(Task.kinds(), &{Atom.to_string(&1), &1})
@@ -69,12 +70,16 @@ defmodule RintoPMOWeb.V1.TaskController do
 
   @doc """
   Takes an unclaimed task, refusing with 409 when someone else got there first.
+
+  Claiming is pulling, so the claimant is the caller and the body no longer
+  says who. Pushing work at somebody else is `assign`, which still names them:
+  the difference between the two is exactly whose id is involved.
   """
-  def claim(conn, %{"id" => id} = params) do
+  def claim(conn, %{"id" => id}) do
     context = tasks_context()
     task = context.get_task!(id)
 
-    with {:ok, task} <- context.claim_task(task, Map.get(params, "actor_id")) do
+    with {:ok, task} <- context.claim_task(task, ActorToken.current_actor!(conn).id) do
       render(conn, :show, task: task)
     end
   end
