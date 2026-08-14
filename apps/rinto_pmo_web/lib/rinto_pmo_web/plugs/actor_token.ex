@@ -4,10 +4,14 @@ defmodule RintoPMOWeb.Plugs.ActorToken do
 
       Authorization: Bearer <token>
 
-  Every route under `/api/v1` goes through this, with no exceptions -- there is
-  no endpoint to bootstrap from, because bootstrapping happens off the wire in
-  `mix rinto.actors.setup_human`. An installation nobody has run that against
-  answers nothing, which is the right answer: it has no owner yet.
+  Every route under `/api/v1` goes through this, with no exceptions. There is
+  no endpoint to bootstrap from and none to recover with: the token is agreed
+  in advance and configured on both ends -- `RINTO_TOKEN` for the server, a
+  config file for each client -- so a caller that cannot authenticate has a
+  configuration problem, which is not one this API could fix for it anyway.
+
+  A server given no token answers nothing, which is the right answer: nobody
+  has said what it should let in.
 
   The token replaces the client-supplied `actor_id` for anything a person does.
   It cannot replace all of them: `POST /tasks/{id}/assign` names who is being

@@ -4,11 +4,14 @@ defmodule RintoPMOWeb.ErrorJSON do
   @errors %{
     bad_request: {400, "The request is invalid."},
     unauthorized: {401, "The request carries no valid actor token."},
-    # Told apart from a wrong token deliberately: this is a server nobody has
-    # run `mix rinto.actors.setup_human` against, and there is nothing in it
-    # yet for the distinction to give away.
+    # Told apart from a wrong token deliberately. Both describe an operator's
+    # problem rather than a caller's, and neither gives anything away: a server
+    # with no token configured, and one with no person to be, have nothing in
+    # them to protect.
     token_not_configured:
-      {401, "No actor has been issued a token yet. Run `mix rinto.actors.setup_human`."},
+      {401, "The server was started without RINTO_TOKEN, so it can answer nothing."},
+    human_actor_missing:
+      {401, "This installation has no human actor. Run `mix rinto.actors.setup_human`."},
     not_found: {404, "The requested resource was not found."},
     image_too_large: {413, "The image exceeds the size accepted for inline use."},
     unsupported_image: {415, "The file is not an image format that can be sent to a model."},

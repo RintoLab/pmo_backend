@@ -13,6 +13,11 @@ config :rinto_pmo, RintoPMO.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
+# A fixed token, so that `ConnCase` and `ChannelCase` can present one without
+# arranging anything. `config/runtime.exs` deliberately leaves `:test` alone,
+# so the environment a developer happens to have cannot reach in here.
+config :rinto_pmo, RintoPMO.Actors, token: "test-actor-token"
+
 config :rinto_pmo, :injectors,
   actors: RintoPMO.ActorsMock,
   annotations: RintoPMO.AnnotationsMock,

@@ -5,9 +5,20 @@ The CLI is designed for local coding agents that execute work from Rinto.
 ## Configure
 
 ```sh
-rinto-pmo config init --api https://pmo-api.kenton.wang/api/v1
+rinto-pmo config init
 rinto-pmo config show
 ```
+
+`config init` asks for the API URL and the token, reading the token without
+echoing it. The URL defaults to `https://pmo-api.kenton.wang/api/v1`, so
+pressing enter is the right answer unless you are pointing at a local server;
+`RINTO_API` and whatever was configured last time both take precedence over
+that default.
+
+The token is agreed in advance -- it is the value the server was started with
+as `RINTO_TOKEN` -- so ask whoever deployed it; nothing prints one and no
+endpoint hands one out. `--api` and `--token` skip the corresponding question,
+for scripts.
 
 Configuration is stored at `~/.config/rinto-pmo/config.json`. Set
 `RINTO_CONFIG` to use a different path.

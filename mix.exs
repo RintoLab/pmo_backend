@@ -8,6 +8,7 @@ defmodule RintoPMO.Umbrella.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
+      releases: releases(),
       # `:mix` is here for the one-off tasks under `apps/*/lib/mix/tasks`, which
       # call `Mix.shell/0` and would otherwise be all unknown functions.
       dialyzer: [plt_add_apps: [:ex_unit, :mix]],
@@ -50,6 +51,25 @@ defmodule RintoPMO.Umbrella.MixProject do
   #
   # Aliases listed here are available only for this project
   # and cannot be accessed from applications inside the apps/ folder.
+  # An umbrella has to say what a release contains -- there is no single app to
+  # infer it from. Both, and `rinto_pmo_web` last so the endpoint comes up after
+  # what it serves.
+  #
+  # ERTS is included (the default), so the target machine needs no Erlang or
+  # Elixir of its own. The price is that the tarball is only good for the OS,
+  # architecture and libc it was built on: build on the same distribution as the
+  # machine that will run it.
+  defp releases do
+    [
+      rinto_pmo: [
+        applications: [
+          rinto_pmo: :permanent,
+          rinto_pmo_web: :permanent
+        ]
+      ]
+    ]
+  end
+
   defp aliases do
     [
       # run `mix setup` in all child apps

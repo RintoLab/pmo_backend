@@ -13,6 +13,13 @@ const CONFIG_ENV: &str = "RINTO_CONFIG";
 const CONFIG_DIR: &str = "rinto-pmo";
 const CONFIG_FILE: &str = "config.json";
 
+/// Offered by `config init` when nothing more specific is known.
+///
+/// There is one deployment nearly everybody running this means, and typing its
+/// URL out is a step that only ever goes wrong. Somebody pointing at a local
+/// server overtypes it, and having done so once is remembered.
+const DEFAULT_API: &str = "https://pmo-api.kenton.wang/api/v1";
+
 /// Where this run is happening, and as whom.
 ///
 /// Two situations, and they are configured differently on purpose.
@@ -27,9 +34,14 @@ const CONFIG_FILE: &str = "config.json";
 /// assistant, and the server derives it -- see `RintoPMO.Documents`. This
 /// program never names an author.
 ///
-/// The token is required either way. It is what the server answers at all, and
-/// it also decides who a write outside a topic is credited to -- which is why
-/// `actor_id` is now only ever printed, never sent.
+/// The token is required either way, and is the same one everywhere: a single
+/// value agreed in advance, given to the server as `RINTO_TOKEN` and copied by
+/// hand into each thing that calls it. Nothing issues or hands one out, so
+/// `config init` asks for it rather than fetching it.
+///
+/// It is what the server answers at all, and it also decides who a write
+/// outside a topic is credited to -- which is why `actor_id` is now only ever
+/// printed, never sent.
 pub struct Config {
     api: String,
     token: Option<String>,
@@ -81,9 +93,8 @@ impl Config {
     pub fn token(&self) -> Result<&str> {
         self.token.as_deref().ok_or_else(|| {
             Error::Config(format!(
-                "no API token: set {TOKEN_ENV}, or run \
-                 `rinto-pmo config init --api <URL> --token <TOKEN>`. \
-                 The server prints one from `mix rinto.actors.setup_human`"
+                "no API token: set {TOKEN_ENV}, or run `rinto-pmo config init`, \
+                 which asks for it. It is the value the server was started with"
             ))
         })
     }
@@ -102,7 +113,7 @@ impl Config {
     pub fn actor_id(&self) -> Result<&str> {
         self.actor_id.as_deref().ok_or_else(|| {
             Error::Config(format!(
-                "no actor recorded; run `rinto-pmo config init --api <URL> --token <TOKEN>`, \
+                "no actor recorded; run `rinto-pmo config init`, \
                  or set {CONVERSATION_ENV} to work inside a topic"
             ))
         })
@@ -142,7 +153,7 @@ fn string(value: &Value, field: &str) -> Option<String> {
 
 #[derive(Subcommand)]
 pub enum ConfigCommand {
-    /// Save the API URL and token, and record who the token belongs to
+    /// Ask for the API URL and token, check them, and save them
     Init(InitArgs),
     /// Show the active configuration
     Show,
@@ -150,11 +161,12 @@ pub enum ConfigCommand {
 
 #[derive(Args)]
 pub struct InitArgs {
-    /// API base URL; falls back to RINTO_API for initial setup
+    /// API base URL. Asked for when absent, offering RINTO_API, then whatever
+    /// was configured last, then the production deployment
     #[arg(long, value_name = "URL")]
     api: Option<String>,
-    /// API token; falls back to RINTO_TOKEN. The server prints one from
-    /// `mix rinto.actors.setup_human`
+    /// The token the server was started with as RINTO_TOKEN. Asked for when
+    /// absent, without echoing what is typed
     #[arg(long, value_name = "TOKEN")]
     token: Option<String>,
 }
@@ -166,25 +178,24 @@ pub fn run(command: ConfigCommand) -> Result<()> {
     }
 }
 
+/// Writes the configuration, asking for whatever was not passed as a flag.
+///
+/// Interactive because of what the token now is: one value agreed in advance,
+/// which somebody reads off the server's configuration and types in here. It
+/// is not printed by any command and not fetched from anywhere, so a flag on
+/// the command line is a flag in shell history -- being asked for it is the
+/// better default, and `--token` stays for scripts.
 fn init(args: InitArgs) -> Result<()> {
-    let api = args
-        .api
-        .or_else(|| std::env::var(API_ENV).ok())
-        .ok_or_else(|| {
-            Error::Config(format!(
-                "no API URL supplied; pass --api or set {API_ENV} for initial setup"
-            ))
-        })?;
-    let token = args
-        .token
-        .or_else(|| std::env::var(TOKEN_ENV).ok())
-        .filter(|token| !token.trim().is_empty())
-        .ok_or_else(|| {
-            Error::Config(format!(
-                "no API token supplied; pass --token or set {TOKEN_ENV}. \
-                 The server prints one from `mix rinto.actors.setup_human`"
-            ))
-        })?;
+    let existing = read_file()?.map(|(value, _path)| value);
+
+    let api = match args.api {
+        Some(api) => api,
+        None => ask_api(existing.as_ref())?,
+    };
+    let token = match args.token {
+        Some(token) => token,
+        None => ask_token(existing.as_ref())?,
+    };
 
     // The token is checked by using it rather than by being stored on trust:
     // finding out here beats finding out on the first write.
@@ -219,6 +230,135 @@ fn init(args: InitArgs) -> Result<()> {
         path.display()
     );
     Ok(())
+}
+
+/// Asks for the API URL, offering the most specific answer already available.
+///
+/// The environment first, then whatever this machine was configured with last
+/// time, then the deployment nearly everybody means. The built-in default is
+/// last so that re-running `config init` against a local server does not
+/// quietly offer to point the CLI at production.
+fn ask_api(existing: Option<&Value>) -> Result<String> {
+    let suggestion = std::env::var(API_ENV)
+        .ok()
+        .filter(|api| !api.trim().is_empty())
+        .or_else(|| existing.and_then(|value| string(value, "api")))
+        .unwrap_or_else(|| DEFAULT_API.to_string());
+
+    let answer = ask("API base URL", Some(&suggestion), Echo::Shown)?;
+
+    Ok(answer.unwrap_or(suggestion))
+}
+
+/// Asks for the token without echoing it, and without ever showing the one
+/// already configured.
+///
+/// The suggestion is named rather than printed for the same reason
+/// `config show` never prints the token: this is a command somebody runs while
+/// screen-sharing to work out why a call is failing.
+fn ask_token(existing: Option<&Value>) -> Result<String> {
+    let from_environment = std::env::var(TOKEN_ENV)
+        .ok()
+        .filter(|token| !token.trim().is_empty());
+    let configured = existing.and_then(|value| string(value, "token"));
+
+    let hint = match (&from_environment, &configured) {
+        (Some(_set), _) => Some(TOKEN_ENV),
+        (None, Some(_kept)) => Some("keep the one already configured"),
+        (None, None) => None,
+    };
+
+    let answer = ask("Token", hint, Echo::Hidden)?;
+
+    answer.or(from_environment).or(configured).ok_or_else(|| {
+        Error::Config(format!(
+            "no API token supplied; pass --token or set {TOKEN_ENV}. \
+                 It is the value the server was started with"
+        ))
+    })
+}
+
+/// One line from the terminal, or `None` for an empty answer.
+///
+/// `hint` names what an empty answer takes, and is never the value itself when
+/// that value is a token. A closed stdin answers nothing rather than failing,
+/// which is what makes this safe to reach unconditionally: a script that pipes
+/// nothing in gets the same error it got before there were prompts.
+fn ask(label: &str, hint: Option<&str>, echo: Echo) -> Result<Option<String>> {
+    match hint {
+        Some(hint) => print!("{label} [{hint}]: "),
+        None => print!("{label}: "),
+    }
+    std::io::Write::flush(&mut std::io::stdout())
+        .map_err(|err| Error::Io(format!("could not write the prompt: {err}")))?;
+
+    let mut line = String::new();
+    let read = {
+        let _silence = Silence::while_typing(echo);
+        std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|err| Error::Io(format!("could not read the answer: {err}")))?
+    };
+
+    if echo == Echo::Hidden {
+        // The newline the terminal did not print back.
+        println!();
+    }
+
+    if read == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(line.trim().to_string()).filter(|answer| !answer.is_empty()))
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Echo {
+    Shown,
+    Hidden,
+}
+
+/// Terminal echo, off for as long as this is alive.
+///
+/// Shells out to `stty` rather than taking a dependency on termios: this is
+/// one prompt in one command, and the binary is shipped as a download that
+/// should stay small. Failing to turn echo off is not an error -- it means
+/// there is no terminal to turn it off on, and the answer is being piped in.
+struct Silence {
+    restore: bool,
+}
+
+impl Silence {
+    fn while_typing(echo: Echo) -> Self {
+        Self {
+            restore: echo == Echo::Hidden && stty("-echo"),
+        }
+    }
+}
+
+impl Drop for Silence {
+    fn drop(&mut self) {
+        if self.restore {
+            stty("echo");
+        }
+    }
+}
+
+#[cfg(unix)]
+fn stty(setting: &str) -> bool {
+    std::process::Command::new("stty")
+        .arg(setting)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn stty(_setting: &str) -> bool {
+    false
 }
 
 fn show() -> Result<()> {

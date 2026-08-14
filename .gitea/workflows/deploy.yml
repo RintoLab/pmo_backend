@@ -1,0 +1,162 @@
+# Build on one machine, deploy on another, with Gitea in between.
+#
+# Neither runner reaches the other: both only ever make outbound calls to
+# Gitea, which is the whole reason this works on an intranet. The release
+# tarball travels through Gitea's generic package registry.
+#
+# There is not a single `uses:` in here. Actions are downloaded from github.com
+# by default, which an intranet cannot do -- so every step is plain shell, and
+# the checkout is a `git fetch` with the job's own short-lived GITEA_TOKEN.
+#
+# Both jobs run in `host` mode, on runners registered with the labels below.
+# See docs/deployment.md for the one-time setup of both machines.
+
+name: Deploy
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  PACKAGE_NAME: rinto-pmo-release
+  RELEASE_ROOT: /srv/rinto-pmo
+
+jobs:
+  build:
+    runs-on: build
+    steps:
+      - name: Check out the revision being deployed
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          scheme="${SERVER%%://*}"
+          host="${SERVER#*://}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${REPO}.git"
+          git fetch -q --depth 1 origin "${SHA}"
+          git checkout -q FETCH_HEAD
+
+      - name: Build the release
+        env:
+          MIX_ENV: prod
+        run: |
+          set -euo pipefail
+          mix local.hex --force --if-missing
+          mix local.rebar --force --if-missing
+          mix deps.get --only prod
+          mix compile
+          mix release --overwrite
+
+      - name: Package it
+        run: |
+          set -euo pipefail
+          tar -czf release.tar.gz -C _build/prod/rel/rinto_pmo .
+          sha256sum release.tar.gz > release.tar.gz.sha256
+
+      # A PAT rather than GITEA_TOKEN: publishing to the package registry with
+      # the job token is not implemented in Gitea yet. The version is in the
+      # path, so rolling back is asking the registry for an older one rather
+      # than rebuilding a tag.
+      - name: Upload to the package registry
+        env:
+          PKG_USER: ${{ secrets.PACKAGE_USER }}
+          PKG_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+          BASE: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for file in release.tar.gz release.tar.gz.sha256; do
+            curl -fsSL --user "${PKG_USER}:${PKG_TOKEN}" --upload-file "${file}" \
+              "${BASE}/${PACKAGE_NAME}/${VERSION}/${file}"
+          done
+
+  deploy:
+    needs: build
+    runs-on: deploy-target
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Fetch the release
+        env:
+          PKG_USER: ${{ secrets.PACKAGE_USER }}
+          PKG_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+          BASE: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/rinto-pmo-deploy
+          mkdir -p /tmp/rinto-pmo-deploy
+          cd /tmp/rinto-pmo-deploy
+          for file in release.tar.gz release.tar.gz.sha256; do
+            curl -fsSL --user "${PKG_USER}:${PKG_TOKEN}" -o "${file}" \
+              "${BASE}/${PACKAGE_NAME}/${VERSION}/${file}"
+          done
+          sha256sum -c release.tar.gz.sha256
+
+      # Unpacked beside the running one, so a tarball that arrives broken is
+      # found out before anything in use is touched.
+      - name: Unpack alongside the running release
+        run: |
+          set -euo pipefail
+          target="${RELEASE_ROOT}/releases/${VERSION}"
+          rm -rf "${target}"
+          mkdir -p "${target}"
+          tar -xzf /tmp/rinto-pmo-deploy/release.tar.gz -C "${target}"
+          test -x "${target}/bin/rinto_pmo"
+
+      # Run by the new release rather than the old one, and before the restart:
+      # a migration that fails has to stop the deployment while the previous
+      # version is still serving.
+      - name: Migrate
+        run: |
+          set -euo pipefail
+          set -a; . /etc/rinto-pmo/env; set +a
+          "${RELEASE_ROOT}/releases/${VERSION}/bin/rinto_pmo" eval 'RintoPMO.Release.migrate()'
+
+      - name: Switch over and restart
+        run: |
+          set -euo pipefail
+          ln -sfn "${RELEASE_ROOT}/releases/${VERSION}" "${RELEASE_ROOT}/current.new"
+          mv -Tf "${RELEASE_ROOT}/current.new" "${RELEASE_ROOT}/current"
+          sudo systemctl restart rinto-pmo
+
+      # The deploy is not done when systemd says the process started -- it is
+      # done when the application answers. A missing RINTO_TOKEN and a missing
+      # human actor both boot perfectly and serve nothing usable, and both are
+      # 401s that say which.
+      - name: Wait for it to answer
+        run: |
+          set -euo pipefail
+          set -a; . /etc/rinto-pmo/env; set +a
+          url="http://127.0.0.1:${PORT:-4000}/api/v1/actors/me"
+          probe=$(mktemp)
+          for _ in $(seq 1 30); do
+            code=$(curl -so "${probe}" -w '%{http_code}' \
+              -H "Authorization: Bearer ${RINTO_TOKEN}" "${url}" || echo 000)
+            case "${code}" in
+              200)
+                echo "serving as $(cat "${probe}")"
+                exit 0
+                ;;
+              401)
+                echo "it is answering, but not as anybody:" >&2
+                cat "${probe}" >&2
+                exit 1
+                ;;
+            esac
+            sleep 2
+          done
+          echo "did not answer within 60s" >&2
+          journalctl -u rinto-pmo -n 50 --no-pager >&2 || true
+          exit 1
+
+      # Keeps the last five, so a rollback is a symlink move and a restart.
+      - name: Prune old releases
+        run: |
+          set -euo pipefail
+          cd "${RELEASE_ROOT}/releases"
+          ls -1t | tail -n +6 | xargs -r rm -rf

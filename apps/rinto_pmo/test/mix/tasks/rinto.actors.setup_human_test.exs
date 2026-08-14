@@ -13,13 +13,29 @@ defmodule Mix.Tasks.Rinto.Actors.SetupHumanTest do
     :ok
   end
 
-  test "creates the human actor and issues it a token" do
+  test "creates the human actor" do
     run(["--name", "Kenton"])
 
     assert {:ok, human} = Actors.get_unique_human()
     assert human.name == "Kenton"
-    assert {:ok, ^human} = Actors.authenticate(human.token)
-    assert output() =~ human.token
+  end
+
+  # The token is agreed in advance and configured on both ends, so this task
+  # has none to invent and none to print.
+  test "issues nothing and prints no token" do
+    run(["--name", "Kenton"])
+
+    refute output() =~ Actors.configured_token()
+  end
+
+  test "says where the token comes from when the server has none" do
+    previous = Application.get_env(:rinto_pmo, Actors)
+    Application.put_env(:rinto_pmo, Actors, token: nil)
+    on_exit(fn -> Application.put_env(:rinto_pmo, Actors, previous) end)
+
+    run([])
+
+    assert output() =~ "RINTO_TOKEN"
   end
 
   # A document created without a project is filed here, so an installation
@@ -44,21 +60,7 @@ defmodule Mix.Tasks.Rinto.Actors.SetupHumanTest do
     assert id == existing.id
   end
 
-  # The tie is a question about identity, and should not also leave the system
-  # with nowhere to put documents.
-  test "creates the default project even when it cannot choose a person" do
-    {:ok, _first} = Actors.create_actor(%{kind: :human, name: "First"})
-    {:ok, _second} = Actors.create_actor(%{kind: :human, name: "Second"})
-
-    assert_raise Mix.Error, fn -> run([]) end
-
-    assert %{slug: "personal"} = Projects.get_default_project()
-  end
-
-  # The usual reason to run this a second time is having closed the terminal
-  # the token was printed in. Rotating then would log out the editor and the
-  # CLI to solve a problem neither of them had.
-  test "running it again prints the same token rather than replacing it" do
+  test "running it again changes nothing" do
     run([])
     {:ok, first} = Actors.get_unique_human()
 
@@ -66,76 +68,38 @@ defmodule Mix.Tasks.Rinto.Actors.SetupHumanTest do
 
     assert {:ok, again} = Actors.get_unique_human()
     assert again.id == first.id
-    assert again.token == first.token
-    assert output() =~ first.token
+    assert length(Actors.list_actors()) == 1
   end
 
-  test "--rotate replaces the token" do
-    run([])
-    {:ok, first} = Actors.get_unique_human()
-
-    run(["--rotate"])
-
-    assert {:ok, rotated} = Actors.get_unique_human()
-    assert rotated.id == first.id
-    assert rotated.token != first.token
-    assert Actors.authenticate(first.token) == {:error, :unauthorized}
-  end
-
-  test "adopts a human that exists but has no token" do
+  test "adopts a human that is already there" do
     {:ok, existing} = Actors.create_actor(%{kind: :human, name: "Already Here"})
 
     run([])
 
     assert {:ok, adopted} = Actors.get_unique_human()
     assert adopted.id == existing.id
-    assert {:ok, _found} = Actors.authenticate(adopted.token)
   end
 
-  # Issuing to the wrong one would attribute a person's decisions to somebody
-  # else, so it names the candidates and stops.
-  test "refuses to choose between two people" do
+  # There is a single token, so there is a single caller, and nothing here for
+  # a tie to be between. It says which of them requests are answered as.
+  test "names the owner rather than refusing when there are several humans" do
     {:ok, first} = Actors.create_actor(%{kind: :human, name: "First"})
-    {:ok, second} = Actors.create_actor(%{kind: :human, name: "Second"})
+    {:ok, _second} = Actors.create_actor(%{kind: :human, name: "Second"})
 
-    assert_raise Mix.Error, fn -> run([]) end
+    run([])
 
-    assert is_nil(RintoPMO.Repo.reload!(first).token)
-    assert is_nil(RintoPMO.Repo.reload!(second).token)
+    printed = output()
+    assert printed =~ "2 human actors"
+    assert printed =~ first.id
   end
 
-  # The only way out of that tie: the API endpoint cannot help, because it
-  # needs the token being asked for.
-  test "--actor-id answers the tie" do
-    {:ok, first} = Actors.create_actor(%{kind: :human, name: "First"})
-    {:ok, second} = Actors.create_actor(%{kind: :human, name: "Second"})
+  test "creates no third human when there are already two" do
+    {:ok, _first} = Actors.create_actor(%{kind: :human, name: "First"})
+    {:ok, _second} = Actors.create_actor(%{kind: :human, name: "Second"})
 
-    run(["--actor-id", second.id])
+    run([])
 
-    assert is_nil(RintoPMO.Repo.reload!(first).token)
-    assert {:ok, chosen} = Actors.authenticate(RintoPMO.Repo.reload!(second).token)
-    assert chosen.id == second.id
-  end
-
-  test "--actor-id refuses an AI, whatever the tie looks like" do
-    {:ok, ai} =
-      Actors.create_actor(%{
-        kind: :ai,
-        name: "Architect",
-        provider: "provider",
-        model: "model",
-        thinking_level: "high"
-      })
-
-    assert_raise Mix.Error, ~r/is an AI actor/, fn -> run(["--actor-id", ai.id]) end
-
-    assert is_nil(RintoPMO.Repo.reload!(ai).token)
-  end
-
-  test "--actor-id reports an id that names nobody" do
-    assert_raise Mix.Error, ~r/no actor with id/, fn ->
-      run(["--actor-id", UUIDv7.generate()])
-    end
+    assert length(Actors.list_actors()) == 2
   end
 
   # `Mix.Task.run("app.start")` is a no-op under the test runner, so calling

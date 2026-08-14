@@ -16,6 +16,19 @@ if System.get_env("SHELL") in [nil, ""] do
   System.put_env("SHELL", "/bin/sh")
 end
 
+# The token every request carries. It is agreed in advance rather than issued:
+# the same value goes here and into the configuration of each thing that calls
+# this API, because there is no way to distribute it from here -- every client
+# reads its own copy from its own file. See `RintoPMO.Actors`.
+#
+# Absent is a valid state and not a default-open one: a server with no token
+# refuses every request, which is what an installation nobody has configured
+# should do. `:test` is skipped so that a developer's own `RINTO_TOKEN` cannot
+# quietly become what the suite authenticates with.
+if config_env() != :test do
+  config :rinto_pmo, RintoPMO.Actors, token: System.get_env("RINTO_TOKEN")
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
@@ -52,17 +65,11 @@ if config_env() == :prod do
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
       ip: {0, 0, 0, 0, 0, 0, 0, 0}
     ],
-    secret_key_base: secret_key_base
-
-  # ## Using releases
-  #
-  # If you are doing OTP releases, you need to instruct Phoenix
-  # to start each relevant endpoint:
-  #
-  #     config :rinto_pmo_web, RintoPMOWeb.Endpoint, server: true
-  #
-  # Then you can assemble a release by calling `mix release`.
-  # See `mix help release` for more information.
+    secret_key_base: secret_key_base,
+    # A release does not run `mix phx.server`, so nothing else would ever tell
+    # the endpoint to listen. Without this the release boots, stays up, and
+    # answers nothing -- which looks exactly like a network problem.
+    server: true
 
   # ## SSL Support
   #

@@ -14,12 +14,17 @@ Rinto 里的 Task 是要交付的工作，Document 是这项工作的决策依�
 CLI 首次使用时需要配置 API 和 token：
 
 ```sh
-rinto-pmo config init --api http://localhost:4000/api/v1 --token <TOKEN>
+rinto-pmo config init
 ```
 
-token 由服务端管理员执行 `mix rinto.actors.setup_human` 打印出来，**每个请求都要带它**，
+它会一步步问 API 地址和 token（输入 token 时不回显）。API 地址直接回车即可 ——
+默认就是 `https://pmo-api.kenton.wang/api/v1`，只有指向本地服务时才需要覆盖。
+token 是**提前约定好的值** —— 服务端启动时以 `RINTO_TOKEN` 拿到的那一个，
+向部署它的人要。**每个请求都要带它**，
 没有它服务端一条接口都不会回应。`config init` 会用这个 token 反查 `/actors/me`
 确认它有效，然后把 API 地址、token 和用户 id 写进 CLI 配置文件（权限 0600）。
+
+非交互场景（脚本、CI）仍可以用 `--api` 和 `--token` 直接传。
 
 后续命令自动读取，不要手工拼 actor id，也不要把远程 AI actor 当成本地执行者。
 可以用 `rinto-pmo config show` 检查当前配置 —— 它只会显示 token 是否配好，不会打印 token 本身。
