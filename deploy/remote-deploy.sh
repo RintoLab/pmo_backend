@@ -51,8 +51,14 @@ say() { printf '\n=== %s\n' "$1"; }
 # a deploy on. Each KEY=value is its own argv element, so a value with a space in
 # it stays one value. HOME is included because runuser leaves root's, and `deploy`
 # cannot read /root.
+#
+# Run from the release directory, in a subshell so this script keeps its own cwd.
+# The staging directory is root-owned and 0700, so a child running as `deploy`
+# inherits a cwd it cannot even stat -- and a VM whose getcwd() returns EACCES
+# dies during boot with a cascade about `code_server` that says nothing about
+# directories.
 as_service() {
-  runuser -u "${service_user}" -- env "${service_env[@]}" "$@"
+  ( cd "${root}" && runuser -u "${service_user}" -- env "${service_env[@]}" "$@" )
 }
 
 test "$(id -u)" = 0 || { echo "this has to run as root" >&2; exit 1; }
@@ -154,10 +160,15 @@ if ! as_service "${root}/bin/pmo_backend" eval 'RintoPMO.Release.migrate()'; the
   if as_service "${root}/bin/pmo_backend" eval 'IO.puts("boot ok")'; then
     echo "it boots, so the failure is in the migration itself -- see above" >&2
   else
-    echo "it does not boot: config/runtime.exs raised. Anything above about" >&2
-    echo "code_server or persistent_term is the logger failing to report that," >&2
-    echo "not the problem. It was handed these variables:" >&2
+    echo "it does not boot at all, so this is the environment rather than the" >&2
+    echo "migration. Anything above about code_server or persistent_term is a" >&2
+    echo "logger that is not up yet failing to report the real error." >&2
+    echo "" >&2
+    echo "it ran as ${service_user} from ${root} with these variables:" >&2
     printf '  %s\n' "${service_env[@]%%=*}" >&2
+    echo "compare with the same thing as root, which reports properly:" >&2
+    echo "  (cd ${root} && env $(printf '%s ' "${service_env[@]%%=*}" | sed 's/[A-Za-z_][A-Za-z0-9_]*/&=.../g')\\" >&2
+    echo "     ${root}/bin/pmo_backend eval 'IO.puts(\"ok\")')" >&2
   fi
   exit 1
 fi
