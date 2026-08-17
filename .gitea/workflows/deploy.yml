@@ -41,6 +41,62 @@ jobs:
           esac
           echo "deploying ${VERSION}"
 
+      # Before the build rather than after it. A name set at the wrong level, or
+      # in the wrong tab, reads as an empty string here rather than as an error --
+      # and the first thing that noticed used to be a curl against `https://`
+      # with nothing after it, several minutes of compiling later.
+      #
+      # Names only. Never values: this log is readable by anybody who can see the
+      # run.
+      - name: Check the inputs are all there
+        env:
+          # Read from both tabs, because which of these counts as sensitive is
+          # not this workflow's call: a URL and a username are not credentials,
+          # and an operator who filed them as variables should not have to move
+          # them to satisfy a `${{ }}`.
+          NACOSURL: ${{ vars.NACOSURL || secrets.NACOSURL }}
+          NACOSUSER: ${{ vars.NACOSUSER || secrets.NACOSUSER }}
+          NACOSNAMESPACE: ${{ vars.NACOSNAMESPACE || secrets.NACOSNAMESPACE }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST || secrets.DEPLOY_HOST }}
+          # These two are credentials and are read from secrets only. Variables
+          # are shown in the UI in the clear, so accepting one here would be
+          # inviting a private key into a plaintext field.
+          NACOSPASS: ${{ secrets.NACOSPASS }}
+          DEPLOY_PRIVATE_KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in NACOSURL NACOSUSER NACOSPASS NACOSNAMESPACE \
+                      DEPLOY_HOST DEPLOY_PRIVATE_KEY; do
+            test -n "${!name:-}" || missing="${missing} ${name}"
+          done
+
+          if [ -n "${missing}" ]; then
+            echo "empty or not set:${missing}" >&2
+            echo "" >&2
+            echo "NACOSURL, NACOSUSER, NACOSNAMESPACE and DEPLOY_HOST are read" >&2
+            echo "from either tab -- variables or secrets, whichever you used." >&2
+            echo "NACOSPASS and DEPLOY_PRIVATE_KEY are read from secrets only," >&2
+            echo "because variables are shown in the clear." >&2
+            exit 1
+          fi
+
+          case "${NACOSURL}" in
+            http://* | https://*) ;;
+            *)
+              echo "NACOSURL has to start with http:// or https://" >&2
+              exit 1
+              ;;
+          esac
+          case "${NACOSURL}" in
+            */nacos | */nacos/)
+              echo "NACOSURL must not include the /nacos suffix; the paths add it" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "all six inputs present"
+
       # The hexpm image carries Erlang and Elixir and nothing else. `erlexec`
       # compiles a C port program, so a toolchain is needed as well as the ssh
       # client this job ships with.
@@ -57,6 +113,7 @@ jobs:
           TOKEN: ${{ secrets.GITEA_TOKEN }}
           SERVER: ${{ github.server_url }}
           REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -64,8 +121,20 @@ jobs:
           host="${SERVER#*://}"
           git init -q .
           git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${REPO}.git"
-          git fetch -q --depth 1 origin "${SHA}"
+
+          # The ref rather than the sha: fetching a bare object id needs the
+          # server to allow unadvertised wants, which is not something to depend
+          # on. A ref always works, and the sha is then asserted rather than
+          # trusted -- if they disagree the tag moved between the trigger and
+          # this fetch, and what gets deployed should not be a surprise.
+          git fetch -q --depth 1 origin "${REF}"
           git checkout -q FETCH_HEAD
+
+          got="$(git rev-parse HEAD)"
+          test "${got}" = "${SHA}" || {
+            echo "${REF} is at ${got}, but this run was triggered for ${SHA}" >&2
+            exit 1
+          }
 
       - name: Build the release
         env:
@@ -89,10 +158,10 @@ jobs:
       # side, not parsed as YAML or JSON.
       - name: Fetch the environment from r-nacos
         env:
-          NACOS_URL: ${{ secrets.NACOSURL }}
-          NACOS_USER: ${{ secrets.NACOSUSER }}
+          NACOS_URL: ${{ vars.NACOSURL || secrets.NACOSURL }}
+          NACOS_USER: ${{ vars.NACOSUSER || secrets.NACOSUSER }}
+          NACOS_NAMESPACE: ${{ vars.NACOSNAMESPACE || secrets.NACOSNAMESPACE }}
           NACOS_PASS: ${{ secrets.NACOSPASS }}
-          NACOS_NAMESPACE: ${{ vars.NACOSNAMESPACE }}
           # The group names the project and the dataId is the file's own name,
           # so both are conventions rather than settings.
           NACOS_GROUP: ${{ vars.NACOS_GROUP || 'PMO_BE' }}
@@ -154,7 +223,7 @@ jobs:
       - name: Ship it and deploy
         env:
           KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
-          HOST: ${{ secrets.DEPLOY_HOST }}
+          HOST: ${{ vars.DEPLOY_HOST || secrets.DEPLOY_HOST }}
           # root: the same key logs in as root and as `deploy`, and the deploy
           # installs the unit and the drop-in itself rather than asking for a
           # sudoers entry. Only the transport is root -- the service runs as
