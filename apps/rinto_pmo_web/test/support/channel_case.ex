@@ -29,10 +29,15 @@ defmodule RintoPMOWeb.ChannelCase do
   end
 
   @doc """
-  A connected socket carrying `actor`'s token, as a real client would have.
+  A connected socket carrying the configured token, as a real client would.
+
+  Takes an actor for the sake of reading like the thing it stands for, but the
+  token names nobody: it is one configured value, and the connection is
+  whichever human `RintoPMO.Actors.get_owner/0` finds.
   """
-  def connect_as(actor) do
-    {:ok, socket} = connect(RintoPMOWeb.PiSocket, %{"token" => actor.token})
+  def connect_as(_actor) do
+    {:ok, socket} =
+      connect(RintoPMOWeb.PiSocket, %{"token" => RintoPMO.Actors.configured_token()})
 
     socket
   end
@@ -53,15 +58,12 @@ defmodule RintoPMOWeb.ChannelCase do
   def current_actor, do: Process.get(__MODULE__) || raise("the case set up no actor")
 
   # Every connection is behind a token, so a case that set none up could only
-  # test being refused. The ones that do test that build their own actor.
+  # test being refused. The token is configuration; what has to exist here is
+  # the human it resolves to.
   setup tags do
     RintoPMO.DataCase.setup_sandbox(tags)
 
-    actor =
-      RintoPMO.Factory.insert(:actor,
-        kind: :human,
-        token: RintoPMO.Actors.generate_token()
-      )
+    actor = RintoPMO.Factory.insert(:actor, kind: :human)
 
     Process.put(__MODULE__, actor)
 

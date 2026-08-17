@@ -7,7 +7,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     bad_request: {400, "The request is invalid.", %{parameter: "limit", reason: "is invalid"}},
     unauthorized: {401, "The request carries no valid actor token.", %{}},
     token_not_configured:
-      {401, "No actor has been issued a token yet. Run `mix rinto.actors.setup_human`.", %{}},
+      {401, "The server was started without RINTO_TOKEN, so it can answer nothing.", %{}},
+    human_actor_missing:
+      {401, "This installation has no human actor. Run `mix rinto.actors.setup_human`.", %{}},
     not_found: {404, "The requested resource was not found.", %{}},
     image_too_large:
       {413, "The image exceeds the size accepted for inline use.",

@@ -1,0 +1,201 @@
+# Build in a pinned container on the builder, ship to the runner machine over
+# ssh, take configuration from r-nacos on the way.
+#
+# The image is set explicitly rather than left to whatever the runner label
+# resolves to, because the release bundles ERTS: a release built against one
+# glibc will not start against another. `BUILD_IMAGE` has to match the runner
+# machine's distribution -- see docs/deployment.md.
+#
+# The checkout is a hand-written `git fetch` with the job's own short-lived
+# GITEA_TOKEN rather than `uses: actions/checkout@v4`, which would need the
+# runner to download that action from github.com. If this builder can reach
+# github.com -- it must, to have pulled the image above from Docker Hub -- then
+# `uses: actions/checkout@v4` works too and is shorter. See docs/deployment.md.
+
+name: Deploy
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: amd64
+    container:
+      image: ${{ vars.BUILD_IMAGE || 'hexpm/elixir:1.20.2-erlang-29.0.4-debian-trixie-20260713-slim' }}
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      # Checked against a charset rather than trusted: it is only used for log
+      # lines today, but an empty one would mean a manual run of this workflow
+      # produced no record of what it deployed.
+      - name: Resolve what is being deployed
+        run: |
+          set -euo pipefail
+          case "${VERSION}" in
+            '' | *[!a-zA-Z0-9._-]* | -* | .*)
+              echo "refusing version \"${VERSION}\"" >&2
+              exit 1
+              ;;
+          esac
+          echo "deploying ${VERSION}"
+
+      # The hexpm image carries Erlang and Elixir and nothing else. `erlexec`
+      # compiles a C port program, so a toolchain is needed as well as the ssh
+      # client this job ships with.
+      - name: Install what the image does not carry
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential git openssh-client curl ca-certificates
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Check out the revision being deployed
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          scheme="${SERVER%%://*}"
+          host="${SERVER#*://}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${REPO}.git"
+          git fetch -q --depth 1 origin "${SHA}"
+          git checkout -q FETCH_HEAD
+
+      - name: Build the release
+        env:
+          MIX_ENV: prod
+        run: |
+          set -euo pipefail
+          mix local.hex --force --if-missing
+          mix local.rebar --force --if-missing
+          mix deps.get --only prod
+          mix compile
+          mix release --overwrite
+          tar -czf release.tar.gz -C _build/prod/rel/pmo_backend .
+          sha256sum release.tar.gz > release.tar.gz.sha256
+
+      # Pulled here rather than on the runner machine, so that machine never
+      # holds r-nacos credentials -- it receives the rendered result and nothing
+      # else.
+      #
+      # `type=text` on the r-nacos side: the entry is read back verbatim and
+      # rendered into `Environment=` lines in a systemd drop-in on the other
+      # side, not parsed as YAML or JSON.
+      - name: Fetch the environment from r-nacos
+        env:
+          NACOS_URL: ${{ secrets.NACOSURL }}
+          NACOS_USER: ${{ secrets.NACOSUSER }}
+          NACOS_PASS: ${{ secrets.NACOSPASS }}
+          NACOS_NAMESPACE: ${{ vars.NACOSNAMESPACE }}
+          # The group names the project and the dataId is the file's own name,
+          # so both are conventions rather than settings.
+          NACOS_GROUP: ${{ vars.NACOS_GROUP || 'PMO_BE' }}
+          NACOS_DATA_ID: ${{ vars.NACOS_DATA_ID || '.env' }}
+        run: |
+          set -euo pipefail
+          base="${NACOS_URL%/}"
+
+          # r-nacos only serves this when RNACOS_ENABLE_OPEN_API_AUTH=true, so
+          # the status code is read rather than just the body: "there is no
+          # login endpoint" and "your password is wrong" are different answers
+          # and only one of them is safe to carry on from.
+          body="$(mktemp)"
+          code="$(curl -so "${body}" -w '%{http_code}' \
+            -X POST "${base}/nacos/v1/auth/login" \
+            --data-urlencode "username=${NACOS_USER}" \
+            --data-urlencode "password=${NACOS_PASS}")" || true
+          case "${code:-000}" in
+            000)
+              echo "could not reach r-nacos at ${base}" >&2
+              exit 1
+              ;;
+            200)
+              token="$(sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p' "${body}")"
+              test -n "${token}" || {
+                echo "r-nacos accepted the login but returned no accessToken" >&2
+                exit 1
+              }
+              echo "authenticated against r-nacos"
+              ;;
+            404)
+              token=""
+              echo "no login endpoint; assuming RNACOS_ENABLE_OPEN_API_AUTH=false"
+              ;;
+            *)
+              echo "r-nacos refused the login (HTTP ${code}); check NACOSUSER and NACOSPASS" >&2
+              exit 1
+              ;;
+          esac
+          rm -f "${body}"
+
+          umask 077
+          curl -fsS --get "${base}/nacos/v1/cs/configs" \
+            --data-urlencode "dataId=${NACOS_DATA_ID}" \
+            --data-urlencode "group=${NACOS_GROUP}" \
+            --data-urlencode "tenant=${NACOS_NAMESPACE}" \
+            ${token:+--data-urlencode "accessToken=${token}"} \
+            -o env
+
+          test -s env || {
+            echo "r-nacos returned nothing for ${NACOS_DATA_ID} in ${NACOS_NAMESPACE}/${NACOS_GROUP}" >&2
+            exit 1
+          }
+          # Never the values: this log is readable by anybody who can see the run.
+          echo "fetched $(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' env) variables:"
+          grep -oE '^[A-Za-z_][A-Za-z0-9_]*' env | sort | tr '\n' ' '
+          echo ""
+
+      - name: Ship it and deploy
+        env:
+          KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          # root: the same key logs in as root and as `deploy`, and the deploy
+          # installs the unit and the drop-in itself rather than asking for a
+          # sudoers entry. Only the transport is root -- the service runs as
+          # `deploy`, see deploy/pmo_backend.service.
+          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'root' }}
+          PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+        run: |
+          set -euo pipefail
+          umask 077
+          ssh_dir="$(mktemp -d)"
+          trap 'rm -rf "${ssh_dir}"' EXIT
+          printf '%s\n' "${KEY}" > "${ssh_dir}/id"
+          chmod 600 "${ssh_dir}/id"
+
+          # The host key is accepted rather than verified. Both machines are on
+          # the same intranet, so pinning would buy a MITM defence nobody needs
+          # at the cost of a deploy that breaks whenever the target is rebuilt.
+          #
+          # To harden: put `ssh-keyscan -H <host>` output in a DEPLOY_KNOWN_HOSTS
+          # secret written to "${ssh_dir}/known_hosts", and use
+          # StrictHostKeyChecking=yes against it.
+          ssh_opts=(-i "${ssh_dir}/id" -p "${PORT}"
+                    -o UserKnownHostsFile=/dev/null
+                    -o StrictHostKeyChecking=accept-new
+                    -o IdentitiesOnly=yes
+                    -o BatchMode=yes)
+          remote="${DEPLOY_USER}@${HOST}"
+          staging="/tmp/pmo_backend-deploy"
+
+          ssh "${ssh_opts[@]}" "${remote}" \
+            "rm -rf '${staging}' && mkdir -p '${staging}' && chmod 700 '${staging}'"
+          scp "${ssh_opts[@]}" \
+            release.tar.gz release.tar.gz.sha256 env \
+            deploy/remote-deploy.sh deploy/pmo_backend.service \
+            "${remote}:${staging}/"
+          ssh "${ssh_opts[@]}" "${remote}" \
+            "chmod 700 '${staging}/remote-deploy.sh' && chmod 600 '${staging}/env' && \
+             '${staging}/remote-deploy.sh' '${VERSION}'"
+
+      # The rendered environment is the one thing in this workspace worth
+      # deleting whatever happened. The release tarball is not a secret; this is.
+      - name: Forget the environment
+        if: always()
+        run: shred -u env 2>/dev/null || rm -f env

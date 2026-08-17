@@ -133,46 +133,16 @@ defmodule RintoPMO.Actors.ActorTest do
     refute :project_id in Actor.__schema__(:fields)
   end
 
-  test "carries no authentication beyond the token" do
+  # An actor is a record of who somebody is, never of how they prove it. The
+  # token is configuration on the server, which is what makes every field here
+  # safe to render to anybody `GET /actors` answers.
+  test "carries no credential at all" do
     fields = Actor.__schema__(:fields)
 
+    refute :token in fields
     refute :password in fields
     refute :credential_id in fields
     refute :api_key in fields
-  end
-
-  describe "token_changeset/2" do
-    test "a request body cannot write a token" do
-      changeset = Actor.changeset(%{kind: :human, name: "Human", token: "smuggled"})
-
-      assert changeset.valid?
-      refute Ecto.Changeset.get_field(changeset, :token)
-    end
-
-    test "issues a token to a human" do
-      human = %Actor{kind: :human, name: "Human"}
-
-      changeset = Actor.token_changeset(human, "a-token")
-
-      assert changeset.valid?
-      assert Ecto.Changeset.get_field(changeset, :token) == "a-token"
-    end
-
-    test "refuses to issue one to an AI" do
-      ai = %Actor{kind: :ai, name: "Architect"}
-
-      changeset = Actor.token_changeset(ai, "a-token")
-
-      refute changeset.valid?
-      assert %{token: ["belongs to a human"]} = errors_on(changeset)
-    end
-
-    test "clears one whatever the kind" do
-      ai = %Actor{kind: :ai, name: "Architect"}
-
-      assert Actor.token_changeset(ai, nil).valid?
-      assert Actor.token_changeset(%Actor{kind: :human, name: "Human"}, nil).valid?
-    end
   end
 
   defp valid_ai_attrs do

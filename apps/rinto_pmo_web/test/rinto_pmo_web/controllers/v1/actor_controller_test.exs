@@ -1,7 +1,6 @@
 defmodule RintoPMOWeb.V1.ActorControllerTest do
   use RintoPMOWeb.ConnCase, async: true
 
-  alias RintoPMO.Actors
   alias RintoPMO.Actors.Actor
   alias RintoPMO.ActorsMock
 
@@ -35,35 +34,10 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
     end
   end
 
-  describe "PUT /api/v1/actors/me/token" do
-    test "issues a new token and returns it once", %{conn: conn, current_actor: actor} do
-      conn = put(conn, ~p"/api/v1/actors/me/token")
-
-      assert %{"token" => issued, "actor_id" => actor_id} = json_response(conn, 200)["data"]
-      assert actor_id == actor.id
-      assert issued != actor.token
-      assert {:ok, _actor} = Actors.authenticate(issued)
-    end
-
-    test "the old token stops working", %{conn: conn, current_actor: actor} do
-      assert %{"token" => _issued} =
-               conn |> put(~p"/api/v1/actors/me/token") |> json_response(200) |> Map.get("data")
-
-      assert Actors.authenticate(actor.token) == {:error, :unauthorized}
-    end
-
-    # A token somebody can choose is a token somebody eventually chooses badly,
-    # and this one is the whole of authentication.
-    test "ignores a token the caller tries to choose", %{conn: conn} do
-      mine = String.duplicate("k", 40)
-
-      conn = put(conn, ~p"/api/v1/actors/me/token", %{"token" => mine})
-
-      assert %{"token" => issued} = json_response(conn, 200)["data"]
-      assert issued != mine
-      assert Actors.authenticate(mine) == {:error, :unauthorized}
-      assert {:ok, _found} = Actors.authenticate(issued)
-    end
+  # Nothing rotates a token here: it is configuration on both sides, and
+  # replacing it means editing those files and restarting.
+  test "there is no endpoint that changes the token", %{conn: conn} do
+    assert put(conn, "/api/v1/actors/me/token").status == 404
   end
 
   describe "authentication" do
@@ -76,22 +50,20 @@ defmodule RintoPMOWeb.V1.ActorControllerTest do
     test "refuses a request carrying the wrong token" do
       conn =
         build_conn()
-        |> put_req_header("authorization", "Bearer #{Actors.generate_token()}")
+        |> put_req_header("authorization", "Bearer not-the-configured-token")
         |> get(~p"/api/v1/actors/me")
 
       assert %{"error" => "unauthorized"} = json_response(conn, 401)
     end
 
-    # A database nobody has run `mix rinto.actors.setup_human` against. Set up
-    # by emptying the column rather than through the API, because there is no
-    # endpoint that takes a token away -- an actor without one could not ask
-    # for another.
-    test "says so when nobody has been issued a token at all" do
-      RintoPMO.Repo.update_all(Actor, set: [token: nil])
+    # The token is right; there is simply nobody for the request to be. A
+    # database nobody has run `mix rinto.actors.setup_human` against.
+    test "says so when there is no human to answer as", %{conn: conn} do
+      RintoPMO.Repo.delete_all(Actor)
 
-      conn = get(build_conn(), ~p"/api/v1/actors/me")
+      conn = get(conn, ~p"/api/v1/actors/me")
 
-      assert %{"error" => "token_not_configured"} = json_response(conn, 401)
+      assert %{"error" => "human_actor_missing"} = json_response(conn, 401)
     end
   end
 

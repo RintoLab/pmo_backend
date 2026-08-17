@@ -6,11 +6,21 @@ info:
 
 
     Every endpoint requires the actor token as `Authorization: Bearer <token>`.
-    There are no anonymous routes and nothing to bootstrap from over HTTP: the
-    server operator issues the token on the machine with
-    `mix rinto.actors.setup_human`, which prints it. This system assumes a
-    single person operating it, so the token answers "who is calling" outright
-    and there is no session to establish.
+    There are no anonymous routes and nothing to bootstrap from over HTTP.
+
+
+    The token is configuration, not something this API issues: one value agreed
+    in advance, given to the server as `RINTO_TOKEN` and written by hand into
+    the configuration of each client that calls it. Nothing hands it out and
+    nothing rotates it -- rotating means changing the agreed value and
+    restarting what holds it. There is correspondingly no endpoint that returns
+    or replaces a token.
+
+
+    This system assumes a single person operating it, so one token is all of
+    authentication: it says a request may be answered, and who it is answered
+    as is the human actor this installation was set up for
+    (`mix rinto.actors.setup_human`). There is no session to establish.
 
 
     The token also supplies human attribution. `POST /attachments`,
@@ -123,37 +133,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ActorResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /actors/me/token:
-    put:
-      tags: [Actors]
-      operationId: rotateActorToken
-      summary: Replace the caller's token
-      description: >
-        Rotating requires the token being replaced, so there is no recovery
-        path here: an actor that has lost its token gets a new one from
-        `mix rinto.actors.setup_human --rotate` on the server.
-
-
-        Takes no body. A token a caller could choose is a token somebody
-        eventually chooses badly, and this one is the whole of authentication --
-        no rate limit in front of it and no second factor behind it. Generating
-        is the only way in, so its strength is not a decision anybody has to
-        get right.
-
-
-        The new token is in this response and nowhere else. The old one stops
-        working immediately, and any open WebSocket carrying it is
-        disconnected -- a replaced token must not go on working merely because
-        it is already attached to something.
-      responses:
-        "200":
-          description: The new token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ActorTokenResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
   /actors/{id}:
@@ -2055,10 +2034,14 @@ components:
       type: http
       scheme: bearer
       description: >
-        The actor token, issued by `mix rinto.actors.setup_human` on the
-        server. Only the `Bearer` scheme is read: a bare token in the header,
-        or one in the query string, would end up in access logs and in the
-        shell history of anyone who copied the URL.
+        The token the server was started with as `RINTO_TOKEN`. It is agreed in
+        advance rather than issued, so a client is configured with it by hand
+        -- `rinto-pmo config init` asks for it -- and no endpoint returns one.
+
+
+        Only the `Bearer` scheme is read: a bare token in the header, or one in
+        the query string, would end up in access logs and in the shell history
+        of anyone who copied the URL.
   requestBodies:
     ProjectCreate:
       required: true
@@ -2309,12 +2292,18 @@ components:
             $ref: "#/components/schemas/APIError"
     Unauthorized:
       description: >
-        `unauthorized`: the request carried no token, or one nobody holds.
-        `token_not_configured`: nobody has been issued a token at all, so this
-        is a server that has not had `mix rinto.actors.setup_human` run against
-        it. The two are told apart deliberately -- an installation with no
-        token has nothing in it for the distinction to give away, and saying so
-        saves an afternoon.
+        Three codes, because they are three different people's problems.
+        `unauthorized`: the request carried no token, or not the configured one
+        -- the caller's. `token_not_configured`: the server was started without
+        `RINTO_TOKEN`, so it has nothing to check against and answers nothing.
+        `human_actor_missing`: the token is right, but nobody has run
+        `mix rinto.actors.setup_human` against this database, so there is no
+        person for the request to be answered as.
+
+
+        Told apart deliberately. The two operator-facing codes describe an
+        installation with nothing in it to protect, and saying so saves an
+        afternoon of looking for a client bug.
       content:
         application/json:
           schema:
@@ -2591,27 +2580,6 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/Actor"
-      additionalProperties: false
-    ActorTokenResponse:
-      type: object
-      required: [data]
-      properties:
-        data:
-          type: object
-          required: [actor_id, token]
-          properties:
-            actor_id:
-              type: string
-              format: uuid
-            token:
-              type: string
-              description: >
-                The only response that carries a token. It is deliberately not
-                part of the ordinary actor payload: `GET /actors` renders every
-                actor to anybody holding a token, and an actor payload that
-                sometimes contains a credential is one refactor away from being
-                logged.
-          additionalProperties: false
       additionalProperties: false
     ActorListResponse:
       type: object

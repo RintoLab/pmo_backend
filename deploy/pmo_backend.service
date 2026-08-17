@@ -1,0 +1,45 @@
+; Installed once, by root:
+;
+;   install -m 644 deploy/pmo_backend.service /etc/systemd/system/
+;   install -d -o deploy -g deploy -m 755 /etc/systemd/system/pmo_backend.service.d
+;   systemctl daemon-reload
+;   systemctl enable pmo_backend
+;
+; After that the deploy only ever writes the drop-in and restarts. See
+; docs/deployment.md.
+;
+; There is no environment in this file. Every variable arrives in
+; pmo_backend.service.d/10-env.conf, which the deploy renders from r-nacos --
+; the drop-in directory is owned by `deploy` so that needs no root. A unit with
+; no drop-in has no DATABASE_URL and will refuse to start, which is the right
+; answer for a machine nothing has been deployed to yet.
+
+[Unit]
+Description=PMO Backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+; The same account the deploy arrives over ssh as, so there is one owner for the
+; release directory and no group permissions to get wrong. It is also why the
+; deploy writing the drop-in is not a privilege escalation: the values it can
+; set are read by a service running as itself.
+User=deploy
+Group=deploy
+WorkingDirectory=/apps/pmo_backend
+
+ExecStart=/apps/pmo_backend/bin/pmo_backend start
+ExecStop=/apps/pmo_backend/bin/pmo_backend stop
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/apps/pmo_backend
+
+[Install]
+WantedBy=multi-user.target

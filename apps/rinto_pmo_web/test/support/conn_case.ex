@@ -36,27 +36,34 @@ defmodule RintoPMOWeb.ConnCase do
   end
 
   @doc """
-  Puts `actor`'s token on a connection.
+  Puts the configured token on a connection.
+
+  There is only one, and it belongs to nobody in particular: it says a request
+  may be answered, and who that makes the caller is
+  `RintoPMO.Actors.get_owner/0`'s answer rather than anything the header
+  carries.
   """
-  def authenticate(conn, actor) do
-    Plug.Conn.put_req_header(conn, "authorization", "Bearer #{actor.token}")
+  def authenticate(conn) do
+    Plug.Conn.put_req_header(
+      conn,
+      "authorization",
+      "Bearer #{RintoPMO.Actors.configured_token()}"
+    )
   end
 
   # Every route is behind `RintoPMOWeb.Plugs.ActorToken`, so an unauthenticated
   # `conn` would test the plug and nothing else. Tests get one that is already
   # somebody, and the ones that are about being refused build their own.
   #
-  # The actor is real rather than mocked: the plug reads `RintoPMO.Actors`
-  # directly, on purpose. See the plug's moduledoc.
+  # The human is real rather than mocked: the plug reads `RintoPMO.Actors`
+  # directly, on purpose. See the plug's moduledoc. It is inserted first so
+  # that it is the earliest human, and so the one every request is answered as
+  # however many actors a test goes on to create.
   setup tags do
     RintoPMO.DataCase.setup_sandbox(tags)
 
-    actor =
-      RintoPMO.Factory.insert(:actor,
-        kind: :human,
-        token: RintoPMO.Actors.generate_token()
-      )
+    actor = RintoPMO.Factory.insert(:actor, kind: :human)
 
-    {:ok, conn: authenticate(Phoenix.ConnTest.build_conn(), actor), current_actor: actor}
+    {:ok, conn: authenticate(Phoenix.ConnTest.build_conn()), current_actor: actor}
   end
 end

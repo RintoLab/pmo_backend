@@ -4,16 +4,31 @@ defmodule RintoPMO.Actors do
 
   ## Who is calling
 
-  `authenticate/1` turns a token into the person holding it, and is the only
-  way anything upstream learns who is making a request. It is deliberately
+  `authenticate/1` decides whether a request is answered at all, and is the
+  only way anything upstream learns who is making one. It is deliberately
   small: this system has one person in it, so there is no session to establish
   and nothing to expire.
 
-  Tokens are stored as they are sent. Hashing them would buy nothing here --
-  the database and the token live on the same machine, under the same person,
-  and being able to read the token back is what makes
-  `mix rinto.actors.setup_human` able to print it a second time instead of
-  forcing a rotation on somebody who merely closed a terminal.
+  ## The token is configuration, not data
+
+  One token, agreed in advance, given to the server as `RINTO_TOKEN` and
+  written by hand into the configuration of everything that calls it -- the
+  CLI, the editor, the browser. Nothing here issues, stores, or hands one out.
+
+  That is what the shape of this system actually is. A token cannot be
+  *distributed* from here: every client keeps its own copy in its own config
+  file, so a copy in the database would be a fourth place to keep in step with
+  the other three rather than the source any of them read. Rotating is the
+  same story -- it happens outside, by changing the agreed value and restarting
+  what holds it, so there is nothing here to rotate.
+
+  ## And who that makes you
+
+  The token says only "the person this installation belongs to", so
+  `get_owner/0` is what turns it into an actor: the earliest-created human,
+  which in a system set up the ordinary way is the only one there is. A second
+  human is a record of a colleague rather than a second way in -- there is one
+  credential, so there is one caller.
   """
 
   use RintoPMO, :context
@@ -35,17 +50,13 @@ defmodule RintoPMO.Actors do
     @callback update_actor(Actor.t(), map()) ::
                 {:ok, Actor.t()} | {:error, Ecto.Changeset.t()}
 
-    # `authenticate/1` and `issue_token/1` are deliberately absent. They are
-    # how the system decides whether to answer at all, and are called on the
-    # real module everywhere -- a test that could stub out authentication would
-    # be testing a build of the application that nobody runs.
+    # `authenticate/1` and `get_owner/0` are deliberately absent. They are how
+    # the system decides whether to answer at all, and are called on the real
+    # module everywhere -- a test that could stub out authentication would be
+    # testing a build of the application that nobody runs.
   end
 
   @behaviour Behaviour
-
-  # 32 bytes because the token is the entire authentication story: there is no
-  # rate limit in front of it and no second factor behind it.
-  @token_bytes 32
 
   @doc """
   Lists all actors.
@@ -112,76 +123,100 @@ defmodule RintoPMO.Actors do
   end
 
   @doc """
-  The person holding `token`.
+  The person calling, given the token the request carried.
 
-  Distinguishes "wrong token" from "no token has ever been issued" because the
-  two have different answers: the first is a client that needs fixing, the
-  second is a server nobody has run `mix rinto.actors.setup_human` against yet,
-  and saying so saves an afternoon. That distinction leaks nothing worth
-  keeping -- an installation with no token has nothing in it to protect.
+  Three refusals rather than one, because they are three different people's
+  problems:
 
-  Candidates are compared in constant time rather than looked up by the unique
-  index, so that the reply time does not report how much of a guessed token was
-  right.
+    * `:token_not_configured` -- the server was started without `RINTO_TOKEN`,
+      so it has nothing to check against and answers nothing. An operator's
+      problem
+    * `:unauthorized` -- the token is absent, malformed, or wrong. The caller's
+      problem
+    * `:human_actor_missing` -- the token is right, but nobody has run
+      `mix rinto.actors.setup_human` against this database, so there is no
+      person to attribute the request to. An operator's problem again
+
+  Saying which leaks nothing worth keeping: the first and third describe an
+  installation that has nothing in it to protect, and the second says only that
+  a guess was wrong.
+
+  The comparison is constant time, so the reply does not report how much of a
+  guessed token was right.
   """
   @spec authenticate(term()) ::
-          {:ok, Actor.t()} | {:error, :unauthorized} | {:error, :token_not_configured}
-  def authenticate(token) when is_binary(token) do
-    case tokened_humans() do
-      [] ->
-        {:error, :token_not_configured}
-
-      humans ->
-        case Enum.find(humans, &secure_equal?(&1.token, token)) do
-          nil -> {:error, :unauthorized}
-          actor -> {:ok, actor}
-        end
-    end
-  end
-
-  def authenticate(_absent_or_malformed) do
-    case tokened_humans() do
-      [] -> {:error, :token_not_configured}
-      _issued -> {:error, :unauthorized}
+          {:ok, Actor.t()}
+          | {:error, :unauthorized}
+          | {:error, :token_not_configured}
+          | {:error, :human_actor_missing}
+  def authenticate(token) do
+    case configured_token() do
+      nil -> {:error, :token_not_configured}
+      configured -> resolve(configured, token)
     end
   end
 
   @doc """
-  Issues a freshly generated token to a human actor.
+  The token this installation answers to, or `nil` if it was given none.
 
-  There is no way to supply one. A token somebody can choose is a token
-  somebody eventually chooses badly, and this is the whole of authentication --
-  no rate limit in front of it, no second factor behind it. Generating is the
-  only path, so its strength is not a decision anybody has to get right.
-
-  Rotating is the same operation as issuing: nothing is revoked separately,
-  because the old token stops working the moment this returns.
+  Configuration, set from `RINTO_TOKEN` in `config/runtime.exs`. A server
+  without one is not a server with an open door: `authenticate/1` refuses
+  everything, because it has nothing to compare against.
   """
-  @spec issue_token(Actor.t()) :: {:ok, Actor.t()} | {:error, Ecto.Changeset.t()}
-  def issue_token(%Actor{} = actor) do
-    actor
-    |> Actor.token_changeset(generate_token())
-    |> Repo.update()
+  @spec configured_token() :: String.t() | nil
+  def configured_token do
+    :rinto_pmo
+    |> Application.get_env(__MODULE__, [])
+    |> Keyword.get(:token)
+    |> presence()
   end
 
   @doc """
-  A fresh token, in a shape that survives being pasted into a shell or a URL.
+  The human this installation belongs to, or `nil` before there is one.
+
+  The earliest-created human, which is the one `mix rinto.actors.setup_human`
+  makes and, in a system set up the ordinary way, the only one there is. Later
+  humans are colleagues on the record rather than callers: there is a single
+  token, so there is a single caller, and picking the first is a definition
+  rather than a guess between candidates.
   """
-  @spec generate_token() :: String.t()
-  def generate_token do
-    @token_bytes |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+  @spec get_owner() :: Actor.t() | nil
+  def get_owner do
+    Actor
+    |> where([actor], actor.kind == :human)
+    |> order_by([actor], asc: actor.inserted_at, asc: actor.id)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  defp resolve(configured, given) when is_binary(given) do
+    if secure_equal?(configured, given), do: owner(), else: {:error, :unauthorized}
+  end
+
+  defp resolve(_configured, _absent_or_malformed), do: {:error, :unauthorized}
+
+  defp owner do
+    case get_owner() do
+      nil -> {:error, :human_actor_missing}
+      actor -> {:ok, actor}
+    end
   end
 
   # `:crypto.hash_equals/2` refuses binaries of different sizes, so length is
-  # checked first. Length is not a secret worth protecting: every token this
-  # system issues is the same size, so a wrong one is wrong on its contents.
-  defp secure_equal?(issued, given) do
-    byte_size(issued) == byte_size(given) and :crypto.hash_equals(issued, given)
+  # checked first. That reveals the configured token's length to somebody
+  # guessing, which is worth less than it sounds: the value is chosen by an
+  # operator rather than found by search, and a wrong one of the right length
+  # is still wrong on its contents.
+  defp secure_equal?(configured, given) do
+    byte_size(configured) == byte_size(given) and :crypto.hash_equals(configured, given)
   end
 
-  defp tokened_humans do
-    Actor
-    |> where([actor], actor.kind == :human and not is_nil(actor.token))
-    |> Repo.all()
+  defp presence(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
   end
+
+  defp presence(_absent), do: nil
 end

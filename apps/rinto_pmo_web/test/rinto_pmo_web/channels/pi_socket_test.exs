@@ -4,8 +4,8 @@ defmodule RintoPMOWeb.PiSocketTest do
   alias RintoPMO.Actors
   alias RintoPMOWeb.PiSocket
 
-  test "connects an actor holding a valid token", %{current_actor: actor} do
-    assert {:ok, socket} = connect(PiSocket, %{"token" => actor.token})
+  test "connects a client carrying the configured token", %{current_actor: actor} do
+    assert {:ok, socket} = connect(PiSocket, %{"token" => Actors.configured_token()})
     assert socket.assigns.current_actor.id == actor.id
   end
 
@@ -14,14 +14,14 @@ defmodule RintoPMOWeb.PiSocketTest do
   end
 
   test "refuses a connection carrying the wrong token" do
-    assert :error = connect(PiSocket, %{"token" => Actors.generate_token()})
+    assert :error = connect(PiSocket, %{"token" => "not-the-configured-token"})
   end
 
-  # Rotating has to reach connections that are already open, or a replaced
-  # token goes on working for as long as a tab stays on the page.
-  test "names the connection after its actor, so it can be hung up on", %{current_actor: actor} do
-    {:ok, socket} = connect(PiSocket, %{"token" => actor.token})
+  # Nothing hangs a connection up today, but the topic is what would: a
+  # connection has to be findable by the person on the other end of it.
+  test "names the connection after its actor", %{current_actor: actor} do
+    {:ok, socket} = connect(PiSocket, %{"token" => Actors.configured_token()})
 
-    assert PiSocket.id(socket) == PiSocket.socket_id(actor.id)
+    assert PiSocket.id(socket) == "actor_socket:#{actor.id}"
   end
 end

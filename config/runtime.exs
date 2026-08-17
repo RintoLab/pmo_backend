@@ -16,6 +16,19 @@ if System.get_env("SHELL") in [nil, ""] do
   System.put_env("SHELL", "/bin/sh")
 end
 
+# The token every request carries. It is agreed in advance rather than issued:
+# the same value goes here and into the configuration of each thing that calls
+# this API, because there is no way to distribute it from here -- every client
+# reads its own copy from its own file. See `RintoPMO.Actors`.
+#
+# Absent is a valid state and not a default-open one: a server with no token
+# refuses every request, which is what an installation nobody has configured
+# should do. `:test` is skipped so that a developer's own `RINTO_TOKEN` cannot
+# quietly become what the suite authenticates with.
+if config_env() != :test do
+  config :rinto_pmo, RintoPMO.Actors, token: System.get_env("RINTO_TOKEN")
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
@@ -47,22 +60,28 @@ if config_env() == :prod do
       """
 
   config :rinto_pmo_web, RintoPMOWeb.Endpoint,
+    # The external address this is reached at, through the reverse proxy in
+    # front of it. Only `url/1` and verified routes read it, and this API
+    # returns ids rather than links, so a wrong value is cosmetic -- but
+    # `example.com` was worse than cosmetic to leave lying in the config.
+    url: [host: System.get_env("PHX_HOST") || "localhost", port: 443, scheme: "https"],
     http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
+      # All interfaces, and it has to stay that way: the reverse proxy in front
+      # of this connects from off the box. Loopback here would answer the
+      # deploy's own health check and nothing else, which is the worst shape a
+      # misconfiguration can take -- green pipeline, dead service.
+      #
+      # This is the IPv6 wildcard, which accepts IPv4 too on any system with
+      # `net.ipv6.bindv6only=0` (the default on Debian and Ubuntu). If the proxy
+      # can reach the port but gets connection refused, that setting is the
+      # first thing to check; `{0, 0, 0, 0}` forces IPv4-only.
       ip: {0, 0, 0, 0, 0, 0, 0, 0}
     ],
-    secret_key_base: secret_key_base
-
-  # ## Using releases
-  #
-  # If you are doing OTP releases, you need to instruct Phoenix
-  # to start each relevant endpoint:
-  #
-  #     config :rinto_pmo_web, RintoPMOWeb.Endpoint, server: true
-  #
-  # Then you can assemble a release by calling `mix release`.
-  # See `mix help release` for more information.
+    secret_key_base: secret_key_base,
+    # A release does not run `mix phx.server`, so nothing else would ever tell
+    # the endpoint to listen. Without this the release boots, stays up, and
+    # answers nothing -- which looks exactly like a network problem.
+    server: true
 
   # ## SSL Support
   #
