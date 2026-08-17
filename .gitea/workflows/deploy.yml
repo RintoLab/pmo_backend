@@ -260,7 +260,12 @@ jobs:
           # To harden: put `ssh-keyscan -H <host>` output in a DEPLOY_KNOWN_HOSTS
           # secret written to "${ssh_dir}/known_hosts", and use
           # StrictHostKeyChecking=yes against it.
-          ssh_opts=(-i "${ssh_dir}/id" -p "${PORT}"
+          # `-o Port=` rather than a port flag, because this list is shared with
+          # scp and they disagree: ssh takes `-p`, scp takes `-P`, and scp's `-p`
+          # is "preserve times" -- which silently turns the port number into a
+          # source filename. `-o` means the same thing to both.
+          ssh_opts=(-i "${ssh_dir}/id"
+                    -o "Port=${PORT}"
                     -o UserKnownHostsFile=/dev/null
                     -o StrictHostKeyChecking=accept-new
                     -o IdentitiesOnly=yes
@@ -274,9 +279,12 @@ jobs:
             release.tar.gz release.tar.gz.sha256 env \
             deploy/remote-deploy.sh deploy/pmo_backend.service \
             "${remote}:${staging}/"
+          # Run through `bash` rather than executed: /tmp is mounted noexec often
+          # enough that relying on the execute bit there is a coin flip, and
+          # nothing about this needs the shebang to be honoured.
           ssh "${ssh_opts[@]}" "${remote}" \
-            "chmod 700 '${staging}/remote-deploy.sh' && chmod 600 '${staging}/env' && \
-             '${staging}/remote-deploy.sh' '${VERSION}'"
+            "chmod 600 '${staging}/env' && \
+             bash '${staging}/remote-deploy.sh' '${VERSION}'"
 
       # The rendered environment is the one thing in this workspace worth
       # deleting whatever happened. The release tarball is not a secret; this is.
