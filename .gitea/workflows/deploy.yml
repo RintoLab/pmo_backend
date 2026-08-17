@@ -24,6 +24,13 @@ jobs:
     runs-on: amd64
     container:
       image: ${{ vars.BUILD_IMAGE || 'hexpm/elixir:1.20.2-erlang-29.0.4-debian-trixie-20260713-slim' }}
+    # Stated rather than assumed. Inside a container the runner falls back to
+    # `sh`, and `sh` is dash on Debian: `set -o pipefail` is not in it, and
+    # neither are arrays -- which the ssh step needs to keep options and paths
+    # apart without word splitting. The image is Debian, so bash is there.
+    defaults:
+      run:
+        shell: bash
     env:
       VERSION: ${{ github.ref_name }}
     steps:
@@ -63,12 +70,20 @@ jobs:
           # inviting a private key into a plaintext field.
           NACOSPASS: ${{ secrets.NACOSPASS }}
           DEPLOY_PRIVATE_KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
+        # Deliberately POSIX, with no `set -o pipefail` and no indirect
+        # expansion: this is the first thing that runs, so if the shell is ever
+        # not the bash declared above, it should say which input is missing
+        # rather than `Bad substitution`.
         run: |
-          set -euo pipefail
+          set -eu
           missing=""
-          for name in NACOSURL NACOSUSER NACOSPASS NACOSNAMESPACE \
-                      DEPLOY_HOST DEPLOY_PRIVATE_KEY; do
-            test -n "${!name:-}" || missing="${missing} ${name}"
+          for pair in "NACOSURL:${NACOSURL:-}" \
+                      "NACOSUSER:${NACOSUSER:-}" \
+                      "NACOSPASS:${NACOSPASS:-}" \
+                      "NACOSNAMESPACE:${NACOSNAMESPACE:-}" \
+                      "DEPLOY_HOST:${DEPLOY_HOST:-}" \
+                      "DEPLOY_PRIVATE_KEY:${DEPLOY_PRIVATE_KEY:-}"; do
+            test -n "${pair#*:}" || missing="${missing} ${pair%%:*}"
           done
 
           if [ -n "${missing}" ]; then
