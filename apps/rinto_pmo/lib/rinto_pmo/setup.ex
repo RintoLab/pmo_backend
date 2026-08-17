@@ -79,9 +79,17 @@ defmodule RintoPMO.Setup do
 
   @doc """
   The name a human is created with when the caller names nobody.
+
+  `RINTO_OWNER_NAME` first, because the caller that names nobody is usually the
+  deploy: it runs `RintoPMO.Release.setup_human/1` on every deploy, and taking
+  the name from the environment is what keeps a shell from having to interpolate
+  it into an Elixir string. `$USER` behind it, for `mix rinto.actors.setup_human`
+  on somebody's own machine.
   """
   @spec default_name() :: String.t()
-  def default_name, do: System.get_env("USER") || "Me"
+  def default_name do
+    System.get_env("RINTO_OWNER_NAME") || System.get_env("USER") || "Me"
+  end
 
   @doc """
   One line saying what happened, for whichever of the two callers is printing.

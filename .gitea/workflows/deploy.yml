@@ -1,15 +1,16 @@
-# Build on one machine, deploy on another, with Gitea in between.
+# Build in a pinned container on the builder, ship to the runner machine over
+# ssh, take configuration from r-nacos on the way.
 #
-# Neither runner reaches the other: both only ever make outbound calls to
-# Gitea, which is the whole reason this works on an intranet. The release
-# tarball travels through Gitea's generic package registry.
+# The image is set explicitly rather than left to whatever the runner label
+# resolves to, because the release bundles ERTS: a release built against one
+# glibc will not start against another. `BUILD_IMAGE` has to match the runner
+# machine's distribution -- see docs/deployment.md.
 #
-# There is not a single `uses:` in here. Actions are downloaded from github.com
-# by default, which an intranet cannot do -- so every step is plain shell, and
-# the checkout is a `git fetch` with the job's own short-lived GITEA_TOKEN.
-#
-# Both jobs run in `host` mode, on runners registered with the labels below.
-# See docs/deployment.md for the one-time setup of both machines.
+# The checkout is a hand-written `git fetch` with the job's own short-lived
+# GITEA_TOKEN rather than `uses: actions/checkout@v4`, which would need the
+# runner to download that action from github.com. If this builder can reach
+# github.com -- it must, to have pulled the image above from Docker Hub -- then
+# `uses: actions/checkout@v4` works too and is shorter. See docs/deployment.md.
 
 name: Deploy
 
@@ -18,14 +19,39 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-env:
-  PACKAGE_NAME: rinto-pmo-release
-  RELEASE_ROOT: /srv/rinto-pmo
-
 jobs:
-  build:
-    runs-on: build
+  deploy:
+    runs-on: amd64
+    container:
+      image: ${{ vars.BUILD_IMAGE || 'hexpm/elixir:1.20.2-erlang-29.0.4-debian-trixie-20260713-slim' }}
+    env:
+      VERSION: ${{ github.ref_name }}
     steps:
+      # Checked against a charset rather than trusted: it is only used for log
+      # lines today, but an empty one would mean a manual run of this workflow
+      # produced no record of what it deployed.
+      - name: Resolve what is being deployed
+        run: |
+          set -euo pipefail
+          case "${VERSION}" in
+            '' | *[!a-zA-Z0-9._-]* | -* | .*)
+              echo "refusing version \"${VERSION}\"" >&2
+              exit 1
+              ;;
+          esac
+          echo "deploying ${VERSION}"
+
+      # The hexpm image carries Erlang and Elixir and nothing else. `erlexec`
+      # compiles a C port program, so a toolchain is needed as well as the ssh
+      # client this job ships with.
+      - name: Install what the image does not carry
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential git openssh-client curl ca-certificates
+          rm -rf /var/lib/apt/lists/*
+
       - name: Check out the revision being deployed
         env:
           TOKEN: ${{ secrets.GITEA_TOKEN }}
@@ -51,112 +77,125 @@ jobs:
           mix deps.get --only prod
           mix compile
           mix release --overwrite
-
-      - name: Package it
-        run: |
-          set -euo pipefail
-          tar -czf release.tar.gz -C _build/prod/rel/rinto_pmo .
+          tar -czf release.tar.gz -C _build/prod/rel/pmo_backend .
           sha256sum release.tar.gz > release.tar.gz.sha256
 
-      # A PAT rather than GITEA_TOKEN: publishing to the package registry with
-      # the job token is not implemented in Gitea yet. The version is in the
-      # path, so rolling back is asking the registry for an older one rather
-      # than rebuilding a tag.
-      - name: Upload to the package registry
+      # Pulled here rather than on the runner machine, so that machine never
+      # holds r-nacos credentials -- it receives the rendered result and nothing
+      # else.
+      #
+      # `type=text` on the r-nacos side: the entry is read back verbatim and
+      # rendered into `Environment=` lines in a systemd drop-in on the other
+      # side, not parsed as YAML or JSON.
+      - name: Fetch the environment from r-nacos
         env:
-          PKG_USER: ${{ secrets.PACKAGE_USER }}
-          PKG_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
-          BASE: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic
-          VERSION: ${{ github.ref_name }}
+          NACOS_URL: ${{ secrets.NACOSURL }}
+          NACOS_USER: ${{ secrets.NACOSUSER }}
+          NACOS_PASS: ${{ secrets.NACOSPASS }}
+          NACOS_NAMESPACE: ${{ vars.NACOSNAMESPACE }}
+          # The group names the project and the dataId is the file's own name,
+          # so both are conventions rather than settings.
+          NACOS_GROUP: ${{ vars.NACOS_GROUP || 'PMO_BE' }}
+          NACOS_DATA_ID: ${{ vars.NACOS_DATA_ID || '.env' }}
         run: |
           set -euo pipefail
-          for file in release.tar.gz release.tar.gz.sha256; do
-            curl -fsSL --user "${PKG_USER}:${PKG_TOKEN}" --upload-file "${file}" \
-              "${BASE}/${PACKAGE_NAME}/${VERSION}/${file}"
-          done
+          base="${NACOS_URL%/}"
 
-  deploy:
-    needs: build
-    runs-on: deploy-target
-    env:
-      VERSION: ${{ github.ref_name }}
-    steps:
-      - name: Fetch the release
-        env:
-          PKG_USER: ${{ secrets.PACKAGE_USER }}
-          PKG_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
-          BASE: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/rinto-pmo-deploy
-          mkdir -p /tmp/rinto-pmo-deploy
-          cd /tmp/rinto-pmo-deploy
-          for file in release.tar.gz release.tar.gz.sha256; do
-            curl -fsSL --user "${PKG_USER}:${PKG_TOKEN}" -o "${file}" \
-              "${BASE}/${PACKAGE_NAME}/${VERSION}/${file}"
-          done
-          sha256sum -c release.tar.gz.sha256
-
-      # Unpacked beside the running one, so a tarball that arrives broken is
-      # found out before anything in use is touched.
-      - name: Unpack alongside the running release
-        run: |
-          set -euo pipefail
-          target="${RELEASE_ROOT}/releases/${VERSION}"
-          rm -rf "${target}"
-          mkdir -p "${target}"
-          tar -xzf /tmp/rinto-pmo-deploy/release.tar.gz -C "${target}"
-          test -x "${target}/bin/rinto_pmo"
-
-      # Run by the new release rather than the old one, and before the restart:
-      # a migration that fails has to stop the deployment while the previous
-      # version is still serving.
-      - name: Migrate
-        run: |
-          set -euo pipefail
-          set -a; . /etc/rinto-pmo/env; set +a
-          "${RELEASE_ROOT}/releases/${VERSION}/bin/rinto_pmo" eval 'RintoPMO.Release.migrate()'
-
-      - name: Switch over and restart
-        run: |
-          set -euo pipefail
-          ln -sfn "${RELEASE_ROOT}/releases/${VERSION}" "${RELEASE_ROOT}/current.new"
-          mv -Tf "${RELEASE_ROOT}/current.new" "${RELEASE_ROOT}/current"
-          sudo systemctl restart rinto-pmo
-
-      # The deploy is not done when systemd says the process started -- it is
-      # done when the application answers. A missing RINTO_TOKEN and a missing
-      # human actor both boot perfectly and serve nothing usable, and both are
-      # 401s that say which.
-      - name: Wait for it to answer
-        run: |
-          set -euo pipefail
-          set -a; . /etc/rinto-pmo/env; set +a
-          url="http://127.0.0.1:${PORT:-4000}/api/v1/actors/me"
-          probe=$(mktemp)
-          for _ in $(seq 1 30); do
-            code=$(curl -so "${probe}" -w '%{http_code}' \
-              -H "Authorization: Bearer ${RINTO_TOKEN}" "${url}" || echo 000)
-            case "${code}" in
-              200)
-                echo "serving as $(cat "${probe}")"
-                exit 0
-                ;;
-              401)
-                echo "it is answering, but not as anybody:" >&2
-                cat "${probe}" >&2
+          # r-nacos only serves this when RNACOS_ENABLE_OPEN_API_AUTH=true, so
+          # the status code is read rather than just the body: "there is no
+          # login endpoint" and "your password is wrong" are different answers
+          # and only one of them is safe to carry on from.
+          body="$(mktemp)"
+          code="$(curl -so "${body}" -w '%{http_code}' \
+            -X POST "${base}/nacos/v1/auth/login" \
+            --data-urlencode "username=${NACOS_USER}" \
+            --data-urlencode "password=${NACOS_PASS}")" || true
+          case "${code:-000}" in
+            000)
+              echo "could not reach r-nacos at ${base}" >&2
+              exit 1
+              ;;
+            200)
+              token="$(sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p' "${body}")"
+              test -n "${token}" || {
+                echo "r-nacos accepted the login but returned no accessToken" >&2
                 exit 1
-                ;;
-            esac
-            sleep 2
-          done
-          echo "did not answer within 60s" >&2
-          journalctl -u rinto-pmo -n 50 --no-pager >&2 || true
-          exit 1
+              }
+              echo "authenticated against r-nacos"
+              ;;
+            404)
+              token=""
+              echo "no login endpoint; assuming RNACOS_ENABLE_OPEN_API_AUTH=false"
+              ;;
+            *)
+              echo "r-nacos refused the login (HTTP ${code}); check NACOSUSER and NACOSPASS" >&2
+              exit 1
+              ;;
+          esac
+          rm -f "${body}"
 
-      # Keeps the last five, so a rollback is a symlink move and a restart.
-      - name: Prune old releases
+          umask 077
+          curl -fsS --get "${base}/nacos/v1/cs/configs" \
+            --data-urlencode "dataId=${NACOS_DATA_ID}" \
+            --data-urlencode "group=${NACOS_GROUP}" \
+            --data-urlencode "tenant=${NACOS_NAMESPACE}" \
+            ${token:+--data-urlencode "accessToken=${token}"} \
+            -o env
+
+          test -s env || {
+            echo "r-nacos returned nothing for ${NACOS_DATA_ID} in ${NACOS_NAMESPACE}/${NACOS_GROUP}" >&2
+            exit 1
+          }
+          # Never the values: this log is readable by anybody who can see the run.
+          echo "fetched $(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' env) variables:"
+          grep -oE '^[A-Za-z_][A-Za-z0-9_]*' env | sort | tr '\n' ' '
+          echo ""
+
+      - name: Ship it and deploy
+        env:
+          KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          # root: the same key logs in as root and as `deploy`, and the deploy
+          # installs the unit and the drop-in itself rather than asking for a
+          # sudoers entry. Only the transport is root -- the service runs as
+          # `deploy`, see deploy/pmo_backend.service.
+          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'root' }}
+          PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
         run: |
           set -euo pipefail
-          cd "${RELEASE_ROOT}/releases"
-          ls -1t | tail -n +6 | xargs -r rm -rf
+          umask 077
+          ssh_dir="$(mktemp -d)"
+          trap 'rm -rf "${ssh_dir}"' EXIT
+          printf '%s\n' "${KEY}" > "${ssh_dir}/id"
+          chmod 600 "${ssh_dir}/id"
+
+          # The host key is accepted rather than verified. Both machines are on
+          # the same intranet, so pinning would buy a MITM defence nobody needs
+          # at the cost of a deploy that breaks whenever the target is rebuilt.
+          #
+          # To harden: put `ssh-keyscan -H <host>` output in a DEPLOY_KNOWN_HOSTS
+          # secret written to "${ssh_dir}/known_hosts", and use
+          # StrictHostKeyChecking=yes against it.
+          ssh_opts=(-i "${ssh_dir}/id" -p "${PORT}"
+                    -o UserKnownHostsFile=/dev/null
+                    -o StrictHostKeyChecking=accept-new
+                    -o IdentitiesOnly=yes
+                    -o BatchMode=yes)
+          remote="${DEPLOY_USER}@${HOST}"
+          staging="/tmp/pmo_backend-deploy"
+
+          ssh "${ssh_opts[@]}" "${remote}" \
+            "rm -rf '${staging}' && mkdir -p '${staging}' && chmod 700 '${staging}'"
+          scp "${ssh_opts[@]}" \
+            release.tar.gz release.tar.gz.sha256 env \
+            deploy/remote-deploy.sh deploy/pmo_backend.service \
+            "${remote}:${staging}/"
+          ssh "${ssh_opts[@]}" "${remote}" \
+            "chmod 700 '${staging}/remote-deploy.sh' && chmod 600 '${staging}/env' && \
+             '${staging}/remote-deploy.sh' '${VERSION}'"
+
+      # The rendered environment is the one thing in this workspace worth
+      # deleting whatever happened. The release tarball is not a secret; this is.
+      - name: Forget the environment
+        if: always()
+        run: shred -u env 2>/dev/null || rm -f env

@@ -60,9 +60,21 @@ if config_env() == :prod do
       """
 
   config :rinto_pmo_web, RintoPMOWeb.Endpoint,
+    # The external address this is reached at, through the reverse proxy in
+    # front of it. Only `url/1` and verified routes read it, and this API
+    # returns ids rather than links, so a wrong value is cosmetic -- but
+    # `example.com` was worse than cosmetic to leave lying in the config.
+    url: [host: System.get_env("PHX_HOST") || "localhost", port: 443, scheme: "https"],
     http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
+      # All interfaces, and it has to stay that way: the reverse proxy in front
+      # of this connects from off the box. Loopback here would answer the
+      # deploy's own health check and nothing else, which is the worst shape a
+      # misconfiguration can take -- green pipeline, dead service.
+      #
+      # This is the IPv6 wildcard, which accepts IPv4 too on any system with
+      # `net.ipv6.bindv6only=0` (the default on Debian and Ubuntu). If the proxy
+      # can reach the port but gets connection refused, that setting is the
+      # first thing to check; `{0, 0, 0, 0}` forces IPv4-only.
       ip: {0, 0, 0, 0, 0, 0, 0, 0}
     ],
     secret_key_base: secret_key_base,

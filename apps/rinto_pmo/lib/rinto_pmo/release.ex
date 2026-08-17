@@ -22,6 +22,10 @@ defmodule RintoPMO.Release do
 
   @doc """
   Runs every migration that has not been run.
+
+  Creating the database is deliberately not here. It is done once, by hand, on
+  the database server -- which keeps `CREATEDB` out of the role this connects
+  with. A database that does not exist fails here, on `schema_migrations`.
   """
   @spec migrate() :: :ok
   def migrate do
@@ -73,10 +77,16 @@ defmodule RintoPMO.Release do
     Application.fetch_env!(@app, :ecto_repos)
   end
 
-  # `Ecto.Migrator.with_repo/2` starts the repository and what it needs, so the
-  # application itself is only loaded rather than started: nothing here wants
-  # the endpoint listening or the agent supervisor running.
+  # `:ssl` is started even though nothing here obviously needs it: a
+  # `DATABASE_URL` with TLS on it -- which is most managed Postgres -- fails
+  # inside Postgrex with an error that says nothing about a missing
+  # application. This is what `mix phx.gen.release` generates, for that reason.
+  #
+  # The application itself is only loaded, not started:
+  # `Ecto.Migrator.with_repo/2` starts the repository and what it needs, and
+  # nothing here wants the endpoint listening or the agent supervisor running.
   defp load_app do
-    Application.load(@app)
+    Application.ensure_all_started(:ssl)
+    Application.ensure_loaded(@app)
   end
 end

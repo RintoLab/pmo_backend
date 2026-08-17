@@ -59,9 +59,11 @@ defmodule RintoPMO.Umbrella.MixProject do
   # Elixir of its own. The price is that the tarball is only good for the OS,
   # architecture and libc it was built on: build on the same distribution as the
   # machine that will run it.
+  # Named after the repository rather than after either OTP application, so the
+  # deploy path, the systemd unit and `bin/pmo_backend` all say the same thing.
   defp releases do
     [
-      rinto_pmo: [
+      pmo_backend: [
         applications: [
           rinto_pmo: :permanent,
           rinto_pmo_web: :permanent
