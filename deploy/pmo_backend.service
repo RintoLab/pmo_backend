@@ -1,18 +1,11 @@
 ; Installed once, by root:
 ;
 ;   install -m 644 deploy/pmo_backend.service /etc/systemd/system/
-;   install -d -o deploy -g deploy -m 755 /etc/systemd/system/pmo_backend.service.d
 ;   systemctl daemon-reload
 ;   systemctl enable pmo_backend
 ;
-; After that the deploy only ever writes the drop-in and restarts. See
-; docs/deployment.md.
-;
-; There is no environment in this file. Every variable arrives in
-; pmo_backend.service.d/10-env.conf, which the deploy renders from r-nacos --
-; the drop-in directory is owned by `deploy` so that needs no root. A unit with
-; no drop-in has no DATABASE_URL and will refuse to start, which is the right
-; answer for a machine nothing has been deployed to yet.
+; The deploy installs it too, on every run, so this is only needed to bring a
+; machine up before there is anything to deploy. See docs/deployment.md.
 
 [Unit]
 Description=PMO Backend
@@ -22,12 +15,20 @@ Wants=network-online.target
 [Service]
 Type=exec
 ; The same account the deploy arrives over ssh as, so there is one owner for the
-; release directory and no group permissions to get wrong. It is also why the
-; deploy writing the drop-in is not a privilege escalation: the values it can
-; set are read by a service running as itself.
+; release directory and no group permissions to get wrong. It does not need to
+; read the environment file -- systemd does that as root, before dropping here.
 User=deploy
 Group=deploy
 WorkingDirectory=/apps/pmo_backend
+
+; Written by the deploy from r-nacos, root-owned and 600. systemd parses this
+; format itself, which is the point: a value with a space, a quote or a percent
+; sign in it needs no escaping on the way in, and `systemctl show` reports the
+; path rather than the values.
+;
+; No leading `-`: a missing file must stop the unit rather than start a server
+; with no database and no token, which boots perfectly and serves nothing.
+EnvironmentFile=/etc/pmo_backend/env
 
 ExecStart=/apps/pmo_backend/bin/pmo_backend start
 ExecStop=/apps/pmo_backend/bin/pmo_backend stop

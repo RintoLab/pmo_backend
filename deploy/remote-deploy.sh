@@ -4,8 +4,8 @@
 #
 #   remote-deploy.sh <version>
 #
-# There is no one-time setup to do by hand: this installs the unit, makes the
-# drop-in directory, creates the release directory and enables the service, all
+# There is no one-time setup to do by hand: this installs the unit and the
+# environment file, creates the release directory and enables the service, all
 # idempotently. Root is what makes that possible -- the same ssh key logs in as
 # root and as `deploy`, so this path needs no sudoers entry of its own.
 #
@@ -25,9 +25,9 @@
 #
 # What it leaves behind:
 #
-#   /apps/pmo_backend/                                      the release, owned by deploy
+#   /apps/pmo_backend/                       the release, owned by deploy
 #   /etc/systemd/system/pmo_backend.service
-#   /etc/systemd/system/pmo_backend.service.d/10-env.conf   root, 600
+#   /etc/pmo_backend/env                     root, 600 -- the unit's EnvironmentFile
 
 set -euo pipefail
 
@@ -36,16 +36,33 @@ version="${1:?usage: remote-deploy.sh <version>}"
 root="/apps/pmo_backend"
 incoming="/apps/.pmo_backend.incoming"
 staging="/tmp/pmo_backend-deploy"
-dropin_dir="/etc/systemd/system/pmo_backend.service.d"
-dropin="${dropin_dir}/10-env.conf"
+env_file="/etc/pmo_backend/env"
 unit="pmo_backend.service"
 service_user="deploy"
 
 say() { printf '\n=== %s\n' "$1"; }
 
+# The one-off `eval` processes below are not started by systemd, so nothing reads
+# the unit's EnvironmentFile for them -- and `config/runtime.exs` refuses to boot
+# without DATABASE_URL. They get the same values, out of the same file.
+#
+# Handed over explicitly rather than exported and inherited: `runuser` sets up a
+# PAM session for the target user, and what survives that is not something to bet
+# a deploy on. Each KEY=value is its own argv element, so a value with a space in
+# it stays one value. HOME is included because runuser leaves root's, and `deploy`
+# cannot read /root.
+as_service() {
+  runuser -u "${service_user}" -- env "${service_env[@]}" "$@"
+}
+
 test "$(id -u)" = 0 || { echo "this has to run as root" >&2; exit 1; }
 id "${service_user}" >/dev/null 2>&1 || {
   echo "there is no ${service_user} user for the service to run as" >&2
+  exit 1
+}
+service_home="$(getent passwd "${service_user}" | cut -d: -f6)"
+test -n "${service_home}" -a -d "${service_home}" || {
+  echo "${service_user} has no home directory (${service_home:-unset}); the VM needs one" >&2
   exit 1
 }
 
@@ -69,8 +86,18 @@ for required in DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN; do
   }
 done
 
+# Two readers of one file. `service_env` is what gets handed to the `eval`
+# processes; `load_env` puts the same values in this script's own environment,
+# which the health check needs for PORT and RINTO_TOKEN.
+#
 # `export "K=V"` rather than `. env`: a value with a space in it is fine for
 # systemd and fatal for a shell sourcing the same file.
+service_env=("HOME=${service_home}")
+while IFS= read -r line || [ -n "${line}" ]; do
+  case "${line}" in '' | \#*) continue ;; esac
+  service_env+=("${line}")
+done < "${staging}/env"
+
 load_env() {
   local line key value
   while IFS= read -r line || [ -n "${line}" ]; do
@@ -102,27 +129,14 @@ mv -Tf "${incoming}" "${root}"
 
 say "installing the unit"
 install -m 644 -o root -g root "${staging}/${unit}" "/etc/systemd/system/${unit}"
-install -d -m 755 -o root -g root "${dropin_dir}"
 
-# systemd reads this, not a shell: `"` and `\` need its own escaping and `%` is
-# its specifier prefix, so a password with a percent sign in it would otherwise
-# arrive as something else entirely. Root-owned and 600 -- the service reads it
-# before dropping to `deploy`, so `deploy` never needs to see it.
-say "writing the environment into ${dropin}"
-{
-  printf '# Written by deploy/remote-deploy.sh from r-nacos. Do not edit.\n'
-  printf '[Service]\n'
-  while IFS= read -r line || [ -n "${line}" ]; do
-    case "${line}" in '' | \#*) continue ;; esac
-    key="${line%%=*}"
-    value="$(printf '%s' "${line#*=}" |
-      sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g')"
-    printf 'Environment="%s=%s"\n' "${key}" "${value}"
-  done < "${staging}/env"
-} > "${dropin}.new"
-chmod 600 "${dropin}.new"
-chown root:root "${dropin}.new"
-mv -f "${dropin}.new" "${dropin}"
+# Copied rather than rendered. systemd parses this format itself, so a value with
+# a space, a quote or a percent sign in it needs no escaping -- which is a whole
+# class of bug not to have. Root-owned and 600: systemd reads it as root before
+# dropping to `deploy`, so `deploy` never needs to.
+say "installing the environment as ${env_file}"
+install -d -m 755 -o root -g root "$(dirname "${env_file}")"
+install -m 600 -o root -g root "${staging}/env" "${env_file}"
 
 # Run by the new release and before the restart: a migration that fails has to
 # stop the deployment while the previous version is still serving. Creating the
@@ -130,7 +144,23 @@ mv -f "${dropin}.new" "${dropin}"
 # connects with never needs CREATEDB.
 say "migrating"
 load_env
-runuser -u "${service_user}" -- "${root}/bin/pmo_backend" eval 'RintoPMO.Release.migrate()'
+if ! as_service "${root}/bin/pmo_backend" eval 'RintoPMO.Release.migrate()'; then
+  # A `config/runtime.exs` that raises does so before the logger is up, so what
+  # gets printed is a cascade about `code_server` and `persistent_term` rather
+  # than the actual message. Booting the release with a trivial expression tells
+  # the two apart, and naming the variables it was handed is usually the answer.
+  echo "" >&2
+  echo "the migration did not run; checking whether the release boots at all" >&2
+  if as_service "${root}/bin/pmo_backend" eval 'IO.puts("boot ok")'; then
+    echo "it boots, so the failure is in the migration itself -- see above" >&2
+  else
+    echo "it does not boot: config/runtime.exs raised. Anything above about" >&2
+    echo "code_server or persistent_term is the logger failing to report that," >&2
+    echo "not the problem. It was handed these variables:" >&2
+    printf '  %s\n' "${service_env[@]%%=*}" >&2
+  fi
+  exit 1
+fi
 
 # Idempotent, and run on every deploy rather than once by hand: an existing
 # human and an existing default project are both reported and left alone. It
@@ -141,7 +171,7 @@ runuser -u "${service_user}" -- "${root}/bin/pmo_backend" eval 'RintoPMO.Release
 # from the environment, which is already loaded, so no shell has to interpolate
 # a name into an Elixir string literal.
 say "making sure there is somebody to answer as"
-runuser -u "${service_user}" -- "${root}/bin/pmo_backend" eval 'RintoPMO.Release.setup_human()'
+as_service "${root}/bin/pmo_backend" eval 'RintoPMO.Release.setup_human()'
 
 say "restarting"
 systemctl daemon-reload
@@ -165,14 +195,14 @@ for _ in $(seq 1 30); do
       ;;
     401)
       # `human_actor_missing` should be impossible here -- setup_human ran a few
-      # lines ago. So this is the token: what the drop-in gave the service is not
-      # what this check just sent, which means the restart did not pick the new
-      # drop-in up.
+      # lines ago. So this is the token: what the environment file gave the
+      # service is not what this check just sent, which means the restart did not
+      # pick the new file up.
       echo "it is answering, but not as anybody:" >&2
       cat "${probe}" >&2
       echo "" >&2
       echo "compare what the service got with what r-nacos holds:" >&2
-      echo "  systemctl show ${unit} -p Environment" >&2
+      echo "  ${env_file}" >&2
       exit 1
       ;;
   esac

@@ -169,8 +169,8 @@ jobs:
       # else.
       #
       # `type=text` on the r-nacos side: the entry is read back verbatim and
-      # rendered into `Environment=` lines in a systemd drop-in on the other
-      # side, not parsed as YAML or JSON.
+      # becomes the unit's EnvironmentFile on the other side, not parsed as YAML
+      # or JSON.
       - name: Fetch the environment from r-nacos
         env:
           NACOS_URL: ${{ vars.NACOSURL || secrets.NACOSURL }}
@@ -240,8 +240,8 @@ jobs:
           KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
           HOST: ${{ vars.DEPLOY_HOST || secrets.DEPLOY_HOST }}
           # root: the same key logs in as root and as `deploy`, and the deploy
-          # installs the unit and the drop-in itself rather than asking for a
-          # sudoers entry. Only the transport is root -- the service runs as
+          # installs the unit and the environment file itself rather than asking
+          # for a sudoers entry. Only the transport is root -- the service runs as
           # `deploy`, see deploy/pmo_backend.service.
           DEPLOY_USER: ${{ vars.DEPLOY_USER || 'root' }}
           PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
