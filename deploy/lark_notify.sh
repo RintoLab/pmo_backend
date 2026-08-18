@@ -109,11 +109,11 @@ card_json() {
   jq -cn \
     --arg title "${keyword} · ${component} · ${label}" \
     --arg template "${template}" \
-    --arg status "**状态**\n${label}" \
-    --arg version "**版本**\n${version:-unknown}" \
-    --arg ref "**Ref**\n${ref}" \
-    --arg commit "**Commit**\n${short_sha}" \
-    --arg reason "**说明**\n${reason}" \
+    --arg status "**状态：** ${label}" \
+    --arg version "**版本：** ${version:-unknown}" \
+    --arg ref "**Ref：** ${ref}" \
+    --arg commit "**Commit：** ${short_sha}" \
+    --arg reason "**说明：** ${reason}" \
     --arg run_url "${run_url}" \
     '{
       config:{wide_screen_mode:true,update_multi:true},

@@ -150,8 +150,15 @@ grep -Fxq 'Authorization: Bearer test-token' "${tmp}/requests/2.headers"
 jq -e '.app_id == "test-app" and .app_secret == "test-secret"' \
   "${tmp}/requests/1.payload" >/dev/null
 jq -e '.receive_id == "oc_test_chat" and .msg_type == "interactive" and
-  ((.content | fromjson).config.update_multi == true) and
-  ((.content | fromjson).header.template == "blue")' \
+  ((.content | fromjson) as $card |
+    $card.config.update_multi == true and
+    $card.header.template == "blue" and
+    $card.elements[0].fields[0].text.content == "**状态：** 运行中" and
+    $card.elements[0].fields[1].text.content == "**版本：** 1.2.3" and
+    $card.elements[0].fields[2].text.content == "**Ref：** refs/heads/main" and
+    $card.elements[0].fields[3].text.content == "**Commit：** abcdef123456" and
+    $card.elements[1].text.content == "**说明：** release planning in progress" and
+    ([.. | strings] | all(contains("\\n") | not)))' \
   "${tmp}/requests/2.payload" >/dev/null
 
 "${root}/deploy/lark_notify.sh" finish "${message_id}" CLI success 1.2.3 refs/heads/main \
