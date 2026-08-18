@@ -21,6 +21,20 @@ User=deploy
 Group=deploy
 WorkingDirectory=/apps/pmo_backend
 
+; systemd hands a unit the compiled-in PATH, which is the system directories and
+; nothing else -- `pi` is installed under the deploy user and would not be found.
+; The node directory rather than a wrapper: pi is a `dist/cli.js` behind a
+; `#!/usr/bin/env node` shebang, and its extensions shell out to `node` and
+; `npx`, so what is needed on PATH is that directory either way.
+;
+; Through pi's own `current` symlink rather than the versioned directory it
+; points at, so an upgrade that installs a new node does not leave this line
+; naming a directory that is no longer there.
+;
+; Ahead of the environment file deliberately: later assignments win, so the
+; r-nacos config can override this without touching the unit.
+Environment=PATH=/home/deploy/.local/share/pi-node/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 ; Written by the deploy from r-nacos, root-owned and 600. systemd parses this
 ; format itself, which is the point: a value with a space, a quote or a percent
 ; sign in it needs no escaping on the way in, and `systemctl show` reports the
@@ -39,7 +53,18 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ProtectHome=true
+; `true` would hide the home directory of the very user this runs as, and pi
+; lives there: the runtime under ~/.local/share/pi-node, the configuration under
+; ~/.pi, and whatever an extension decides to write next. Binding those one at a
+; time is a game the extensions keep winning, so the whole of deploy's home
+; comes through -- and only deploy's. /home is still an empty tmpfs underneath,
+; so /root, /run/user and every other account stay invisible.
+;
+; What this gives up is small: the service already runs as deploy, and pi runs
+; commands as deploy, so the home directory is reachable to it in practice no
+; matter what is mounted here.
+ProtectHome=tmpfs
+BindPaths=/home/deploy
 ReadWritePaths=/apps/pmo_backend
 
 [Install]
