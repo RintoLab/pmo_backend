@@ -239,11 +239,14 @@ jobs:
         env:
           KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
           HOST: ${{ vars.DEPLOY_HOST || secrets.DEPLOY_HOST }}
-          # root: the same key logs in as root and as `deploy`, and the deploy
-          # installs the unit and the environment file itself rather than asking
-          # for a sudoers entry. Only the transport is root -- the service runs as
-          # `deploy`, see deploy/pmo_backend.service.
-          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'root' }}
+          # Two identities, one key. Root does the part that touches system
+          # directories; `deploy` does the release, the migration and the
+          # restart. Keeping them apart is what makes the second half correct by
+          # construction: a process that arrives over ssh as `deploy` already has
+          # that user's working directory, HOME and environment, where one that
+          # root starts and drops carries root's versions of all three.
+          PREPARE_USER: ${{ vars.PREPARE_USER || 'root' }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
           PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
         run: |
           set -euo pipefail
@@ -260,6 +263,7 @@ jobs:
           # To harden: put `ssh-keyscan -H <host>` output in a DEPLOY_KNOWN_HOSTS
           # secret written to "${ssh_dir}/known_hosts", and use
           # StrictHostKeyChecking=yes against it.
+          #
           # `-o Port=` rather than a port flag, because this list is shared with
           # scp and they disagree: ssh takes `-p`, scp takes `-P`, and scp's `-p`
           # is "preserve times" -- which silently turns the port number into a
@@ -270,21 +274,26 @@ jobs:
                     -o StrictHostKeyChecking=accept-new
                     -o IdentitiesOnly=yes
                     -o BatchMode=yes)
-          remote="${DEPLOY_USER}@${HOST}"
           staging="/tmp/pmo_backend-deploy"
 
-          ssh "${ssh_opts[@]}" "${remote}" \
+          # Uploaded as `deploy`, so the staging directory is that user's and the
+          # second phase can read what it needs without root handing it over.
+          # Root can read it regardless, which is how the first phase gets the
+          # unit file and the environment.
+          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${HOST}" \
             "rm -rf '${staging}' && mkdir -p '${staging}' && chmod 700 '${staging}'"
           scp "${ssh_opts[@]}" \
             release.tar.gz release.tar.gz.sha256 env \
-            deploy/remote-deploy.sh deploy/pmo_backend.service \
-            "${remote}:${staging}/"
+            deploy/prepare.sh deploy/deploy.sh deploy/pmo_backend.service \
+            "${DEPLOY_USER}@${HOST}:${staging}/"
+
           # Run through `bash` rather than executed: /tmp is mounted noexec often
           # enough that relying on the execute bit there is a coin flip, and
           # nothing about this needs the shebang to be honoured.
-          ssh "${ssh_opts[@]}" "${remote}" \
-            "chmod 600 '${staging}/env' && \
-             bash '${staging}/remote-deploy.sh' '${VERSION}'"
+          ssh "${ssh_opts[@]}" "${PREPARE_USER}@${HOST}" \
+            "bash '${staging}/prepare.sh'"
+          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${HOST}" \
+            "bash '${staging}/deploy.sh' '${VERSION}'"
 
       # The rendered environment is the one thing in this workspace worth
       # deleting whatever happened. The release tarball is not a secret; this is.
