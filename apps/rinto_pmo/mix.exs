@@ -1,10 +1,12 @@
 defmodule RintoPMO.MixProject do
   use Mix.Project
 
+  @version File.read!(Path.expand("../../VERSION", __DIR__)) |> String.trim()
+
   def project do
     [
       app: :rinto_pmo,
-      version: "0.1.0",
+      version: @version,
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",

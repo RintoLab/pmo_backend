@@ -1,0 +1,393 @@
+name: Release CLI
+
+on:
+  push:
+    branches: [main]
+    tags: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-cli
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: amd64
+    container:
+      image: rust:1.97.1-bookworm
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      should_publish: ${{ steps.plan.outputs.should_publish }}
+      force: ${{ steps.plan.outputs.force }}
+      reason: ${{ steps.plan.outputs.reason }}
+      staging_version: ${{ steps.plan.outputs.staging_version }}
+    env:
+      NACOS_URL: ${{ vars.NACOSURL || secrets.NACOSURL }}
+      NACOS_USER: ${{ vars.NACOSUSER || secrets.NACOSUSER }}
+      NACOS_PASS: ${{ secrets.NACOSPASS }}
+      NACOS_NAMESPACE: ${{ vars.NACOSNAMESPACE || secrets.NACOSNAMESPACE }}
+      NACOS_GROUP: ${{ vars.NACOS_GROUP || 'PMO_BE' }}
+      CLI_VERSION_DATA_ID: ${{ vars.NACOS_CLI_VERSION_DATA_ID || 'CLI_VERSION' }}
+      CLI_COMMIT_DATA_ID: ${{ vars.NACOS_CLI_COMMIT_DATA_ID || 'CLI_COMMIT' }}
+      PACKAGE_BASE_URL: ${{ gitea.server_url }}
+      PACKAGE_OWNER: ${{ vars.PACKAGE_OWNER || 'Rinto' }}
+      PACKAGE_NAME: ${{ vars.PACKAGE_NAME || 'rinto-pmo' }}
+      PACKAGE_PUBLISH_USER: ${{ vars.PACKAGE_PUBLISH_USER }}
+      PACKAGE_PUBLISH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+    steps:
+      - name: Install operations tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git curl ca-certificates
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Check out the triggered revision
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+          SERVER: ${{ gitea.server_url }}
+          REPO: ${{ gitea.repository }}
+          REF: ${{ gitea.ref }}
+          SHA: ${{ gitea.sha }}
+        run: |
+          set -euo pipefail
+          scheme="${SERVER%%://*}"; host="${SERVER#*://}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${REPO}.git"
+          git fetch -q --depth 1 origin "${REF}"
+          git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SHA}"
+
+      - name: Decide whether to publish CLI
+        id: plan
+        env:
+          EVENT: ${{ gitea.event_name }}
+          REF_TYPE: ${{ gitea.ref_type }}
+          SHA: ${{ gitea.sha }}
+          RUN_ID: ${{ gitea.run_id }}
+          RUN_ATTEMPT: ${{ gitea.run_attempt }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < cli/VERSION)"
+          cargo_version="$(awk -F '"' '/^version = "/ { print $2; exit }' cli/Cargo.toml)"
+          test "${version}" = "${cargo_version}" || {
+            echo "cli/VERSION ${version} does not match Cargo.toml ${cargo_version}" >&2
+            exit 1
+          }
+          deploy/validate_version.sh "${version}"
+
+          get_optional() {
+            local data_id="$1" value status
+            set +e; value="$(deploy/nacos.sh get "${data_id}")"; status=$?; set -e
+            case "${status}" in 0) printf '%s' "${value}" ;; 4) printf '' ;; *) exit "${status}" ;; esac
+          }
+          published_version="$(get_optional "${CLI_VERSION_DATA_ID}")"
+          published_commit="$(get_optional "${CLI_COMMIT_DATA_ID}")"
+          decision="$(deploy/release_decision.sh "${EVENT}" "${REF_TYPE}" \
+            "${version}" "${SHA}" "${published_version}" "${published_commit}")"
+          action="${decision%%$'\t'*}"; reason="${decision#*$'\t'}"
+          force=false
+          if [ "${EVENT}" = workflow_dispatch ] || [ "${REF_TYPE}" = tag ]; then force=true; fi
+          should_publish=false
+          if [ "${action}" = publish ]; then should_publish=true; fi
+          {
+            echo "version=${version}"
+            echo "should_publish=${should_publish}"
+            echo "force=${force}"
+            echo "reason=${reason}"
+            echo "staging_version=${version}-${SHA}-${RUN_ID}-${RUN_ATTEMPT}"
+          } >> "${GITEA_OUTPUT}"
+          echo "CLI ${version}: ${action} (${reason})"
+
+      - name: Reset this run's staging package
+        if: steps.plan.outputs.should_publish == 'true'
+        env:
+          STAGING_VERSION: ${{ steps.plan.outputs.staging_version }}
+        run: |
+          set -euo pipefail
+          : "${PACKAGE_PUBLISH_USER:?PACKAGE_PUBLISH_USER is required}"
+          : "${PACKAGE_PUBLISH_TOKEN:?PACKAGE_PUBLISH_TOKEN is required}"
+          deploy/package_registry.sh delete "${PACKAGE_NAME}-staging" "${STAGING_VERSION}"
+
+  build-linux:
+    needs: plan
+    if: needs.plan.outputs.should_publish == 'true'
+    runs-on: amd64
+    container:
+      image: rust:1.97.1-bookworm
+    env:
+      PACKAGE_BASE_URL: ${{ gitea.server_url }}
+      PACKAGE_OWNER: ${{ vars.PACKAGE_OWNER || 'Rinto' }}
+      PACKAGE_NAME: ${{ vars.PACKAGE_NAME || 'rinto-pmo' }}
+      PACKAGE_PUBLISH_USER: ${{ vars.PACKAGE_PUBLISH_USER }}
+      PACKAGE_PUBLISH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+      STAGING_VERSION: ${{ needs.plan.outputs.staging_version }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - name: Install tools and check out
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+          SERVER: ${{ gitea.server_url }}
+          REPO: ${{ gitea.repository }}
+          REF: ${{ gitea.ref }}
+          SHA: ${{ gitea.sha }}
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git curl ca-certificates musl-tools file
+          rm -rf /var/lib/apt/lists/*
+          scheme="${SERVER%%://*}"; host="${SERVER#*://}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${REPO}.git"
+          git fetch -q --depth 1 origin "${REF}"
+          git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SHA}"
+
+      - name: Test and build Linux amd64
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-unknown-linux-musl
+          cargo test --locked --manifest-path cli/Cargo.toml
+          cargo build --release --locked --manifest-path cli/Cargo.toml \
+            --target x86_64-unknown-linux-musl
+          cp cli/target/x86_64-unknown-linux-musl/release/rinto-pmo rinto-pmo-linux-amd64
+          test "$(./rinto-pmo-linux-amd64 --version)" = "rinto-pmo ${VERSION}"
+          file rinto-pmo-linux-amd64 | grep -Eq 'ELF 64-bit.*x86-64.*(static-pie|statically) linked'
+
+      - name: Upload Linux staging binary
+        run: deploy/package_registry.sh put "${PACKAGE_NAME}-staging" "${STAGING_VERSION}" rinto-pmo-linux-amd64 rinto-pmo-linux-amd64
+
+  build-darwin:
+    needs: plan
+    if: needs.plan.outputs.should_publish == 'true'
+    runs-on: darwin-arm64
+    env:
+      PACKAGE_BASE_URL: ${{ gitea.server_url }}
+      PACKAGE_OWNER: ${{ vars.PACKAGE_OWNER || 'Rinto' }}
+      PACKAGE_NAME: ${{ vars.PACKAGE_NAME || 'rinto-pmo' }}
+      PACKAGE_PUBLISH_USER: ${{ vars.PACKAGE_PUBLISH_USER }}
+      PACKAGE_PUBLISH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+      STAGING_VERSION: ${{ needs.plan.outputs.staging_version }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - name: Check out the triggered revision
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+          SERVER: ${{ gitea.server_url }}
+          REPO: ${{ gitea.repository }}
+          REF: ${{ gitea.ref }}
+          SHA: ${{ gitea.sha }}
+        run: |
+          set -euo pipefail
+          scheme="${SERVER%%://*}"; host="${SERVER#*://}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${REPO}.git"
+          git fetch -q --depth 1 origin "${REF}"
+          git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SHA}"
+
+      - name: Test and build Darwin arm64 with mise
+        run: |
+          set -euo pipefail
+          # The repository config imports a local .env for development. CI has
+          # no such file and no secrets belong there, so provide an empty one.
+          : > .env
+          mise trust mise.toml
+          mise install rust@1.97.1
+          mise exec rust@1.97.1 -- cargo test --locked --manifest-path cli/Cargo.toml
+          mise exec rust@1.97.1 -- cargo build --release --locked --manifest-path cli/Cargo.toml \
+            --target aarch64-apple-darwin
+          cp cli/target/aarch64-apple-darwin/release/rinto-pmo rinto-pmo-darwin-arm64
+          test "$(./rinto-pmo-darwin-arm64 --version)" = "rinto-pmo ${VERSION}"
+          test "$(lipo -archs rinto-pmo-darwin-arm64)" = arm64
+
+      - name: Upload Darwin staging binary
+        run: deploy/package_registry.sh put "${PACKAGE_NAME}-staging" "${STAGING_VERSION}" rinto-pmo-darwin-arm64 rinto-pmo-darwin-arm64
+
+  publish:
+    needs: [plan, build-linux, build-darwin]
+    if: needs.plan.outputs.should_publish == 'true'
+    runs-on: amd64
+    container:
+      image: debian:bookworm-slim
+    env:
+      NACOS_URL: ${{ vars.NACOSURL || secrets.NACOSURL }}
+      NACOS_USER: ${{ vars.NACOSUSER || secrets.NACOSUSER }}
+      NACOS_PASS: ${{ secrets.NACOSPASS }}
+      NACOS_NAMESPACE: ${{ vars.NACOSNAMESPACE || secrets.NACOSNAMESPACE }}
+      NACOS_GROUP: ${{ vars.NACOS_GROUP || 'PMO_BE' }}
+      CLI_VERSION_DATA_ID: ${{ vars.NACOS_CLI_VERSION_DATA_ID || 'CLI_VERSION' }}
+      CLI_COMMIT_DATA_ID: ${{ vars.NACOS_CLI_COMMIT_DATA_ID || 'CLI_COMMIT' }}
+      PACKAGE_BASE_URL: ${{ gitea.server_url }}
+      PACKAGE_OWNER: ${{ vars.PACKAGE_OWNER || 'Rinto' }}
+      PACKAGE_NAME: ${{ vars.PACKAGE_NAME || 'rinto-pmo' }}
+      PACKAGE_PUBLISH_USER: ${{ vars.PACKAGE_PUBLISH_USER }}
+      PACKAGE_PUBLISH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      STAGING_VERSION: ${{ needs.plan.outputs.staging_version }}
+      FORCE: ${{ needs.plan.outputs.force }}
+      SHA: ${{ gitea.sha }}
+    steps:
+      - name: Install tools and check out
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+          SERVER: ${{ gitea.server_url }}
+          REPO: ${{ gitea.repository }}
+          REF: ${{ gitea.ref }}
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git curl ca-certificates jq coreutils
+          rm -rf /var/lib/apt/lists/*
+          scheme="${SERVER%%://*}"; host="${SERVER#*://}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${REPO}.git"
+          git fetch -q --depth 1 origin "${REF}"
+          git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SHA}"
+
+      - name: Assemble and publish finalized Package
+        run: |
+          set -euo pipefail
+          mkdir dist
+          deploy/package_registry.sh get "${PACKAGE_NAME}-staging" "${STAGING_VERSION}" \
+            rinto-pmo-linux-amd64 dist/rinto-pmo-linux-amd64
+          deploy/package_registry.sh get "${PACKAGE_NAME}-staging" "${STAGING_VERSION}" \
+            rinto-pmo-darwin-arm64 dist/rinto-pmo-darwin-arm64
+          (cd dist && sha256sum rinto-pmo-linux-amd64 rinto-pmo-darwin-arm64 > SHA256SUMS)
+          linux_sha="$(sha256sum dist/rinto-pmo-linux-amd64 | cut -d ' ' -f1)"
+          darwin_sha="$(sha256sum dist/rinto-pmo-darwin-arm64 | cut -d ' ' -f1)"
+          linux_size="$(stat -c %s dist/rinto-pmo-linux-amd64)"
+          darwin_size="$(stat -c %s dist/rinto-pmo-darwin-arm64)"
+          jq -n --arg version "${VERSION}" --arg commit "${SHA}" \
+            --arg ls "${linux_sha}" --arg ds "${darwin_sha}" \
+            --argjson lz "${linux_size}" --argjson dz "${darwin_size}" \
+            '{version:$version,commit:$commit,files:{
+              "linux-amd64":{name:"rinto-pmo-linux-amd64",sha256:$ls,size:$lz},
+              "darwin-arm64":{name:"rinto-pmo-darwin-arm64",sha256:$ds,size:$dz}
+            }}' > dist/manifest.json
+
+          if [ "${FORCE}" = true ]; then
+            deploy/package_registry.sh delete "${PACKAGE_NAME}" "${VERSION}"
+          else
+            manifest_url="${PACKAGE_BASE_URL%/}/api/packages/${PACKAGE_OWNER}/generic/${PACKAGE_NAME}/${VERSION}/manifest.json"
+            existing="$(mktemp)"
+            code="$(curl -sS -o "${existing}" -w '%{http_code}' "${manifest_url}")" || code=000
+            case "${code}" in
+              200)
+                existing_commit="$(jq -r '.commit // empty' "${existing}")"
+                if [ "${existing_commit}" = "${SHA}" ]; then
+                  echo "final package already matches this commit; repairing r-nacos state"
+                  rm -f "${existing}"
+                  deploy/nacos.sh put "${CLI_COMMIT_DATA_ID}" "${SHA}"
+                  deploy/nacos.sh put "${CLI_VERSION_DATA_ID}" "${VERSION}"
+                  exit 0
+                fi
+                echo "CLI ${VERSION} already exists for another commit; use a tag/manual force or bump cli/VERSION" >&2
+                exit 1
+                ;;
+              404) ;;
+              *) echo "could not inspect existing CLI package (HTTP ${code})" >&2; exit 1 ;;
+            esac
+            rm -f "${existing}"
+          fi
+
+          deploy/package_registry.sh put "${PACKAGE_NAME}" "${VERSION}" dist/rinto-pmo-linux-amd64 rinto-pmo-linux-amd64
+          deploy/package_registry.sh put "${PACKAGE_NAME}" "${VERSION}" dist/rinto-pmo-darwin-arm64 rinto-pmo-darwin-arm64
+          deploy/package_registry.sh put "${PACKAGE_NAME}" "${VERSION}" dist/SHA256SUMS SHA256SUMS
+          deploy/package_registry.sh put "${PACKAGE_NAME}" "${VERSION}" dist/manifest.json manifest.json
+          # VERSION is the main-branch completion marker, so write it last.
+          deploy/nacos.sh put "${CLI_COMMIT_DATA_ID}" "${SHA}"
+          deploy/nacos.sh put "${CLI_VERSION_DATA_ID}" "${VERSION}"
+
+  cleanup-staging:
+    needs: [plan, build-linux, build-darwin, publish]
+    if: always()
+    runs-on: amd64
+    container:
+      image: debian:bookworm-slim
+    env:
+      PACKAGE_BASE_URL: ${{ gitea.server_url }}
+      PACKAGE_OWNER: ${{ vars.PACKAGE_OWNER || 'Rinto' }}
+      PACKAGE_NAME: ${{ vars.PACKAGE_NAME || 'rinto-pmo' }}
+      PACKAGE_PUBLISH_USER: ${{ vars.PACKAGE_PUBLISH_USER }}
+      PACKAGE_PUBLISH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+      STAGING_VERSION: ${{ needs.plan.outputs.staging_version }}
+    steps:
+      - name: Remove staging package
+        if: env.STAGING_VERSION != ''
+        run: |
+          set +e
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends curl ca-certificates
+          rm -rf /var/lib/apt/lists/*
+          host="${PACKAGE_BASE_URL#*://}"; host="${host%%/*}"
+          netrc="$(mktemp)"
+          trap 'rm -f "${netrc}"' EXIT
+          chmod 600 "${netrc}"
+          printf 'machine %s\nlogin %s\npassword %s\n' \
+            "${host}" "${PACKAGE_PUBLISH_USER}" "${PACKAGE_PUBLISH_TOKEN}" > "${netrc}"
+          code="$(curl -sS --netrc-file "${netrc}" -X DELETE \
+            "${PACKAGE_BASE_URL%/}/api/packages/${PACKAGE_OWNER}/generic/${PACKAGE_NAME}-staging/${STAGING_VERSION}" \
+            -o /dev/null -w '%{http_code}')" || code=000
+          case "${code}" in
+            204|404) ;;
+            *) echo "warning: staging package cleanup returned HTTP ${code}" >&2 ;;
+          esac
+          exit 0
+
+  notify:
+    needs: [plan, build-linux, build-darwin, publish, cleanup-staging]
+    if: always()
+    runs-on: amd64
+    container:
+      image: debian:bookworm-slim
+    steps:
+      - name: Notify Lark
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+          SERVER: ${{ gitea.server_url }}
+          REPO: ${{ gitea.repository }}
+          REF: ${{ gitea.ref }}
+          SHA: ${{ gitea.sha }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHOULD_PUBLISH: ${{ needs.plan.outputs.should_publish }}
+          REASON: ${{ needs.plan.outputs.reason }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          BUILD_LINUX_RESULT: ${{ needs.build-linux.result }}
+          BUILD_DARWIN_RESULT: ${{ needs.build-darwin.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+          LARK_SIGNING_SECRET: ${{ secrets.LARK_SIGNING_SECRET }}
+          LARK_KEYWORD: ${{ vars.LARK_KEYWORD || 'Rinto 发布' }}
+          RUN_URL: ${{ gitea.server_url }}/${{ gitea.repository }}/actions/runs/${{ gitea.run_id }}
+        run: |
+          set +e
+          apt-get update -qq && \
+            apt-get install -y -qq --no-install-recommends git curl ca-certificates openssl jq
+          rm -rf /var/lib/apt/lists/*
+          scheme="${SERVER%%://*}"; host="${SERVER#*://}"
+          if ! (
+            set -e
+            mkdir source
+            cd source
+            git init -q .
+            git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${REPO}.git"
+            git fetch -q --depth 1 origin "${REF}"
+            git checkout -q FETCH_HEAD
+            test "$(git rev-parse HEAD)" = "${SHA}"
+          ); then
+            echo "warning: could not check out the exact event SHA for Lark notification" >&2
+            exit 0
+          fi
+          result=failure
+          reason="${REASON:-release planning failed}"
+          if [ "${PLAN_RESULT}" = success ] && [ "${SHOULD_PUBLISH}" = false ]; then
+            result=skipped
+          elif [ "${PUBLISH_RESULT}" = success ]; then
+            result=success
+          else
+            reason="${reason}; plan=${PLAN_RESULT}, linux=${BUILD_LINUX_RESULT}, darwin=${BUILD_DARWIN_RESULT}, publish=${PUBLISH_RESULT}"
+          fi
+          source/deploy/lark_notify.sh CLI "${result}" "${VERSION:-unknown}" \
+            "${REF}" "${SHA}" "${reason}" "${RUN_URL}" || true
+          exit 0

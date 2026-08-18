@@ -46,7 +46,7 @@ enum Command {
     /// Install the agent skills this binary carries
     #[command(subcommand)]
     Skill(skill::SkillCommand),
-    /// Update this binary from the latest GitHub CLI release
+    /// Update this binary from the latest Gitea Package
     Update(update::UpdateArgs),
 }
 

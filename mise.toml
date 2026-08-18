@@ -1,6 +1,7 @@
 [tools]
 erlang = "29.0.4"
 elixir = "1.20.2-otp-29"
+rust = "1.97.1"
 
 [env]
 _.file = { path = ".env", redact = true }

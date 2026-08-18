@@ -1,157 +1,126 @@
-# Build in a pinned container on the builder, ship to the runner machine over
-# ssh, take configuration from r-nacos on the way.
-#
-# The image is set explicitly rather than left to whatever the runner label
-# resolves to, because the release bundles ERTS: a release built against one
-# glibc will not start against another. `BUILD_IMAGE` has to match the runner
-# machine's distribution -- see docs/deployment.md.
-#
-# The checkout is a hand-written `git fetch` with the job's own short-lived
-# GITEA_TOKEN rather than `uses: actions/checkout@v4`, which would need the
-# runner to download that action from github.com. If this builder can reach
-# github.com -- it must, to have pulled the image above from Docker Hub -- then
-# `uses: actions/checkout@v4` works too and is shorter. See docs/deployment.md.
-
-name: Deploy
+name: Release Server
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    tags: ["**"]
   workflow_dispatch:
 
+concurrency:
+  group: release-server
+  cancel-in-progress: false
+
 jobs:
-  deploy:
+  release:
     runs-on: amd64
     container:
       image: ${{ vars.BUILD_IMAGE || 'hexpm/elixir:1.20.2-erlang-29.0.4-debian-trixie-20260713-slim' }}
-    # Stated rather than assumed. Inside a container the runner falls back to
-    # `sh`, and `sh` is dash on Debian: `set -o pipefail` is not in it, and
-    # neither are arrays -- which the ssh step needs to keep options and paths
-    # apart without word splitting. The image is Debian, so bash is there.
     defaults:
       run:
         shell: bash
     env:
-      VERSION: ${{ github.ref_name }}
+      NACOS_URL: ${{ vars.NACOSURL || secrets.NACOSURL }}
+      NACOS_USER: ${{ vars.NACOSUSER || secrets.NACOSUSER }}
+      NACOS_PASS: ${{ secrets.NACOSPASS }}
+      NACOS_NAMESPACE: ${{ vars.NACOSNAMESPACE || secrets.NACOSNAMESPACE }}
+      NACOS_GROUP: ${{ vars.NACOS_GROUP || 'PMO_BE' }}
+      SERVER_VERSION_DATA_ID: ${{ vars.NACOS_SERVER_VERSION_DATA_ID || 'SERVER_VERSION' }}
+      SERVER_COMMIT_DATA_ID: ${{ vars.NACOS_SERVER_COMMIT_DATA_ID || 'SERVER_COMMIT' }}
+      SHOULD_PUBLISH: unknown
+      RELEASE_REASON: release planning did not complete
+      RELEASE_VERSION: unknown
     steps:
-      # Checked against a charset rather than trusted: it is only used for log
-      # lines today, but an empty one would mean a manual run of this workflow
-      # produced no record of what it deployed.
-      - name: Resolve what is being deployed
-        run: |
-          set -euo pipefail
-          case "${VERSION}" in
-            '' | *[!a-zA-Z0-9._-]* | -* | .*)
-              echo "refusing version \"${VERSION}\"" >&2
-              exit 1
-              ;;
-          esac
-          echo "deploying ${VERSION}"
-
-      # Before the build rather than after it. A name set at the wrong level, or
-      # in the wrong tab, reads as an empty string here rather than as an error --
-      # and the first thing that noticed used to be a curl against `https://`
-      # with nothing after it, several minutes of compiling later.
-      #
-      # Names only. Never values: this log is readable by anybody who can see the
-      # run.
-      - name: Check the inputs are all there
-        env:
-          # Read from both tabs, because which of these counts as sensitive is
-          # not this workflow's call: a URL and a username are not credentials,
-          # and an operator who filed them as variables should not have to move
-          # them to satisfy a `${{ }}`.
-          NACOSURL: ${{ vars.NACOSURL || secrets.NACOSURL }}
-          NACOSUSER: ${{ vars.NACOSUSER || secrets.NACOSUSER }}
-          NACOSNAMESPACE: ${{ vars.NACOSNAMESPACE || secrets.NACOSNAMESPACE }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST || secrets.DEPLOY_HOST }}
-          # These two are credentials and are read from secrets only. Variables
-          # are shown in the UI in the clear, so accepting one here would be
-          # inviting a private key into a plaintext field.
-          NACOSPASS: ${{ secrets.NACOSPASS }}
-          DEPLOY_PRIVATE_KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
-        # Deliberately POSIX, with no `set -o pipefail` and no indirect
-        # expansion: this is the first thing that runs, so if the shell is ever
-        # not the bash declared above, it should say which input is missing
-        # rather than `Bad substitution`.
-        run: |
-          set -eu
-          missing=""
-          for pair in "NACOSURL:${NACOSURL:-}" \
-                      "NACOSUSER:${NACOSUSER:-}" \
-                      "NACOSPASS:${NACOSPASS:-}" \
-                      "NACOSNAMESPACE:${NACOSNAMESPACE:-}" \
-                      "DEPLOY_HOST:${DEPLOY_HOST:-}" \
-                      "DEPLOY_PRIVATE_KEY:${DEPLOY_PRIVATE_KEY:-}"; do
-            test -n "${pair#*:}" || missing="${missing} ${pair%%:*}"
-          done
-
-          if [ -n "${missing}" ]; then
-            echo "empty or not set:${missing}" >&2
-            echo "" >&2
-            echo "NACOSURL, NACOSUSER, NACOSNAMESPACE and DEPLOY_HOST are read" >&2
-            echo "from either tab -- variables or secrets, whichever you used." >&2
-            echo "NACOSPASS and DEPLOY_PRIVATE_KEY are read from secrets only," >&2
-            echo "because variables are shown in the clear." >&2
-            exit 1
-          fi
-
-          case "${NACOSURL}" in
-            http://* | https://*) ;;
-            *)
-              echo "NACOSURL has to start with http:// or https://" >&2
-              exit 1
-              ;;
-          esac
-          case "${NACOSURL}" in
-            */nacos | */nacos/)
-              echo "NACOSURL must not include the /nacos suffix; the paths add it" >&2
-              exit 1
-              ;;
-          esac
-
-          echo "all six inputs present"
-
-      # The hexpm image carries Erlang and Elixir and nothing else. `erlexec`
-      # compiles a C port program, so a toolchain is needed as well as the ssh
-      # client this job ships with.
-      - name: Install what the image does not carry
+      - name: Install build and operations tools
         run: |
           set -euo pipefail
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
-            build-essential git openssh-client curl ca-certificates
+            build-essential git openssh-client curl ca-certificates openssl jq
           rm -rf /var/lib/apt/lists/*
 
-      - name: Check out the revision being deployed
+      - name: Check out the triggered revision
         env:
           TOKEN: ${{ secrets.GITEA_TOKEN }}
-          SERVER: ${{ github.server_url }}
-          REPO: ${{ github.repository }}
-          REF: ${{ github.ref }}
-          SHA: ${{ github.sha }}
+          SERVER: ${{ gitea.server_url }}
+          REPO: ${{ gitea.repository }}
+          REF: ${{ gitea.ref }}
+          SHA: ${{ gitea.sha }}
         run: |
           set -euo pipefail
           scheme="${SERVER%%://*}"
           host="${SERVER#*://}"
           git init -q .
           git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${REPO}.git"
-
-          # The ref rather than the sha: fetching a bare object id needs the
-          # server to allow unadvertised wants, which is not something to depend
-          # on. A ref always works, and the sha is then asserted rather than
-          # trusted -- if they disagree the tag moved between the trigger and
-          # this fetch, and what gets deployed should not be a surprise.
           git fetch -q --depth 1 origin "${REF}"
           git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${SHA}"
 
-          got="$(git rev-parse HEAD)"
-          test "${got}" = "${SHA}" || {
-            echo "${REF} is at ${got}, but this run was triggered for ${SHA}" >&2
-            exit 1
+      - name: Decide whether to publish Server
+        env:
+          EVENT: ${{ gitea.event_name }}
+          REF_TYPE: ${{ gitea.ref_type }}
+          SHA: ${{ gitea.sha }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          deploy/validate_version.sh "${version}"
+
+          get_optional() {
+            local data_id="$1" value status
+            set +e
+            value="$(deploy/nacos.sh get "${data_id}")"
+            status=$?
+            set -e
+            case "${status}" in
+              0) printf '%s' "${value}" ;;
+              4) printf '' ;;
+              *) exit "${status}" ;;
+            esac
           }
+          published_version="$(get_optional "${SERVER_VERSION_DATA_ID}")"
+          published_commit="$(get_optional "${SERVER_COMMIT_DATA_ID}")"
+          decision="$(deploy/release_decision.sh \
+            "${EVENT}" "${REF_TYPE}" "${version}" "${SHA}" \
+            "${published_version}" "${published_commit}")"
+          action="${decision%%$'\t'*}"
+          reason="${decision#*$'\t'}"
+          {
+            echo "RELEASE_VERSION=${version}"
+            echo "RELEASE_REASON=${reason}"
+            if [ "${action}" = publish ]; then
+              echo "SHOULD_PUBLISH=true"
+            else
+              echo "SHOULD_PUBLISH=false"
+            fi
+          } >> "${GITEA_ENV}"
+          echo "Server ${version}: ${action} (${reason})"
+
+      - name: Check deployment inputs
+        if: env.SHOULD_PUBLISH == 'true'
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST || secrets.DEPLOY_HOST }}
+          DEPLOY_PRIVATE_KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for pair in "NACOS_URL:${NACOS_URL:-}" \
+                      "NACOS_USER:${NACOS_USER:-}" \
+                      "NACOS_PASS:${NACOS_PASS:-}" \
+                      "NACOS_NAMESPACE:${NACOS_NAMESPACE:-}" \
+                      "DEPLOY_HOST:${DEPLOY_HOST:-}" \
+                      "DEPLOY_PRIVATE_KEY:${DEPLOY_PRIVATE_KEY:-}"; do
+            test -n "${pair#*:}" || missing="${missing} ${pair%%:*}"
+          done
+          test -z "${missing}" || { echo "empty or not set:${missing}" >&2; exit 1; }
+          if [ -n "${DEPLOY_KNOWN_HOSTS}" ]; then
+            echo "optional DEPLOY_KNOWN_HOSTS is present; strict host verification will be used"
+          else
+            echo "optional DEPLOY_KNOWN_HOSTS is absent; intranet accept-new fallback will be used"
+          fi
 
       - name: Build the release
+        if: env.SHOULD_PUBLISH == 'true'
         env:
           MIX_ENV: prod
         run: |
@@ -164,139 +133,119 @@ jobs:
           tar -czf release.tar.gz -C _build/prod/rel/pmo_backend .
           sha256sum release.tar.gz > release.tar.gz.sha256
 
-      # Pulled here rather than on the runner machine, so that machine never
-      # holds r-nacos credentials -- it receives the rendered result and nothing
-      # else.
-      #
-      # `type=text` on the r-nacos side: the entry is read back verbatim and
-      # becomes the unit's EnvironmentFile on the other side, not parsed as YAML
-      # or JSON.
-      - name: Fetch the environment from r-nacos
+      - name: Fetch runtime environment from r-nacos
+        if: env.SHOULD_PUBLISH == 'true'
         env:
-          NACOS_URL: ${{ vars.NACOSURL || secrets.NACOSURL }}
-          NACOS_USER: ${{ vars.NACOSUSER || secrets.NACOSUSER }}
-          NACOS_NAMESPACE: ${{ vars.NACOSNAMESPACE || secrets.NACOSNAMESPACE }}
-          NACOS_PASS: ${{ secrets.NACOSPASS }}
-          # The group names the project and the dataId is the file's own name,
-          # so both are conventions rather than settings.
-          NACOS_GROUP: ${{ vars.NACOS_GROUP || 'PMO_BE' }}
           NACOS_DATA_ID: ${{ vars.NACOS_DATA_ID || '.env' }}
         run: |
           set -euo pipefail
-          base="${NACOS_URL%/}"
-
-          # r-nacos only serves this when RNACOS_ENABLE_OPEN_API_AUTH=true, so
-          # the status code is read rather than just the body: "there is no
-          # login endpoint" and "your password is wrong" are different answers
-          # and only one of them is safe to carry on from.
-          body="$(mktemp)"
-          code="$(curl -so "${body}" -w '%{http_code}' \
-            -X POST "${base}/nacos/v1/auth/login" \
-            --data-urlencode "username=${NACOS_USER}" \
-            --data-urlencode "password=${NACOS_PASS}")" || true
-          case "${code:-000}" in
-            000)
-              echo "could not reach r-nacos at ${base}" >&2
-              exit 1
-              ;;
-            200)
-              token="$(sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p' "${body}")"
-              test -n "${token}" || {
-                echo "r-nacos accepted the login but returned no accessToken" >&2
-                exit 1
-              }
-              echo "authenticated against r-nacos"
-              ;;
-            404)
-              token=""
-              echo "no login endpoint; assuming RNACOS_ENABLE_OPEN_API_AUTH=false"
-              ;;
-            *)
-              echo "r-nacos refused the login (HTTP ${code}); check NACOSUSER and NACOSPASS" >&2
-              exit 1
-              ;;
-          esac
-          rm -f "${body}"
-
           umask 077
-          curl -fsS --get "${base}/nacos/v1/cs/configs" \
-            --data-urlencode "dataId=${NACOS_DATA_ID}" \
-            --data-urlencode "group=${NACOS_GROUP}" \
-            --data-urlencode "tenant=${NACOS_NAMESPACE}" \
-            ${token:+--data-urlencode "accessToken=${token}"} \
-            -o env
+          deploy/nacos.sh get "${NACOS_DATA_ID}" > env
+          test -s env || { echo "r-nacos returned an empty ${NACOS_DATA_ID}" >&2; exit 1; }
+          echo "fetched $(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' env) runtime variables"
 
-          test -s env || {
-            echo "r-nacos returned nothing for ${NACOS_DATA_ID} in ${NACOS_NAMESPACE}/${NACOS_GROUP}" >&2
-            exit 1
-          }
-          # Never the values: this log is readable by anybody who can see the run.
-          echo "fetched $(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' env) variables:"
-          grep -oE '^[A-Za-z_][A-Za-z0-9_]*' env | sort | tr '\n' ' '
-          echo ""
-
-      - name: Ship it and deploy
+      - name: Ship and deploy Server
+        if: env.SHOULD_PUBLISH == 'true'
         env:
           KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
           HOST: ${{ vars.DEPLOY_HOST || secrets.DEPLOY_HOST }}
-          # Two identities, one key. Root does the part that touches system
-          # directories; `deploy` does the release, the migration and the
-          # restart. Keeping them apart is what makes the second half correct by
-          # construction: a process that arrives over ssh as `deploy` already has
-          # that user's working directory, HOME and environment, where one that
-          # root starts and drops carries root's versions of all three.
           PREPARE_USER: ${{ vars.PREPARE_USER || 'root' }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
           PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           umask 077
           ssh_dir="$(mktemp -d)"
-          trap 'rm -rf "${ssh_dir}"' EXIT
+          prepare_staging="/tmp/pmo_backend-prepare"
+          deploy_staging="/tmp/pmo_backend-deploy"
+          prepare_staging_created=false
+          deploy_staging_created=false
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "${deploy_staging_created}" = true ]; then
+              ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${HOST}" \
+                "rm -rf '${deploy_staging}'" >/dev/null 2>&1 || \
+                echo "warning: could not remove deploy-owned Server staging" >&2
+            fi
+            if [ "${prepare_staging_created}" = true ]; then
+              ssh "${ssh_opts[@]}" "${PREPARE_USER}@${HOST}" \
+                "rm -rf '${prepare_staging}'" >/dev/null 2>&1 || \
+                echo "warning: could not remove root-owned Server staging" >&2
+            fi
+            rm -rf "${ssh_dir}"
+            exit "${status}"
+          }
+          trap cleanup EXIT
           printf '%s\n' "${KEY}" > "${ssh_dir}/id"
           chmod 600 "${ssh_dir}/id"
+          ssh_opts=(-i "${ssh_dir}/id" -o "Port=${PORT}" \
+                    -o IdentitiesOnly=yes -o BatchMode=yes)
+          if [ -n "${KNOWN_HOSTS}" ]; then
+            printf '%s\n' "${KNOWN_HOSTS}" > "${ssh_dir}/known_hosts"
+            chmod 600 "${ssh_dir}/known_hosts"
+            ssh_opts+=(-o UserKnownHostsFile="${ssh_dir}/known_hosts" -o StrictHostKeyChecking=yes)
+            echo "using pinned DEPLOY_KNOWN_HOSTS"
+          else
+            ssh_opts+=(-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=accept-new)
+            echo "DEPLOY_KNOWN_HOSTS is absent; using the documented intranet accept-new fallback"
+          fi
 
-          # The host key is accepted rather than verified. Both machines are on
-          # the same intranet, so pinning would buy a MITM defence nobody needs
-          # at the cost of a deploy that breaks whenever the target is rebuilt.
-          #
-          # To harden: put `ssh-keyscan -H <host>` output in a DEPLOY_KNOWN_HOSTS
-          # secret written to "${ssh_dir}/known_hosts", and use
-          # StrictHostKeyChecking=yes against it.
-          #
-          # `-o Port=` rather than a port flag, because this list is shared with
-          # scp and they disagree: ssh takes `-p`, scp takes `-P`, and scp's `-p`
-          # is "preserve times" -- which silently turns the port number into a
-          # source filename. `-o` means the same thing to both.
-          ssh_opts=(-i "${ssh_dir}/id"
-                    -o "Port=${PORT}"
-                    -o UserKnownHostsFile=/dev/null
-                    -o StrictHostKeyChecking=accept-new
-                    -o IdentitiesOnly=yes
-                    -o BatchMode=yes)
-          staging="/tmp/pmo_backend-deploy"
-
-          # Uploaded as `deploy`, so the staging directory is that user's and the
-          # second phase can read what it needs without root handing it over.
-          # Root can read it regardless, which is how the first phase gets the
-          # unit file and the environment.
-          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${HOST}" \
-            "rm -rf '${staging}' && mkdir -p '${staging}' && chmod 700 '${staging}'"
-          scp "${ssh_opts[@]}" \
-            release.tar.gz release.tar.gz.sha256 env \
-            deploy/prepare.sh deploy/deploy.sh deploy/pmo_backend.service \
-            "${DEPLOY_USER}@${HOST}:${staging}/"
-
-          # Run through `bash` rather than executed: /tmp is mounted noexec often
-          # enough that relying on the execute bit there is a coin flip, and
-          # nothing about this needs the shebang to be honoured.
+          # Privileged inputs are uploaded as root into a root-owned, mode-700
+          # directory. Root never executes or consumes deploy-owned files.
           ssh "${ssh_opts[@]}" "${PREPARE_USER}@${HOST}" \
-            "bash '${staging}/prepare.sh'"
-          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${HOST}" \
-            "bash '${staging}/deploy.sh' '${VERSION}'"
+            "rm -rf '${prepare_staging}' && install -d -m 700 -o root -g root '${prepare_staging}'"
+          prepare_staging_created=true
+          scp "${ssh_opts[@]}" \
+            env deploy/prepare.sh deploy/validate_env.sh deploy/pmo_backend.service \
+            "${PREPARE_USER}@${HOST}:${prepare_staging}/"
+          ssh "${ssh_opts[@]}" "${PREPARE_USER}@${HOST}" \
+            "bash '${prepare_staging}/prepare.sh'"
 
-      # The rendered environment is the one thing in this workspace worth
-      # deleting whatever happened. The release tarball is not a secret; this is.
-      - name: Forget the environment
+          # Unprivileged release inputs remain in a separate deploy-owned tree.
+          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${HOST}" \
+            "rm -rf '${deploy_staging}' && mkdir -m 700 '${deploy_staging}'"
+          deploy_staging_created=true
+          scp "${ssh_opts[@]}" \
+            release.tar.gz release.tar.gz.sha256 deploy/deploy.sh deploy/validate_env.sh \
+            "${DEPLOY_USER}@${HOST}:${deploy_staging}/"
+          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${HOST}" \
+            "bash '${deploy_staging}/deploy.sh' '${RELEASE_VERSION}'"
+
+      - name: Record successful Server publication
+        if: env.SHOULD_PUBLISH == 'true'
+        env:
+          SHA: ${{ gitea.sha }}
+        run: |
+          set -euo pipefail
+          # VERSION is the main-branch completion marker, so write it last.
+          deploy/nacos.sh put "${SERVER_COMMIT_DATA_ID}" "${SHA}"
+          deploy/nacos.sh put "${SERVER_VERSION_DATA_ID}" "${RELEASE_VERSION}"
+
+      - name: Forget runtime environment
         if: always()
         run: shred -u env 2>/dev/null || rm -f env
+
+      - name: Notify Lark
+        if: always()
+        env:
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+          LARK_SIGNING_SECRET: ${{ secrets.LARK_SIGNING_SECRET }}
+          LARK_KEYWORD: ${{ vars.LARK_KEYWORD || 'Rinto 发布' }}
+          JOB_STATUS: ${{ job.status }}
+          REF: ${{ gitea.ref }}
+          SHA: ${{ gitea.sha }}
+          RUN_URL: ${{ gitea.server_url }}/${{ gitea.repository }}/actions/runs/${{ gitea.run_id }}
+        run: |
+          result="${JOB_STATUS}"
+          if [ "${SHOULD_PUBLISH}" = false ] && [ "${JOB_STATUS}" = success ]; then
+            result=skipped
+          fi
+          if [ -x deploy/lark_notify.sh ]; then
+            deploy/lark_notify.sh Server "${result}" "${RELEASE_VERSION}" \
+              "${REF}" "${SHA}" "${RELEASE_REASON}" "${RUN_URL}" || true
+          else
+            echo "warning: Lark notification helper is unavailable" >&2
+          fi
+          exit 0

@@ -17,6 +17,7 @@
 # Reads, from the staging directory the workflow uploaded:
 #
 #   pmo_backend.service
+#   validate_env.sh
 #   env                          from r-nacos
 #
 # Leaves behind:
@@ -28,7 +29,9 @@
 
 set -euo pipefail
 
-staging="/tmp/pmo_backend-deploy"
+# Root-only input directory. The deploy user cannot replace scripts, unit, or
+# environment between upload and this privileged execution.
+staging="/tmp/pmo_backend-prepare"
 app_root="/apps/pmo_backend"
 env_file="/etc/pmo_backend/env"
 # No dot and no tilde in the name: sudo skips files in /etc/sudoers.d with either.
@@ -48,21 +51,11 @@ cd "${staging}"
 test -s "${unit}" || { echo "the unit file did not arrive; refusing" >&2; exit 1; }
 test -s env || { echo "the environment file is empty; refusing" >&2; exit 1; }
 
-# Checked here, where it is installed. Neither systemd nor `deploy.sh` runs a
-# shell over this file, so a line that is not KEY=value is a variable the
-# application silently will not have.
+# This is the same validator deploy.sh runs immediately before exporting the
+# values. Blank means truly empty, comments start with # in column one, and
+# every other line is an exact KEY=value assignment.
 say "checking the environment"
-if grep -vE '^\s*(#|$)' env | grep -vqE '^[A-Za-z_][A-Za-z0-9_]*='; then
-  echo "the environment file has lines that are not KEY=value:" >&2
-  grep -vE '^\s*(#|$)' env | grep -vE '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/=.*/=.../' >&2
-  exit 1
-fi
-for required in DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN; do
-  grep -qE "^${required}=." env || {
-    echo "${required} is missing or empty in the r-nacos config" >&2
-    exit 1
-  }
-done
+bash "${staging}/validate_env.sh" env DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN
 
 # Group-readable by `deploy`, which needs these to run the migration. That gives
 # away nothing: the service runs as `deploy`, so the same values are in its own

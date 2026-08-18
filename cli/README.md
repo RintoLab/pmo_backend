@@ -30,22 +30,34 @@ rinto-pmo update --check
 rinto-pmo update
 ```
 
-The updater selects the newest stable `cli-v*` release from
-`RintoLab/pmo_backend`, downloads the asset for the current OS and architecture,
-and replaces the running executable. The installation directory must be
-writable by the current user.
+The updater paginates the public Gitea package-versions API at
+`https://gitea.kenton.wang` for `Rinto/rinto-pmo` with a bounded safety cap,
+ignores versions without a final manifest, downloads the current platform asset,
+verifies its size and SHA-256,
+and atomically replaces the running executable. If a forced publication replaces
+the same semantic version, the updater compares its own executable to the final
+manifest and offers a same-version refresh when the bytes differ. Automatic
+updates are published for Linux amd64 and macOS Apple Silicon only.
 
 ## Publish a release
 
-1. Set `version` in `cli/Cargo.toml` and update `cli/Cargo.lock` if needed.
-2. Commit the version change.
-3. Tag that commit with the matching CLI tag and push it:
+The CLI release workflow uses `cli/VERSION` as its source of truth, requires a
+canonical stable `x.y.z` without leading zeroes, and checks that
+`cli/Cargo.toml` has the same version.
 
-   ```sh
-   git tag cli-v0.2.0
-   git push origin cli-v0.2.0
-   ```
+- A push to `main` publishes only when `cli/VERSION` differs from the
+  `CLI_VERSION` state in r-nacos.
+- Every tag starts the workflow. It skips only if both the version and commit
+  already match `CLI_VERSION` and `CLI_COMMIT`; otherwise it force-publishes.
+- A manual dispatch always force-publishes.
 
-`.github/workflows/release-cli.yml` builds locked, optimized binaries for Linux
-(x86_64 and arm64), macOS (Intel and Apple Silicon), and Windows x86_64. It
-publishes the binaries and `SHA256SUMS` to the GitHub Release.
+After publication, the workflow writes `CLI_COMMIT` and then `CLI_VERSION`;
+VERSION is the main-branch completion marker, so a partial state write retries.
+Tag names do not supply or validate the CLI version.
+
+`.gitea/workflows/release-cli.yml` serializes CLI releases without blocking the
+independent Server release group. It builds locked optimized binaries on the
+`amd64` and `darwin-arm64` runners, executes each native binary and checks its
+version/architecture, stages it under a run-and-attempt-specific identity, and
+publishes binaries, `SHA256SUMS`, and `manifest.json` (last) under the version
+from `cli/VERSION`.
