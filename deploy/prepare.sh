@@ -24,12 +24,15 @@
 #   /apps/pmo_backend/           empty and owned by deploy, if it was not there
 #   /etc/systemd/system/pmo_backend.service
 #   /etc/pmo_backend/env         root:deploy 640
+#   /etc/sudoers.d/pmo-backend   root:root 440 -- deploy may (re)start the unit
 
 set -euo pipefail
 
 staging="/tmp/pmo_backend-deploy"
 app_root="/apps/pmo_backend"
 env_file="/etc/pmo_backend/env"
+# No dot and no tilde in the name: sudo skips files in /etc/sudoers.d with either.
+sudoers_file="/etc/sudoers.d/pmo-backend"
 unit="pmo_backend.service"
 service_user="deploy"
 
@@ -87,5 +90,54 @@ runuser -u "${service_user}" -- test -w /apps || {
 say "registering the service"
 systemctl daemon-reload
 systemctl enable "${unit}" >/dev/null
+
+# `deploy.sh` restarts the service as `deploy`, and so does anybody maintaining
+# it by hand. The path comes from this machine rather than from a guess: sudoers
+# matches the command line literally, so a rule naming /bin/systemctl does not
+# apply to the /usr/bin/systemctl a person actually runs.
+say "allowing ${service_user} to control the service"
+systemctl_path="$(command -v systemctl || true)"
+test -n "${systemctl_path}" || { echo "no systemctl on PATH" >&2; exit 1; }
+command -v visudo >/dev/null || {
+  echo "no visudo, so the sudoers rule cannot be checked before installing it" >&2
+  echo "install the sudo package, or write ${sudoers_file} by hand" >&2
+  exit 1
+}
+
+sudoers_tmp="$(mktemp)"
+trap 'rm -f "${sudoers_tmp}"' EXIT
+cat > "${sudoers_tmp}" <<EOF
+# Written by deploy/prepare.sh. Do not edit; it is replaced on every deploy.
+#
+# Both spellings of the unit name, because sudoers matches the command line
+# literally: the deploy runs \`systemctl restart pmo_backend.service\` and a
+# person types \`systemctl restart pmo_backend\`.
+Cmnd_Alias PMO_BACKEND_CTL = ${systemctl_path} start pmo_backend, \\
+                             ${systemctl_path} start pmo_backend.service, \\
+                             ${systemctl_path} stop pmo_backend, \\
+                             ${systemctl_path} stop pmo_backend.service, \\
+                             ${systemctl_path} restart pmo_backend, \\
+                             ${systemctl_path} restart pmo_backend.service
+
+${service_user} ALL=(root) NOPASSWD: PMO_BACKEND_CTL
+EOF
+
+# Checked before it is installed. A file in /etc/sudoers.d that does not parse
+# takes sudo down for the whole machine, and this one is written unattended.
+visudo -c -f "${sudoers_tmp}" >/dev/null || {
+  echo "the generated sudoers rule does not parse; not installing it:" >&2
+  cat "${sudoers_tmp}" >&2
+  exit 1
+}
+install -m 440 -o root -g root "${sudoers_tmp}" "${sudoers_file}"
+
+# Parsing is not the same as taking effect: a file whose name sudo skips, or an
+# /etc/sudoers with no includedir, both leave a perfectly valid rule doing
+# nothing. Ask sudo what it now believes.
+sudo -l -U "${service_user}" 2>/dev/null | grep -q 'pmo_backend' || {
+  echo "${sudoers_file} installed, but sudo does not apply it to ${service_user}" >&2
+  echo "check that /etc/sudoers has an includedir line for /etc/sudoers.d" >&2
+  exit 1
+}
 
 echo "prepared"
