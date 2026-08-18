@@ -10,6 +10,12 @@ concurrency:
   group: release-cli
   cancel-in-progress: false
 
+# Container jobs otherwise default to /bin/sh under Gitea act. The release
+# steps and deploy helpers intentionally use Bash features such as pipefail.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   plan:
     runs-on: amd64
