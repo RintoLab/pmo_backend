@@ -59,12 +59,35 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
+  # The origins a browser may open the socket from, which is not the same thing
+  # as `url[host]` below. The frontend is served same-origin under its own name
+  # and only ever talks to that one; this API answers to a different name, which
+  # is what the CLI dials. `check_origin: true` -- the default -- compares the
+  # `Origin` header against `url[host]` with a plain string equality, so leaving
+  # it to that refuses every browser with a 403, raised inside the transport
+  # before `RintoPMOWeb.PiSocket.connect/3` is ever reached.
+  #
+  # Only browsers send `Origin`, and a request carrying none is let through
+  # whatever this says -- so the CLI is unaffected either way, and a wrong value
+  # here stays invisible until the first browser opens a socket.
+  #
+  # Comma-separated absolute origins, each with its scheme. A leading `*.` label
+  # is a suffix match, so `https://*.example.com` covers the bare name and
+  # everything under it. Unset falls back to `true`, which is the case where the
+  # frontend and this API answer to the same name.
+  browser_origins =
+    case System.get_env("BROWSER_ORIGINS") do
+      empty when empty in [nil, ""] -> true
+      list -> list |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+    end
+
   config :rinto_pmo_web, RintoPMOWeb.Endpoint,
     # The external address this is reached at, through the reverse proxy in
     # front of it. Only `url/1` and verified routes read it, and this API
     # returns ids rather than links, so a wrong value is cosmetic -- but
     # `example.com` was worse than cosmetic to leave lying in the config.
     url: [host: System.get_env("PHX_HOST") || "localhost", port: 443, scheme: "https"],
+    check_origin: browser_origins,
     http: [
       # All interfaces, and it has to stay that way: the reverse proxy in front
       # of this connects from off the box. Loopback here would answer the
