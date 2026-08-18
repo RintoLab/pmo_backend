@@ -12,9 +12,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: amd64
-    container:
-      image: ${{ vars.BUILD_IMAGE || 'hexpm/elixir:1.20.2-erlang-29.0.4-debian-trixie-20260713-slim' }}
+    runs-on: elixir-1.20.2-erlang-29.0.4-debain-trixie-slim
     defaults:
       run:
         shell: bash
@@ -30,14 +28,6 @@ jobs:
       RELEASE_REASON: release planning did not complete
       RELEASE_VERSION: unknown
     steps:
-      - name: Install release planning tools
-        run: |
-          set -euo pipefail
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends \
-            git curl ca-certificates jq
-          rm -rf /var/lib/apt/lists/*
-
       - name: Check out the triggered revision
         env:
           TOKEN: ${{ secrets.GITEA_TOKEN }}
@@ -136,15 +126,6 @@ jobs:
           else
             echo "optional DEPLOY_KNOWN_HOSTS is absent; intranet accept-new fallback will be used"
           fi
-
-      - name: Install build and deployment tools
-        if: env.SHOULD_PUBLISH == 'true'
-        run: |
-          set -euo pipefail
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends \
-            build-essential openssh-client
-          rm -rf /var/lib/apt/lists/*
 
       - name: Build the release
         if: env.SHOULD_PUBLISH == 'true'

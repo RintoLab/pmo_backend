@@ -10,17 +10,15 @@ concurrency:
   group: release-cli
   cancel-in-progress: false
 
-# Container jobs otherwise default to /bin/sh under Gitea act. The release
-# steps and deploy helpers intentionally use Bash features such as pipefail.
+# Release steps and deploy helpers intentionally use Bash features such as
+# pipefail.
 defaults:
   run:
     shell: bash
 
 jobs:
   plan:
-    runs-on: amd64
-    container:
-      image: rust:1.97.1-bookworm
+    runs-on: rust-1.97.1
     outputs:
       version: ${{ steps.plan.outputs.version }}
       should_publish: ${{ steps.plan.outputs.should_publish }}
@@ -42,12 +40,6 @@ jobs:
       PACKAGE_PUBLISH_USER: ${{ vars.PACKAGE_PUBLISH_USER }}
       PACKAGE_PUBLISH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
     steps:
-      - name: Install operations tools
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends git curl ca-certificates jq
-          rm -rf /var/lib/apt/lists/*
-
       - name: Check out the triggered revision
         env:
           TOKEN: ${{ secrets.GITEA_TOKEN }}
@@ -137,9 +129,7 @@ jobs:
   build-linux:
     needs: plan
     if: needs.plan.outputs.should_publish == 'true'
-    runs-on: amd64
-    container:
-      image: rust:1.97.1-bookworm
+    runs-on: rust-1.97.1
     env:
       PACKAGE_BASE_URL: ${{ gitea.server_url }}
       PACKAGE_OWNER: ${{ vars.PACKAGE_OWNER || 'Rinto' }}
@@ -232,9 +222,7 @@ jobs:
   publish:
     needs: [plan, build-linux, build-darwin]
     if: needs.plan.outputs.should_publish == 'true'
-    runs-on: amd64
-    container:
-      image: debian:bookworm-slim
+    runs-on: rust-1.97.1
     env:
       NACOS_URL: ${{ vars.NACOSURL || secrets.NACOSURL }}
       NACOS_USER: ${{ vars.NACOSUSER || secrets.NACOSUSER }}
@@ -253,7 +241,7 @@ jobs:
       FORCE: ${{ needs.plan.outputs.force }}
       SHA: ${{ gitea.sha }}
     steps:
-      - name: Install tools and check out
+      - name: Check out the triggered revision
         env:
           TOKEN: ${{ secrets.GITEA_TOKEN }}
           SERVER: ${{ gitea.server_url }}
@@ -261,9 +249,6 @@ jobs:
           REF: ${{ gitea.ref }}
         run: |
           set -euo pipefail
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends git curl ca-certificates jq coreutils
-          rm -rf /var/lib/apt/lists/*
           scheme="${SERVER%%://*}"; host="${SERVER#*://}"
           git init -q .
           git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${REPO}.git"
@@ -328,9 +313,7 @@ jobs:
   cleanup-staging:
     needs: [plan, build-linux, build-darwin, publish]
     if: always()
-    runs-on: amd64
-    container:
-      image: debian:bookworm-slim
+    runs-on: rust-1.97.1
     env:
       PACKAGE_BASE_URL: ${{ gitea.server_url }}
       PACKAGE_OWNER: ${{ vars.PACKAGE_OWNER || 'Rinto' }}
@@ -343,9 +326,6 @@ jobs:
         if: env.STAGING_VERSION != ''
         run: |
           set +e
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends curl ca-certificates
-          rm -rf /var/lib/apt/lists/*
           host="${PACKAGE_BASE_URL#*://}"; host="${host%%/*}"
           netrc="$(mktemp)"
           trap 'rm -f "${netrc}"' EXIT
@@ -364,9 +344,7 @@ jobs:
   notify:
     needs: [plan, build-linux, build-darwin, publish, cleanup-staging]
     if: always()
-    runs-on: amd64
-    container:
-      image: debian:bookworm-slim
+    runs-on: rust-1.97.1
     steps:
       - name: Finish Lark release card
         env:
@@ -391,9 +369,6 @@ jobs:
           RUN_URL: ${{ gitea.server_url }}/${{ gitea.repository }}/actions/runs/${{ gitea.run_id }}
         run: |
           set +e
-          apt-get update -qq && \
-            apt-get install -y -qq --no-install-recommends git curl ca-certificates jq
-          rm -rf /var/lib/apt/lists/*
           scheme="${SERVER%%://*}"; host="${SERVER#*://}"
           if ! (
             set -e
