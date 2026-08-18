@@ -30,12 +30,12 @@ jobs:
       RELEASE_REASON: release planning did not complete
       RELEASE_VERSION: unknown
     steps:
-      - name: Install build and operations tools
+      - name: Install release planning tools
         run: |
           set -euo pipefail
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
-            build-essential git openssh-client curl ca-certificates openssl jq
+            git curl ca-certificates jq
           rm -rf /var/lib/apt/lists/*
 
       - name: Check out the triggered revision
@@ -54,6 +54,24 @@ jobs:
           git fetch -q --depth 1 origin "${REF}"
           git checkout -q FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${SHA}"
+
+      - name: Notify Lark that Server release started
+        env:
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_CHAT_ID: ${{ secrets.LARK_CHAT_ID }}
+          LARK_API_BASE: ${{ vars.LARK_API_BASE || 'https://open.feishu.cn' }}
+          LARK_KEYWORD: ${{ vars.LARK_KEYWORD || 'Rinto 发布' }}
+          REF: ${{ gitea.ref }}
+          SHA: ${{ gitea.sha }}
+          RUN_URL: ${{ gitea.server_url }}/${{ gitea.repository }}/actions/runs/${{ gitea.run_id }}
+        run: |
+          set +e
+          version="$(tr -d '[:space:]' < VERSION)"
+          message_id="$(deploy/lark_notify.sh start Server "${version:-unknown}" \
+            "${REF}" "${SHA}" "release planning in progress" "${RUN_URL}")"
+          printf 'LARK_MESSAGE_ID=%s\n' "${message_id}" >> "${GITEA_ENV}"
+          exit 0
 
       - name: Decide whether to publish Server
         env:
@@ -118,6 +136,15 @@ jobs:
           else
             echo "optional DEPLOY_KNOWN_HOSTS is absent; intranet accept-new fallback will be used"
           fi
+
+      - name: Install build and deployment tools
+        if: env.SHOULD_PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            build-essential openssh-client
+          rm -rf /var/lib/apt/lists/*
 
       - name: Build the release
         if: env.SHOULD_PUBLISH == 'true'
@@ -227,24 +254,31 @@ jobs:
         if: always()
         run: shred -u env 2>/dev/null || rm -f env
 
-      - name: Notify Lark
+      - name: Finish Lark release card
         if: always()
         env:
-          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
-          LARK_SIGNING_SECRET: ${{ secrets.LARK_SIGNING_SECRET }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_CHAT_ID: ${{ secrets.LARK_CHAT_ID }}
+          LARK_API_BASE: ${{ vars.LARK_API_BASE || 'https://open.feishu.cn' }}
           LARK_KEYWORD: ${{ vars.LARK_KEYWORD || 'Rinto 发布' }}
           JOB_STATUS: ${{ job.status }}
           REF: ${{ gitea.ref }}
           SHA: ${{ gitea.sha }}
           RUN_URL: ${{ gitea.server_url }}/${{ gitea.repository }}/actions/runs/${{ gitea.run_id }}
         run: |
-          result="${JOB_STATUS}"
+          result=failure
+          reason="${RELEASE_REASON}"
           if [ "${SHOULD_PUBLISH}" = false ] && [ "${JOB_STATUS}" = success ]; then
             result=skipped
+          elif [ "${JOB_STATUS}" = success ]; then
+            result=success
+          else
+            reason="${reason}; job=${JOB_STATUS}"
           fi
           if [ -x deploy/lark_notify.sh ]; then
-            deploy/lark_notify.sh Server "${result}" "${RELEASE_VERSION}" \
-              "${REF}" "${SHA}" "${RELEASE_REASON}" "${RUN_URL}" || true
+            deploy/lark_notify.sh finish "${LARK_MESSAGE_ID:-}" Server "${result}" \
+              "${RELEASE_VERSION}" "${REF}" "${SHA}" "${reason}" "${RUN_URL}" || true
           else
             echo "warning: Lark notification helper is unavailable" >&2
           fi

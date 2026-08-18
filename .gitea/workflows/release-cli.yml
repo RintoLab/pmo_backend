@@ -27,6 +27,7 @@ jobs:
       force: ${{ steps.plan.outputs.force }}
       reason: ${{ steps.plan.outputs.reason }}
       staging_version: ${{ steps.plan.outputs.staging_version }}
+      lark_message_id: ${{ steps.notify-start.outputs.message_id }}
     env:
       NACOS_URL: ${{ vars.NACOSURL || secrets.NACOSURL }}
       NACOS_USER: ${{ vars.NACOSUSER || secrets.NACOSUSER }}
@@ -44,7 +45,7 @@ jobs:
       - name: Install operations tools
         run: |
           apt-get update -qq
-          apt-get install -y -qq --no-install-recommends git curl ca-certificates
+          apt-get install -y -qq --no-install-recommends git curl ca-certificates jq
           rm -rf /var/lib/apt/lists/*
 
       - name: Check out the triggered revision
@@ -62,6 +63,25 @@ jobs:
           git fetch -q --depth 1 origin "${REF}"
           git checkout -q FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${SHA}"
+
+      - name: Notify Lark that CLI release started
+        id: notify-start
+        env:
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_CHAT_ID: ${{ secrets.LARK_CHAT_ID }}
+          LARK_API_BASE: ${{ vars.LARK_API_BASE || 'https://open.feishu.cn' }}
+          LARK_KEYWORD: ${{ vars.LARK_KEYWORD || 'Rinto 发布' }}
+          REF: ${{ gitea.ref }}
+          SHA: ${{ gitea.sha }}
+          RUN_URL: ${{ gitea.server_url }}/${{ gitea.repository }}/actions/runs/${{ gitea.run_id }}
+        run: |
+          set +e
+          version="$(tr -d '[:space:]' < cli/VERSION)"
+          message_id="$(deploy/lark_notify.sh start CLI "${version:-unknown}" \
+            "${REF}" "${SHA}" "release planning in progress" "${RUN_URL}")"
+          printf 'message_id=%s\n' "${message_id}" >> "${GITEA_OUTPUT}"
+          exit 0
 
       - name: Decide whether to publish CLI
         id: plan
@@ -348,7 +368,7 @@ jobs:
     container:
       image: debian:bookworm-slim
     steps:
-      - name: Notify Lark
+      - name: Finish Lark release card
         env:
           TOKEN: ${{ secrets.GITEA_TOKEN }}
           SERVER: ${{ gitea.server_url }}
@@ -362,14 +382,17 @@ jobs:
           BUILD_LINUX_RESULT: ${{ needs.build-linux.result }}
           BUILD_DARWIN_RESULT: ${{ needs.build-darwin.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
-          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
-          LARK_SIGNING_SECRET: ${{ secrets.LARK_SIGNING_SECRET }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_CHAT_ID: ${{ secrets.LARK_CHAT_ID }}
+          LARK_API_BASE: ${{ vars.LARK_API_BASE || 'https://open.feishu.cn' }}
           LARK_KEYWORD: ${{ vars.LARK_KEYWORD || 'Rinto 发布' }}
+          LARK_MESSAGE_ID: ${{ needs.plan.outputs.lark_message_id }}
           RUN_URL: ${{ gitea.server_url }}/${{ gitea.repository }}/actions/runs/${{ gitea.run_id }}
         run: |
           set +e
           apt-get update -qq && \
-            apt-get install -y -qq --no-install-recommends git curl ca-certificates openssl jq
+            apt-get install -y -qq --no-install-recommends git curl ca-certificates jq
           rm -rf /var/lib/apt/lists/*
           scheme="${SERVER%%://*}"; host="${SERVER#*://}"
           if ! (
@@ -394,6 +417,6 @@ jobs:
           else
             reason="${reason}; plan=${PLAN_RESULT}, linux=${BUILD_LINUX_RESULT}, darwin=${BUILD_DARWIN_RESULT}, publish=${PUBLISH_RESULT}"
           fi
-          source/deploy/lark_notify.sh CLI "${result}" "${VERSION:-unknown}" \
-            "${REF}" "${SHA}" "${reason}" "${RUN_URL}" || true
+          source/deploy/lark_notify.sh finish "${LARK_MESSAGE_ID:-}" CLI "${result}" \
+            "${VERSION:-unknown}" "${REF}" "${SHA}" "${reason}" "${RUN_URL}" || true
           exit 0

@@ -2,6 +2,34 @@
 
 The CLI is designed for local coding agents that execute work from Rinto.
 
+## Install
+
+Published binaries are available for Linux amd64 and macOS Apple Silicon. The
+package assets include the platform in their filename, but this command downloads
+the selected asset to a temporary file and atomically installs it as the stable
+command `~/.local/bin/rinto-pmo`:
+
+```sh
+CLI_VERSION=0.1.0 # keep this aligned with cli/VERSION
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64) asset=rinto-pmo-linux-amd64 ;;
+  Darwin/arm64) asset=rinto-pmo-darwin-arm64 ;;
+  *) echo "unsupported platform: $(uname -s)/$(uname -m)" >&2; exit 1 ;;
+esac
+mkdir -p "$HOME/.local/bin"
+tmp="$HOME/.local/bin/.rinto-pmo.install.$$"
+trap 'rm -f "$tmp"' EXIT
+curl -fsSL "https://gitea.kenton.wang/api/packages/Rinto/generic/rinto-pmo/$CLI_VERSION/$asset" -o "$tmp"
+chmod 0755 "$tmp"
+mv -f "$tmp" "$HOME/.local/bin/rinto-pmo"
+trap - EXIT
+"$HOME/.local/bin/rinto-pmo" --version
+```
+
+Add `$HOME/.local/bin` to `PATH` if it is not already there. For example, add
+`export PATH="$HOME/.local/bin:$PATH"` to your shell profile, then verify with
+`rinto-pmo --version`.
+
 ## Configure
 
 ```sh
@@ -34,7 +62,9 @@ The updater paginates the public Gitea package-versions API at
 `https://gitea.kenton.wang` for `Rinto/rinto-pmo` with a bounded safety cap,
 ignores versions without a final manifest, downloads the current platform asset,
 verifies its size and SHA-256,
-and atomically replaces the running executable. If a forced publication replaces
+and atomically replaces the running executable at its existing path. The downloaded
+asset name is never used as the installed filename, so an installation named
+`rinto-pmo` remains `rinto-pmo` after every update. If a forced publication replaces
 the same semantic version, the updater compares its own executable to the final
 manifest and offers a same-version refresh when the bytes differ. Automatic
 updates are published for Linux amd64 and macOS Apple Silicon only.

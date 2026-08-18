@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn installs_a_download_over_the_existing_binary() {
+    fn self_update_preserves_the_installed_executable_name() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -618,6 +618,9 @@ mod tests {
         std::fs::write(&executable, b"old binary").unwrap();
         install_at(&executable, b"new binary").unwrap();
         assert_eq!(std::fs::read(&executable).unwrap(), b"new binary");
+        assert_eq!(executable.file_name().unwrap(), "rinto-pmo");
+        assert!(!directory.join("rinto-pmo-linux-amd64").exists());
+        assert!(!directory.join("rinto-pmo-darwin-arm64").exists());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
