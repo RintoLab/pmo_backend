@@ -6,7 +6,7 @@ defmodule RintoPMO.SettingsTest do
 
   describe "list_settings/0" do
     test "answers with every role, empty ones included" do
-      assert Settings.list_settings() == %{"title_actor" => nil}
+      assert Settings.list_settings() == %{"title_actor" => nil, "decomposition_actor" => nil}
     end
 
     test "carries the actor in each filled role" do
@@ -86,7 +86,7 @@ defmodule RintoPMO.SettingsTest do
       assert {:ok, _disabled} = Actors.update_actor(actor, %{"enabled" => false})
 
       assert Settings.get_actor("title_actor") == nil
-      assert Settings.list_settings() == %{"title_actor" => nil}
+      assert Settings.list_settings() == %{"title_actor" => nil, "decomposition_actor" => nil}
     end
   end
 

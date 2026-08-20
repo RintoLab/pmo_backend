@@ -29,7 +29,8 @@ config :rinto_pmo, :injectors,
   tasks: RintoPMO.TasksMock,
   rpc: RintoPMO.Agent.RpcMock,
   os_process: RintoPMO.OSProcessMock,
-  title_generator: RintoPMO.Agent.TitleGeneratorMock
+  title_generator: RintoPMO.Agent.TitleGeneratorMock,
+  wbs_generator: RintoPMO.Agent.WbsGeneratorMock
 
 # Uploads land in a scratch directory: tests write real files, and the project
 # tree should not collect them.

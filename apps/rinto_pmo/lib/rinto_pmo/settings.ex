@@ -12,12 +12,23 @@ defmodule RintoPMO.Settings do
 
   ## A role is a pointer, and can be empty
 
-  Every reader treats "nobody" as an ordinary state and has something else to
-  do -- `RintoPMO.Conversations.Titles` falls back to the topic's own assistant
-  actor. So a role may be unset, may point at an actor that has since been
-  deleted (the column is nulled, not the row), and may point at one that has
-  since been disabled. All three read as `nil` from `get_actor/1`, which is why
-  nothing here has to be kept in step with the actors table.
+  A role may be unset, may point at an actor that has since been deleted (the
+  column is nulled, not the row), and may point at one that has since been
+  disabled. All three read as `nil` from `get_actor/1`, which is why nothing
+  here has to be kept in step with the actors table.
+
+  What an empty role means is the reader's to decide, and the two readers
+  answer differently because their situations differ:
+
+    * `RintoPMO.Conversations.Titles` falls back to the topic's own assistant.
+      Naming happens inside a conversation, so there is always another actor
+      standing right there to inherit from.
+    * decomposing a document refuses outright. It belongs to no conversation,
+      so there is nothing to fall back *to*, and picking some actor off the
+      list would be this module inventing an answer nobody gave it.
+
+  Neither is a rule about roles in general. An empty role is an ordinary state;
+  what to do about it is a question about the job, not about the pointer.
 
   Being strict at write time and lenient at read time is deliberate:
   `put_actor/2` refuses a human or a disabled actor so that the mistake is
@@ -35,10 +46,12 @@ defmodule RintoPMO.Settings do
   The roles the system knows how to fill.
 
   * `"title_actor"` -- names topics from their first message
+  * `"decomposition_actor"` -- breaks a formal document down into a task
+    document. Unlike naming, this one has no fallback: see above.
   """
   @type key :: String.t()
 
-  @keys ~w(title_actor)
+  @keys ~w(title_actor decomposition_actor)
 
   @doc """
   The roles that exist.

@@ -41,6 +41,7 @@ defmodule RintoPMO.Documents do
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Markdown
+  alias RintoPMO.Settings
   alias RintoPMO.Utils
 
   @behaviour RintoPMO.Documents.Behaviour
@@ -113,11 +114,18 @@ defmodule RintoPMO.Documents do
   always sent one.
   """
   @impl true
-  def create_document(attrs) do
+  def create_document(attrs), do: insert_document(%Document{}, attrs)
+
+  # The seed carries whatever is set programmatically rather than asked for.
+  # `source_document_id` goes here and not in `cast`: it is a claim about where
+  # a document came from, and a caller able to make that claim could point a
+  # document at a source it was never derived from -- which is what decides
+  # whether that source may still be broken down.
+  defp insert_document(%Document{} = seed, attrs) do
     with {:ok, attrs} <- put_default_project(attrs),
          {:ok, author_id} <- document_author(attrs),
          {:ok, attrs} <- split_markdown(attrs, author_id) do
-      %Document{}
+      seed
       |> Document.creation_changeset(attrs)
       |> Repo.insert()
       |> case do
@@ -170,6 +178,73 @@ defmodule RintoPMO.Documents do
     document
     |> Document.formalize_changeset()
     |> Repo.update()
+  end
+
+  @doc """
+  Breaks a formal document down into a new document holding the work it implies.
+
+  Two documents, and the second one is ordinary: it has a revision history, it
+  can be annotated and proposed against, and it starts `:draft` like everything
+  else. Nothing here files any tasks -- reading the breakdown and creating the
+  work breakdown from it is a separate step, and the gate on it is that
+  somebody adopted this document first.
+
+  ## Three refusals, and there is no fourth
+
+    * the source must be `:formal`. Breaking down something nobody has vouched
+      for would be work built on a draft, and adoption is exactly the moment
+      somebody decided the plan is worth acting on
+    * the source must not already have a breakdown standing. One at a time, the
+      way a topic holds one live proposal per block: a second one is not a
+      second opinion, it is two answers with nothing to choose between them.
+      Archiving the first frees the slot, which is how a bad one is redone
+    * somebody must hold the `decomposition_actor` role. Naming can fall back
+      to the topic's own assistant; this belongs to no topic, so there is
+      nothing to fall back to and picking one off the list would be inventing
+      an answer nobody gave
+
+  Whether the source is archived is deliberately **not** checked. Archiving is
+  a terminal state that needs no special handling here, and a check would only
+  catch breaking down an already-archived document -- not the ordinary case of
+  archiving one that has already been broken down.
+
+  ## What the model is and is not trusted with
+
+  It is given the document and asked for Markdown. The title is not its to
+  choose -- it is built from the source's, the same rule that keeps a title out
+  of a document's body -- and neither is the author or the project.
+
+  The shape of the returned Markdown is not checked. What the notation means
+  belongs to whatever reads the breakdown, and that does not exist yet.
+  """
+  @impl true
+  def decompose_document(%Document{} = document) do
+    with :ok <- decomposable(document),
+         {:ok, actor} <- decomposition_actor(),
+         {:ok, markdown} <- breakdown(document, actor) do
+      insert_document(%Document{source_document_id: document.id}, %{
+        title: breakdown_title(document),
+        project_id: document.project_id,
+        actor_id: actor.id,
+        markdown: markdown
+      })
+    end
+  end
+
+  @doc """
+  The breakdown standing against a document, or `nil`.
+
+  Archived ones do not count: archiving a breakdown is how somebody says that
+  one was wrong, and it has to leave room for the next.
+  """
+  @impl true
+  def breakdown_of(%Document{} = document) do
+    Document
+    |> where([candidate], candidate.source_document_id == ^document.id)
+    |> where([candidate], is_nil(candidate.archived_at))
+    |> order_by([candidate], asc: candidate.id)
+    |> limit(1)
+    |> Repo.one()
   end
 
   @doc """
@@ -1356,6 +1431,54 @@ defmodule RintoPMO.Documents do
       {:error, {:annotation_not_found, %{annotation_id: annotation_id}}}
   end
 
+  defp decomposable(%Document{status: :formal} = document) do
+    case breakdown_of(document) do
+      nil -> :ok
+      standing -> {:error, :decomposition_exists, %{document_id: standing.id}}
+    end
+  end
+
+  defp decomposable(%Document{status: status}) do
+    {:error, :document_not_formal, %{status: status}}
+  end
+
+  defp decomposition_actor do
+    case Settings.get_actor("decomposition_actor") do
+      nil -> {:error, :no_decomposition_actor, %{}}
+      actor -> {:ok, actor}
+    end
+  end
+
+  defp breakdown(%Document{} = document, actor) do
+    revision = latest_revision!(document, preload_blocks?: true)
+
+    input = %{
+      title: revision.title,
+      blocks: Enum.map(revision.blocks, & &1.content)
+    }
+
+    opts = [provider: actor.provider, model: actor.model, thinking: actor.thinking_level]
+
+    case wbs_generator().generate(input, opts) do
+      {:ok, markdown} ->
+        {:ok, markdown}
+
+      # Relayed rather than classified. Whatever went wrong -- the document did
+      # not fit, a key is missing, the provider stopped answering -- is the
+      # provider's word, and this layer has nothing to add to it that would not
+      # be a guess.
+      {:error, reason} ->
+        {:error, :decomposition_failed, %{reason: inspect(reason)}}
+    end
+  end
+
+  # Built here, never asked of the model. A title is a field of its own and is
+  # never read out of a body -- the same rule `POST /documents` follows -- and
+  # a breakdown that could name itself could name itself anything.
+  defp breakdown_title(%Document{} = document) do
+    "#{latest_revision!(document, preload_blocks?: false).title} · 任务分解"
+  end
+
   defp unwrap_error({:ok, value}), do: {:ok, value}
   defp unwrap_error({:error, %Changeset{} = changeset}), do: {:error, changeset}
   defp unwrap_error({:error, {code, details}}), do: {:error, code, details}
@@ -1368,4 +1491,8 @@ defmodule RintoPMO.Documents do
 
   # And which project a document with none of its own belongs to.
   defp projects, do: Utils.module(:projects)
+
+  # The one model call this context makes, behind the seam so that every
+  # refusal around it is testable without one.
+  defp wbs_generator, do: Utils.module(:wbs_generator)
 end

@@ -222,8 +222,10 @@ paths:
         Replaces whoever was in the role; send `"actor_id": null` to empty it.
         The actor must be an enabled AI actor -- a human has no model to ask.
         Disabling or deleting the actor later is not an error: the role reads
-        as empty and its reader falls back (for `title_actor`, to the topic's
-        own assistant actor).
+        as empty, and what that means is the reader's to decide. `title_actor`
+        falls back to the topic's own assistant; `decomposition_actor` has no
+        conversation to inherit from, so decomposition is refused until the
+        role is filled again.
 
 
         Roles are defined by the system, so an unknown `key` is a 404 rather
@@ -2162,10 +2164,10 @@ components:
       name: key
       in: path
       required: true
-      description: The system-wide role. Only `title_actor` exists today.
+      description: The system-wide role being filled.
       schema:
         type: string
-        enum: [title_actor]
+        enum: [title_actor, decomposition_actor]
     ActorId:
       name: id
       in: path
@@ -4026,7 +4028,7 @@ components:
       additionalProperties: false
     Settings:
       type: object
-      required: [title_actor]
+      required: [title_actor, decomposition_actor]
       properties:
         title_actor:
           allOf:
@@ -4037,6 +4039,17 @@ components:
             Null means nobody has been chosen, or the chosen one has since been
             disabled or deleted -- in which case each topic is named by its own
             `assistant_actor_id` instead.
+        decomposition_actor:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: >
+            The actor that breaks a formal document down into a task document.
+            Null means nobody has been chosen, or the chosen one has since been
+            disabled or deleted -- and unlike naming there is no fallback:
+            decomposition belongs to no conversation, so there is no assistant
+            to inherit from and the attempt is refused until somebody fills the
+            role.
       additionalProperties: false
     SettingsResponse:
       type: object

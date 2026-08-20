@@ -1,6 +1,7 @@
 defmodule RintoPMO.DocumentsTest do
   use RintoPMO.DataCase, async: true
 
+  alias RintoPMO.Agent.WbsGeneratorMock
   alias RintoPMO.Conversations
   alias RintoPMO.ConversationsMock
   alias RintoPMO.Documents
@@ -8,6 +9,7 @@ defmodule RintoPMO.DocumentsTest do
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Projects
   alias RintoPMO.ProjectsMock
+  alias RintoPMO.Settings
 
   setup do
     # Creating a document inside a topic reads that topic to learn who wrote it.
@@ -455,6 +457,134 @@ defmodule RintoPMO.DocumentsTest do
         Documents.get_revision!(document, other_revision.id)
       end
     end
+  end
+
+  # Breaking a plan down produces a second document, and an ordinary one: it
+  # starts `:draft` like everything else and has to be adopted in its own right
+  # before anything downstream may act on it. The gate sits on the *source* --
+  # only a plan somebody vouched for is worth turning into work.
+  describe "decomposing a document into a task document" do
+    setup do
+      actor = insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
+      {:ok, _settings} = Settings.put_actor("decomposition_actor", actor.id)
+      {:ok, actor: actor}
+    end
+
+    test "writes the breakdown as a draft document derived from the source", %{actor: actor} do
+      project = insert(:project)
+
+      {:ok, source} =
+        create_document(project, %{
+          title: "Rollout plan",
+          actor_id: actor.id,
+          markdown: "## Canary\n\nTen percent first.\n\n## Rollback\n\nOne switch."
+        })
+
+      {:ok, source} = Documents.formalize_document(source)
+
+      expect(WbsGeneratorMock, :generate, fn input, opts ->
+        # The whole document, which is the entire input to deciding what the
+        # work is -- and the reason this call is not shaped like naming's.
+        assert input.title == "Rollout plan"
+        assert input.blocks == ["## Canary\n\nTen percent first.", "## Rollback\n\nOne switch."]
+        assert opts[:provider] == "google"
+        assert opts[:model] == "flash"
+        assert opts[:thinking] == "off"
+
+        {:ok, "## Canary\n\n- Wire the ten percent split"}
+      end)
+
+      assert {:ok, breakdown} = Documents.decompose_document(source)
+
+      assert breakdown.status == :draft
+      assert breakdown.source_document_id == source.id
+      assert breakdown.project_id == project.id
+      assert breakdown.latest_revision.title == "Rollout plan · 任务分解"
+
+      [block] = Documents.get_document!(breakdown.id).latest_revision.blocks
+      assert block.content == "## Canary\n\n- Wire the ten percent split"
+      assert block.actor_id == actor.id
+    end
+
+    test "refuses a source nobody has adopted" do
+      project = insert(:project)
+      {:ok, draft} = create_document(project, %{title: "Half an idea"})
+
+      assert {:error, :document_not_formal, %{status: :draft}} =
+               Documents.decompose_document(draft)
+    end
+
+    # One breakdown at a time, the way a topic holds one live proposal per
+    # block. Two would be two answers with nothing to choose between them.
+    test "refuses while a breakdown already stands" do
+      source = formal_document()
+
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:ok, "- Something"} end)
+      assert {:ok, first} = Documents.decompose_document(source)
+
+      assert {:error, :decomposition_exists, %{document_id: standing}} =
+               Documents.decompose_document(source)
+
+      assert standing == first.id
+    end
+
+    # Which is how a bad breakdown is redone: throw it away, ask again.
+    test "frees the slot when the standing breakdown is archived" do
+      source = formal_document()
+
+      expect(WbsGeneratorMock, :generate, 2, fn _input, _opts -> {:ok, "- Something"} end)
+      assert {:ok, first} = Documents.decompose_document(source)
+      assert {:ok, _archived} = Documents.archive_document(first)
+
+      assert {:ok, second} = Documents.decompose_document(source)
+      refute second.id == first.id
+    end
+
+    # Naming falls back to the topic's own assistant. This belongs to no topic,
+    # so there is nothing to fall back to and nothing to pick instead.
+    test "refuses when nobody holds the role" do
+      {:ok, _settings} = Settings.put_actor("decomposition_actor", nil)
+      source = formal_document()
+
+      assert {:error, :no_decomposition_actor, %{}} = Documents.decompose_document(source)
+    end
+
+    # No fallback and no invented tree: a breakdown nobody could produce is not
+    # recoverable by producing a worse one.
+    test "relays a model failure instead of writing anything" do
+      source = formal_document()
+
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, :timeout} end)
+
+      assert {:error, :decomposition_failed, %{reason: reason}} =
+               Documents.decompose_document(source)
+
+      assert reason =~ "timeout"
+      assert Documents.breakdown_of(source) == nil
+    end
+
+    test "breakdown_of/1 ignores archived ones" do
+      source = formal_document()
+
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:ok, "- Something"} end)
+      assert {:ok, breakdown} = Documents.decompose_document(source)
+      assert Documents.breakdown_of(source).id == breakdown.id
+
+      assert {:ok, _archived} = Documents.archive_document(breakdown)
+      assert Documents.breakdown_of(source) == nil
+    end
+  end
+
+  defp formal_document do
+    {:ok, document} =
+      Documents.create_document(%{
+        title: "Rollout plan",
+        actor_id: insert(:actor).id,
+        markdown: "## Canary\n\nText"
+      })
+
+    {:ok, formal} = Documents.formalize_document(document)
+    formal
   end
 
   defp create_document(project, attrs) do
