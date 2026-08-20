@@ -1555,10 +1555,15 @@ defmodule RintoPMO.Documents do
     })
   end
 
+  # A reason that was already put into words travels as it is. Anything else
+  # gets the code in front of it, which is better than nothing but is a sign
+  # the case is worth wording too.
   defp fail_decomposition(%Decomposition{} = decomposition, code, details) do
+    reason = Map.get(details, :reason) || "#{code}: #{inspect(details)}"
+
     {:ok, failed} =
       decomposition
-      |> Decomposition.failed_changeset("#{code}: #{inspect(details)}")
+      |> Decomposition.failed_changeset(reason)
       |> Repo.update()
 
     Notifier.broadcast_decomposition(failed)
@@ -1613,9 +1618,21 @@ defmodule RintoPMO.Documents do
       # provider's word, and this layer has nothing to add to it that would not
       # be a guess.
       {:error, reason} ->
-        {:error, :decomposition_failed, %{reason: inspect(reason)}}
+        {:error, :decomposition_failed, %{reason: failure_reason(reason)}}
     end
   end
+
+  # Turned into a sentence here rather than left as a term, because the far end
+  # of this is a person reading why nothing happened. `inspect/1` on the tuple
+  # was what shipped first, and what it produced -- `{:pi_exit, 1}` -- named the
+  # exit code of a process the reader has never heard of and dropped the one
+  # sentence that mattered.
+  defp failure_reason({:pi_exit, code, ""}), do: "the model call exited #{code}, saying nothing"
+  defp failure_reason({:pi_exit, _code, complaint}), do: complaint
+  defp failure_reason(:timeout), do: "the model call ran out of time"
+  defp failure_reason(:empty_output), do: "the model answered with nothing"
+  defp failure_reason(:pi_not_found), do: "the agent runtime is not installed on the server"
+  defp failure_reason(other), do: inspect(other)
 
   # Built here, never asked of the model. A title is a field of its own and is
   # never read out of a body -- the same rule `POST /documents` follows -- and

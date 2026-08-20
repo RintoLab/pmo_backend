@@ -607,10 +607,36 @@ defmodule RintoPMO.DocumentsTest do
 
       assert_received {:decomposition_updated, %{status: :running}}
       assert_received {:decomposition_updated, %{status: :failed} = failed}
-      assert failed.error =~ "decomposition_failed"
-      assert failed.error =~ "timeout"
+      assert failed.error == "the model call ran out of time"
       assert failed.result_document_id == nil
       assert Documents.breakdown_of(source) == nil
+    end
+
+    # The whole reason the field exists. What shipped first stored
+    # `{:pi_exit, 1}` -- an exit code of a process the reader has never heard
+    # of -- while the sentence that explained it went only to the log.
+    test "records the provider's own words when the model call fails" do
+      source = formal_document()
+      {:ok, decomposition} = Documents.request_decomposition(source)
+
+      expect(WbsGeneratorMock, :generate, fn _input, _opts ->
+        {:error, {:pi_exit, 1, "google: API key not valid. Please pass a valid API key."}}
+      end)
+
+      assert :ok = Documents.run_decomposition(decomposition)
+
+      assert Documents.latest_decomposition(source).error ==
+               "google: API key not valid. Please pass a valid API key."
+    end
+
+    test "says so plainly when the model call fails without explaining itself" do
+      source = formal_document()
+      {:ok, decomposition} = Documents.request_decomposition(source)
+
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, {:pi_exit, 1, ""}} end)
+
+      assert :ok = Documents.run_decomposition(decomposition)
+      assert Documents.latest_decomposition(source).error =~ "exited 1"
     end
 
     # An attempt that failed a minute ago is exactly what somebody opening the

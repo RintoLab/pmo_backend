@@ -67,7 +67,7 @@ defmodule RintoPMO.Agent.WbsGenerator do
           :pi_not_found
           | :timeout
           | :empty_output
-          | {:pi_exit, non_neg_integer()}
+          | {:pi_exit, non_neg_integer(), String.t()}
           | {:spawn_failed, term()}
 
   defmodule Behaviour do
@@ -238,16 +238,31 @@ defmodule RintoPMO.Agent.WbsGenerator do
   end
 
   # Whatever the provider complained about -- a context window, a key, a rate
-  # limit -- pi prints on stderr and exits non-zero. It is logged rather than
-  # returned because the reason a caller can act on is "there is no breakdown";
-  # what to tell the person waiting is stamped where the attempt is recorded.
+  # limit -- pi prints on stderr and exits non-zero.
+  #
+  # The complaint is **carried back**, not merely logged. It was logged only at
+  # first, on the reasoning that the caller can act on "there is no breakdown"
+  # and nothing more. That was wrong, and the first real failure showed it: the
+  # attempt recorded `{:pi_exit, 1}`, which tells the person waiting nothing at
+  # all, while the one sentence that would have told them everything sat in a
+  # log they were not reading. It is still logged, for whoever is reading logs.
   defp finish({:exit, code}, _stdout, stderr) do
     complaint = stderr |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
     Logger.warning("wbs generation: pi exited #{code}: #{complaint}")
-    {:error, {:pi_exit, code}}
+    {:error, {:pi_exit, code, truncate(complaint)}}
   end
 
   defp finish(status, _stdout, _stderr), do: {:error, {:spawn_failed, status}}
+
+  # A provider that decides to print a stack trace should not put one in a
+  # field somebody reads in a panel. The whole of it is in the log.
+  @complaint_limit 2_000
+
+  defp truncate(complaint) when byte_size(complaint) <= @complaint_limit, do: complaint
+
+  defp truncate(complaint) do
+    String.slice(complaint, 0, @complaint_limit) <> "… (truncated; the whole of it is in the log)"
+  end
 
   # Absent means nobody is watching, which is a legitimate way to call this --
   # the streaming is for a person, not for the result.
