@@ -10,7 +10,7 @@ the selected asset to a temporary file and atomically installs it as the stable
 command `~/.local/bin/rinto-pmo`:
 
 ```sh
-CLI_VERSION=0.1.0 # keep this aligned with cli/VERSION
+CLI_VERSION=0.1.1 # keep this aligned with cli/VERSION
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64) asset=rinto-pmo-linux-amd64 ;;
   Darwin/arm64) asset=rinto-pmo-darwin-arm64 ;;
@@ -58,11 +58,14 @@ rinto-pmo update --check
 rinto-pmo update
 ```
 
-The updater paginates the public Gitea package-versions API at
-`https://gitea.kenton.wang` for `Rinto/rinto-pmo` with a bounded safety cap,
-ignores versions without a final manifest, downloads the current platform asset,
+The updater reads `manifest.json` from the `latest` pointer version of the
+`Rinto/rinto-pmo` generic package at `https://gitea.kenton.wang`, then downloads
+the current platform asset from the concrete version that manifest declares,
 verifies its size and SHA-256,
-and atomically replaces the running executable at its existing path. The downloaded
+and atomically replaces the running executable at its existing path. Discovery
+deliberately avoids the `/api/v1/packages` versions API: that one requires a
+signed-in Gitea user and answers `401` to the CLI, while package *contents* are
+anonymously readable. The downloaded
 asset name is never used as the installed filename, so an installation named
 `rinto-pmo` remains `rinto-pmo` after every update. If a forced publication replaces
 the same semantic version, the updater compares its own executable to the final
@@ -91,3 +94,8 @@ independent Server release group. It builds locked optimized binaries on the
 version/architecture, stages it under a run-and-attempt-specific identity, and
 publishes binaries, `SHA256SUMS`, and `manifest.json` (last) under the version
 from `cli/VERSION`.
+
+It then republishes that same `manifest.json` under the mutable `latest` pointer
+version, which is what `rinto-pmo update` reads. The pointer is written after the
+versioned assets, so it never advertises a partial publication, and the pointer
+name is kept in step with `POINTER_VERSION` in `cli/src/update.rs`.

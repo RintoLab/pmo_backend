@@ -13,8 +13,10 @@ const PACKAGE_NAME: &str = "rinto-pmo";
 const USER_AGENT: &str = "rinto-pmo-cli-updater";
 const MAX_BINARY_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_JSON_BYTES: u64 = 1024 * 1024;
-const PACKAGE_PAGE_SIZE: usize = 50;
-const MAX_PACKAGE_PAGES: usize = 20;
+// The package-versions API requires a signed-in Gitea user, so the release
+// republishes the finalized manifest under this fixed pointer version, which is
+// readable through the anonymous package-content route the download already uses.
+const POINTER_VERSION: &str = "latest";
 
 #[derive(Args)]
 pub struct UpdateArgs {
@@ -31,9 +33,8 @@ pub fn run(args: UpdateArgs) -> Result<()> {
         ))
     })?;
 
-    let versions = list_package_versions()?;
-    let (latest, manifest) = newest_finalized(versions)?
-        .ok_or_else(|| Error::Network("Gitea has no finalized CLI package".to_string()))?;
+    let manifest = latest_manifest()?;
+    let latest = manifest_version(&manifest)?;
 
     if latest < current {
         println!("already current: {current}");
@@ -65,7 +66,7 @@ pub fn run(args: UpdateArgs) -> Result<()> {
         return Ok(());
     }
 
-    let url = package_file_url(latest, &asset.name);
+    let url = package_file_url(&latest.to_string(), &asset.name);
     let binary = download(&url, asset.size)?;
     verify_sha256(&binary, &asset.sha256)?;
     install(&binary)?;
@@ -78,69 +79,26 @@ pub fn run(args: UpdateArgs) -> Result<()> {
     Ok(())
 }
 
-fn package_file_url(version: Version, name: &str) -> String {
+fn package_file_url(version: &str, name: &str) -> String {
     format!("{GITEA_BASE_URL}/api/packages/{PACKAGE_OWNER}/generic/{PACKAGE_NAME}/{version}/{name}")
 }
 
-fn newest_finalized(versions: Vec<Version>) -> Result<Option<(Version, Value)>> {
-    for version in versions.into_iter().rev() {
-        let url = package_file_url(version, "manifest.json");
-        if let Some(manifest) = get_json_optional(&url)? {
-            let declared = manifest
-                .get("version")
-                .and_then(Value::as_str)
-                .and_then(Version::parse)
-                .ok_or_else(|| {
-                    Error::Network(format!("package {version} has an invalid manifest version"))
-                })?;
-            if declared != version {
-                return Err(Error::Network(format!(
-                    "package {version} manifest declares version {declared}"
-                )));
-            }
-            return Ok(Some((version, manifest)));
-        }
-    }
-    Ok(None)
+fn latest_manifest() -> Result<Value> {
+    let url = package_file_url(POINTER_VERSION, "manifest.json");
+    get_json_optional(&url)?
+        .ok_or_else(|| Error::Network(format!("Gitea has no finalized CLI package at {url}")))
 }
 
-fn list_package_versions() -> Result<Vec<Version>> {
-    let mut versions = Vec::new();
-    for page in 1..=MAX_PACKAGE_PAGES {
-        let payload = get_json(&format!(
-            "{GITEA_BASE_URL}/api/v1/packages/{PACKAGE_OWNER}/generic/{PACKAGE_NAME}?page={page}&limit={PACKAGE_PAGE_SIZE}"
-        ))?;
-        let count = append_package_page(&mut versions, &payload)?;
-        if count < PACKAGE_PAGE_SIZE {
-            versions.sort_unstable();
-            versions.dedup();
-            return Ok(versions);
-        }
-    }
-    Err(Error::Network(format!(
-        "Gitea returned at least {} CLI package versions; refusing to exceed the pagination safety cap",
-        PACKAGE_PAGE_SIZE * MAX_PACKAGE_PAGES
-    )))
-}
-
-fn append_package_page(versions: &mut Vec<Version>, packages: &Value) -> Result<usize> {
-    let (mut page_versions, count) = package_versions(packages)?;
-    versions.append(&mut page_versions);
-    Ok(count)
-}
-
-fn package_versions(packages: &Value) -> Result<(Vec<Version>, usize)> {
-    let packages = packages.as_array().ok_or_else(|| {
-        Error::Network("Gitea package versions response is not an array".to_string())
-    })?;
-    let versions = packages
-        .iter()
-        .filter(|package| package.get("type").and_then(Value::as_str) == Some("generic"))
-        .filter(|package| package.get("name").and_then(Value::as_str) == Some(PACKAGE_NAME))
-        .filter_map(|package| package.get("version").and_then(Value::as_str))
-        .filter_map(Version::parse)
-        .collect();
-    Ok((versions, packages.len()))
+fn manifest_version(manifest: &Value) -> Result<Version> {
+    manifest
+        .get("version")
+        .and_then(Value::as_str)
+        .and_then(Version::parse)
+        .ok_or_else(|| {
+            Error::Network(format!(
+                "the {POINTER_VERSION} CLI manifest has an invalid version"
+            ))
+        })
 }
 
 struct ManifestAsset {
@@ -187,11 +145,6 @@ fn manifest_asset(manifest: &Value, platform: &str, expected_name: &str) -> Resu
         sha256: sha256.to_ascii_lowercase(),
         size,
     })
-}
-
-fn get_json(url: &str) -> Result<Value> {
-    let response = request(url)?;
-    parse_json_response(response, url)
 }
 
 fn get_json_optional(url: &str) -> Result<Option<Value>> {
@@ -491,11 +444,11 @@ impl std::fmt::Display for Version {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     use super::{
-        append_package_page, executable_matches_manifest, install_at, manifest_asset,
-        package_versions, sha256_hex, verify_sha256, ManifestAsset, Version, PACKAGE_PAGE_SIZE,
+        executable_matches_manifest, install_at, manifest_asset, manifest_version,
+        package_file_url, sha256_hex, verify_sha256, ManifestAsset, Version, POINTER_VERSION,
     };
 
     #[test]
@@ -510,50 +463,25 @@ mod tests {
     }
 
     #[test]
-    fn selects_generic_versions_for_this_package() {
-        let packages = json!([
-            {"type": "generic", "name": "rinto-pmo", "version": "1.2.0"},
-            {"type": "generic", "name": "other", "version": "99.0.0"},
-            {"type": "cargo", "name": "rinto-pmo", "version": "98.0.0"},
-            {"type": "generic", "name": "rinto-pmo", "version": "1.10.0"},
-            {"type": "generic", "name": "rinto-pmo", "version": "2.0.0-rc.1"},
-            {"type": "generic", "name": "rinto-pmo", "version": "01.11.0"}
-        ]);
-        let (versions, count) = package_versions(&packages).unwrap();
-        assert_eq!(count, 6);
+    fn reads_the_released_version_from_the_pointer_manifest() {
         assert_eq!(
-            versions,
-            vec![
-                Version::parse("1.2.0").unwrap(),
-                Version::parse("1.10.0").unwrap()
-            ]
+            manifest_version(&json!({"version": "1.10.0"})).unwrap(),
+            Version::parse("1.10.0").unwrap()
         );
+        assert!(manifest_version(&json!({})).is_err());
+        assert!(manifest_version(&json!({"version": "2.0.0-rc.1"})).is_err());
+        assert!(manifest_version(&json!({"version": "01.11.0"})).is_err());
     }
 
     #[test]
-    fn appends_full_and_final_short_package_pages() {
-        let mut first = Vec::new();
-        first.push(json!({"type":"generic", "name":"rinto-pmo", "version":"1.0.0"}));
-        for index in 1..PACKAGE_PAGE_SIZE {
-            first.push(json!({"type":"generic", "name":"other", "version":format!("1.0.{index}")}));
-        }
-        let second = json!([
-            {"type":"generic", "name":"rinto-pmo", "version":"2.0.0"}
-        ]);
-        let mut versions = Vec::new();
-        assert_eq!(
-            append_package_page(&mut versions, &Value::Array(first)).unwrap(),
-            PACKAGE_PAGE_SIZE
+    fn downloads_assets_from_the_concrete_version_not_the_pointer() {
+        let pointer = package_file_url(POINTER_VERSION, "manifest.json");
+        assert!(pointer.ends_with("/generic/rinto-pmo/latest/manifest.json"));
+        let asset = package_file_url(
+            &Version::parse("1.10.0").unwrap().to_string(),
+            "rinto-pmo-linux-amd64",
         );
-        assert_eq!(append_package_page(&mut versions, &second).unwrap(), 1);
-        versions.sort_unstable();
-        assert_eq!(
-            versions,
-            vec![
-                Version::parse("1.0.0").unwrap(),
-                Version::parse("2.0.0").unwrap()
-            ]
-        );
+        assert!(asset.ends_with("/generic/rinto-pmo/1.10.0/rinto-pmo-linux-amd64"));
     }
 
     #[test]

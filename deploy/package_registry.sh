@@ -45,9 +45,17 @@ delete_version() {
   case "${code}" in 204|404) ;; *) echo "package delete failed (HTTP ${code})" >&2; exit 1 ;; esac
 }
 
+# A pointer version is mutable by design, so it is replaced rather than kept:
+# generic packages reject a second upload of the same file name.
+publish_pointer() {
+  delete_version "$1" "$2"
+  put_file "$1" "$2" "$3" "$4"
+}
+
 case "${1:-}" in
   put) [ "$#" -eq 5 ] || exit 64; put_file "$2" "$3" "$4" "$5" ;;
   get) [ "$#" -eq 5 ] || exit 64; get_file "$2" "$3" "$4" "$5" ;;
+  pointer) [ "$#" -eq 5 ] || exit 64; publish_pointer "$2" "$3" "$4" "$5" ;;
   delete) [ "$#" -eq 3 ] || exit 64; delete_version "$2" "$3" ;;
-  *) echo "usage: package_registry.sh put <package> <version> <file> <name> | get <package> <version> <name> <output> | delete <package> <version>" >&2; exit 64 ;;
+  *) echo "usage: package_registry.sh put <package> <version> <file> <name> | get <package> <version> <name> <output> | pointer <package> <pointer> <file> <name> | delete <package> <version>" >&2; exit 64 ;;
 esac

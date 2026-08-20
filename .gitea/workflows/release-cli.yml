@@ -236,6 +236,8 @@ jobs:
       PACKAGE_NAME: ${{ vars.PACKAGE_NAME || 'rinto-pmo' }}
       PACKAGE_PUBLISH_USER: ${{ vars.PACKAGE_PUBLISH_USER }}
       PACKAGE_PUBLISH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+      # Must match POINTER_VERSION in cli/src/update.rs.
+      POINTER_VERSION: latest
       VERSION: ${{ needs.plan.outputs.version }}
       STAGING_VERSION: ${{ needs.plan.outputs.staging_version }}
       FORCE: ${{ needs.plan.outputs.force }}
@@ -287,8 +289,9 @@ jobs:
               200)
                 existing_commit="$(jq -r '.commit // empty' "${existing}")"
                 if [ "${existing_commit}" = "${SHA}" ]; then
-                  echo "final package already matches this commit; repairing r-nacos state"
+                  echo "final package already matches this commit; repairing pointer and r-nacos state"
                   rm -f "${existing}"
+                  deploy/package_registry.sh pointer "${PACKAGE_NAME}" "${POINTER_VERSION}" dist/manifest.json manifest.json
                   deploy/nacos.sh put "${CLI_COMMIT_DATA_ID}" "${SHA}"
                   deploy/nacos.sh put "${CLI_VERSION_DATA_ID}" "${VERSION}"
                   exit 0
@@ -306,6 +309,11 @@ jobs:
           deploy/package_registry.sh put "${PACKAGE_NAME}" "${VERSION}" dist/rinto-pmo-darwin-arm64 rinto-pmo-darwin-arm64
           deploy/package_registry.sh put "${PACKAGE_NAME}" "${VERSION}" dist/SHA256SUMS SHA256SUMS
           deploy/package_registry.sh put "${PACKAGE_NAME}" "${VERSION}" dist/manifest.json manifest.json
+          # `rinto-pmo update` discovers releases here: the package-versions API
+          # needs a signed-in user, but this file is anonymously readable. It is
+          # written after the versioned assets so it never points at a partial
+          # publication.
+          deploy/package_registry.sh pointer "${PACKAGE_NAME}" "${POINTER_VERSION}" dist/manifest.json manifest.json
           # VERSION is the main-branch completion marker, so write it last.
           deploy/nacos.sh put "${CLI_COMMIT_DATA_ID}" "${SHA}"
           deploy/nacos.sh put "${CLI_VERSION_DATA_ID}" "${VERSION}"
