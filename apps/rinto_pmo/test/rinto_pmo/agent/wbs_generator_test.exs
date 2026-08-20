@@ -65,14 +65,16 @@ defmodule RintoPMO.Agent.WbsGeneratorTest do
   # The one piece of provider output this module reads. Written so that reading
   # it wrong costs nothing: anything unrecognised is passed through verbatim.
   describe "what comes back when the provider refuses" do
-    test "carries the provider's sentence, keeping the status", %{tmp_dir: tmp_dir} do
+    # The message alone. The status code is a fact about transport that the
+    # person reading this cannot act on, and the log has the whole line.
+    test "carries the provider's sentence and nothing around it", %{tmp_dir: tmp_dir} do
       body =
         ~s({"type":"GoUsageLimitError","message":"5-hour usage limit reached. Resets in 1hr 36min."})
 
       fake_pi(tmp_dir, stderr: "429: " <> body, exit: 1)
 
       assert {:error, {:pi_exit, 1, complaint}} = WbsGenerator.generate(@input)
-      assert complaint == "429: 5-hour usage limit reached. Resets in 1hr 36min."
+      assert complaint == "5-hour usage limit reached. Resets in 1hr 36min."
     end
 
     test "passes anything it does not recognise through as it came", %{tmp_dir: tmp_dir} do

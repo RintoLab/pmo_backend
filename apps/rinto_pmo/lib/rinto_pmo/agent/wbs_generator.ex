@@ -273,8 +273,10 @@ defmodule RintoPMO.Agent.WbsGenerator do
   defp finish(status, _stdout, _stderr), do: {:error, {:spawn_failed, status}}
 
   # What a provider refuses with arrives as `429: {"type":…,"message":"…"}` --
-  # a status, then the response body whole. The sentence a person needs is the
-  # `message`; the envelope around it is noise in a panel.
+  # a status, then the response body whole. Only the `message` is kept: it
+  # already says what happened in words a person can act on, while the status
+  # is a fact about transport that they cannot. The whole line is in the log
+  # for whoever is debugging the transport.
   #
   # This is the one piece of provider output this module reads, and it is
   # written so that reading it wrong costs nothing: anything that is not a JSON
@@ -282,14 +284,10 @@ defmodule RintoPMO.Agent.WbsGenerator do
   # which is what happened before this existed. So a provider changing its
   # shape degrades to verbatim rather than to silence, and there is no
   # vocabulary here to drift out of date.
-  #
-  # Whatever sits before the JSON is kept -- the status code says whether this
-  # was a refusal, a limit, or the provider falling over, and that is worth the
-  # four characters.
   defp message_of(complaint) do
-    with [_whole, prefix, json] <- Regex.run(~r/\A(.*?)(\{.*\})\s*\z/s, complaint),
+    with [json] <- Regex.run(~r/\{.*\}/s, complaint),
          {:ok, %{"message" => message}} when is_binary(message) <- JSON.decode(json) do
-      prefix <> message
+      message
     else
       _not_a_message_we_recognise -> complaint
     end
