@@ -410,6 +410,20 @@ fn path() -> Result<PathBuf> {
         .join(CONFIG_FILE))
 }
 
+/// The directory the config file lives in.
+///
+/// Other CLI state keeps itself beside the config rather than inventing a second
+/// location, so that `RINTO_CONFIG` and `XDG_CONFIG_HOME` move all of it at once.
+pub fn directory() -> Result<PathBuf> {
+    let file = path()?;
+    file.parent().map(Path::to_path_buf).ok_or_else(|| {
+        Error::Config(format!(
+            "the config path {} has no parent directory",
+            file.display()
+        ))
+    })
+}
+
 fn write_config(path: &Path, content: &str) -> Result<()> {
     let directory = path
         .parent()
