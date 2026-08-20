@@ -726,6 +726,83 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/decompose:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Documents]
+      operationId: decomposeDocument
+      summary: Break a formal document down into a task document
+      description: >
+        Answers `202` with the *attempt*, not the breakdown. The model call
+        takes as long as it takes, so it runs in a background job and what a
+        client does next is watch.
+
+
+        **Watching is the socket**, not this endpoint: join `document:{id}` on
+        `/socket` (see `RintoPMOWeb.DocumentChannel`). It carries the model's
+        output as it is produced -- `decomposition_output` frames whose `chunk`
+        values you append in order -- and a `decomposition` frame every time the
+        attempt changes state. `GET /documents/{document_id}/decomposition`
+        answers the same row for a client that would rather ask than listen,
+        but it cannot show the output: nothing is stored.
+
+
+        The breakdown is an ordinary document. When the attempt succeeds,
+        `result_document_id` names it, and it starts `draft` like anything else
+        -- somebody still has to read it and adopt it.
+
+
+        Refused, all of them here rather than inside the job so that a person
+        clicking a button hears no while they are still looking at it:
+        `document_not_formal` (only an adopted plan is worth turning into
+        work), `decomposition_exists` (one breakdown at a time -- archive the
+        standing one to make another), `no_decomposition_actor` (nobody holds
+        the role, and unlike naming there is no fallback), and
+        `decomposition_in_flight` (`409`, somebody clicked twice).
+      responses:
+        "202":
+          description: The queued attempt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecompositionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: An attempt is already running for this document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/decomposition:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [Documents]
+      operationId: getDocumentDecomposition
+      summary: The most recent attempt to break this document down
+      description: >
+        `data` is `null` when the document has never been broken down. Most
+        recent rather than in-flight: an attempt that failed a minute ago is
+        exactly what somebody opening the page needs to see.
+
+
+        This answers the row only. The model's output is broadcast as it is
+        produced and kept nowhere, so a client that was not listening cannot
+        get it back -- what survives is the document named by
+        `result_document_id`.
+      responses:
+        "200":
+          description: The attempt, or null
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecompositionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /documents/{document_id}/revisions:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -4026,6 +4103,63 @@ components:
           type: string
           format: date-time
       additionalProperties: false
+    Decomposition:
+      type: object
+      required:
+        [
+          id,
+          source_document_id,
+          result_document_id,
+          status,
+          error,
+          inserted_at,
+          updated_at,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        source_document_id:
+          type: string
+          format: uuid
+          description: The formal document being broken down.
+        result_document_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            The task document this attempt produced. Null until it succeeds,
+            and null forever if it does not.
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed]
+          description: >-
+            `pending` and `running` are in flight; `succeeded` and `failed` are
+            over. Nothing moves out of a finished state -- asking again makes a
+            new attempt, which is what "try again" means once the first answer
+            is recorded.
+        error:
+          type: string
+          nullable: true
+          description: >-
+            Filled only by `failed`, and relayed as it came. There is nothing
+            to classify it into: the reasons a provider refuses are its own.
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    DecompositionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          allOf:
+            - $ref: "#/components/schemas/Decomposition"
+          nullable: true
+      additionalProperties: false
     Settings:
       type: object
       required: [title_actor, decomposition_actor]
@@ -4443,6 +4577,10 @@ components:
         - default_project_missing
         - invalid_estimate
         - task_not_splittable
+        - document_not_formal
+        - decomposition_exists
+        - no_decomposition_actor
+        - decomposition_in_flight
         - corrupt_image
         - internal_server_error
         - attachment_unwritable

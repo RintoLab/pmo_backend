@@ -2,6 +2,7 @@ defmodule RintoPMO.Documents.Behaviour do
   @moduledoc false
 
   alias RintoPMO.Documents.BlockProposal
+  alias RintoPMO.Documents.Decomposition
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
 
@@ -104,4 +105,10 @@ defmodule RintoPMO.Documents.Behaviour do
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
   @callback breakdown_of(Document.t()) :: Document.t() | nil
+  @callback request_decomposition(Document.t()) ::
+              {:ok, Decomposition.t()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
+  @callback run_decomposition(Decomposition.t()) :: :ok | {:error, term()}
+  @callback latest_decomposition(Document.t()) :: Decomposition.t() | nil
 end

@@ -3,6 +3,7 @@ defmodule RintoPMOWeb.V1.DocumentController do
 
   alias RintoPMO.Documents.Document
   alias RintoPMO.Utils
+  alias RintoPMOWeb.V1.DecompositionJSON
 
   @statuses Map.new(Document.statuses(), &{Atom.to_string(&1), &1})
 
@@ -66,6 +67,46 @@ defmodule RintoPMOWeb.V1.DocumentController do
     with {:ok, document} <- context.formalize_document(document) do
       render(conn, :show, document: document)
     end
+  end
+
+  @doc """
+  Asks for a document to be broken down into a task document.
+
+  Answers `202` with the attempt, not the breakdown: the model call runs in a
+  job, and what a client does next is watch. Every refusal is made here rather
+  than inside the job, so a person clicking a button hears no while they are
+  still looking at it.
+
+  Watching is `RintoPMOWeb.DocumentChannel` on `document:{id}`, which carries
+  the model's output as it arrives and the attempt's row as it changes.
+  `GET /documents/{id}/decomposition` answers the same row for a client that
+  would rather ask.
+  """
+  def decompose(conn, %{"id" => id}) do
+    context = Utils.module(:documents)
+    document = context.get_document!(id)
+
+    with {:ok, decomposition} <- context.request_decomposition(document) do
+      conn
+      |> put_status(:accepted)
+      |> put_view(DecompositionJSON)
+      |> render(:show, decomposition: decomposition)
+    end
+  end
+
+  @doc """
+  The most recent attempt to break this document down, or `null`.
+
+  Most recent rather than in-flight: an attempt that failed a minute ago is
+  exactly what somebody opening the page needs to see.
+  """
+  def decomposition(conn, %{"id" => id}) do
+    context = Utils.module(:documents)
+    document = context.get_document!(id)
+
+    conn
+    |> put_view(DecompositionJSON)
+    |> render(:show, decomposition: context.latest_decomposition(document))
   end
 
   defp document_filter(params) do

@@ -185,6 +185,62 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
     assert response(conn, 204) == ""
   end
 
+  # 202 and the attempt, not 200 and the breakdown: the model call runs in a
+  # job, and what a client does next is watch `document:{id}` on the socket.
+  test "POST /api/v1/documents/:id/decompose answers with the queued attempt", %{conn: conn} do
+    document = document_with_revision()
+    attempt = decomposition(document)
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+    expect(DocumentsMock, :request_decomposition, fn ^document -> {:ok, attempt} end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/decompose")
+
+    assert %{"id" => id, "status" => "pending", "result_document_id" => nil} =
+             json_response(conn, 202)["data"]
+
+    assert id == attempt.id
+  end
+
+  # Told no while they are still looking at the button.
+  test "POST /api/v1/documents/:id/decompose relays a refusal", %{conn: conn} do
+    document = document_with_revision()
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+    expect(DocumentsMock, :request_decomposition, fn ^document ->
+      {:error, :document_not_formal, %{status: :draft}}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/decompose")
+
+    assert %{"error" => "document_not_formal"} = json_response(conn, 422)
+  end
+
+  test "GET /api/v1/documents/:id/decomposition answers null when there was none", %{conn: conn} do
+    document = document_with_revision()
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+    expect(DocumentsMock, :latest_decomposition, fn ^document -> nil end)
+
+    conn = get(conn, ~p"/api/v1/documents/#{document.id}/decomposition")
+
+    assert json_response(conn, 200)["data"] == nil
+  end
+
+  test "GET /api/v1/documents/:id/decomposition carries the failure reason", %{conn: conn} do
+    document = document_with_revision()
+    attempt = %{decomposition(document) | status: :failed, error: "decomposition_failed: timeout"}
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+    expect(DocumentsMock, :latest_decomposition, fn ^document -> attempt end)
+
+    conn = get(conn, ~p"/api/v1/documents/#{document.id}/decomposition")
+
+    assert %{"status" => "failed", "error" => "decomposition_failed: timeout"} =
+             json_response(conn, 200)["data"]
+  end
+
   # The rest of this file mocks the context to test the controller alone. These
   # two run the real one, because importing a document is the one flow where
   # the wiring is the feature: a body posted as one string has to come back as
@@ -249,5 +305,17 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
     document = insert(:document)
     revision = insert(:document_revision, document: document, title: "Plan")
     %{document | latest_revision: %{revision | blocks: []}}
+  end
+
+  # Built rather than inserted: these tests are about what the controller does
+  # with what the context hands it.
+  defp decomposition(document) do
+    %RintoPMO.Documents.Decomposition{
+      id: UUIDv7.generate(),
+      source_document_id: document.id,
+      status: :pending,
+      inserted_at: DateTime.utc_now(),
+      updated_at: DateTime.utc_now()
+    }
   end
 end

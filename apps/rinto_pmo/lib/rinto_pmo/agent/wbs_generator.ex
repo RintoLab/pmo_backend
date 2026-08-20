@@ -61,6 +61,7 @@ defmodule RintoPMO.Agent.WbsGenerator do
           | {:model, String.t() | nil}
           | {:thinking, String.t() | nil}
           | {:timeout, timeout()}
+          | {:on_chunk, (String.t() -> any())}
 
   @type error ::
           :pi_not_found
@@ -116,8 +117,15 @@ defmodule RintoPMO.Agent.WbsGenerator do
       from whoever holds the `decomposition_actor` role. Both a provider and a
       model, or neither.
     * `:timeout` -- wall clock for the whole call, default from configuration
+    * `:on_chunk` -- called with each piece of output as it arrives. For
+      showing somebody that something is happening; the return value is
+      ignored and the breakdown is still answered whole. Omit it and nothing
+      is watching, which is a legitimate way to call this.
 
-  Failure is reported and never papered over -- see the moduledoc.
+  Failure is reported and never papered over -- see the moduledoc. A call that
+  runs out of time answers `{:error, :timeout}` and **discards what it had**,
+  even though a listener has already seen some of it: half a breakdown is not
+  a smaller breakdown, and returning one would file it as an answer.
   """
   @impl Behaviour
   @spec generate(input(), [opt()]) :: {:ok, String.t()} | {:error, error()}
@@ -134,7 +142,16 @@ defmodule RintoPMO.Agent.WbsGenerator do
     end
   end
 
+  # Not `OSProcess.run/1`, which collects everything and answers once. The
+  # output has to be passed on as it arrives, so this drives the process
+  # directly and mirrors what `run/1` does around the receive loop.
+  #
+  # `:raw` rather than `:lines`: a person watching wants text appearing, not
+  # tidy units, and raw frames cannot strand a last line that never got its
+  # newline. Whoever is listening concatenates.
   defp run(input, session_dir, opts) do
+    id = "rinto-pmo-wbs-#{System.unique_integer([:positive, :monotonic])}"
+
     args =
       [
         "--print",
@@ -148,13 +165,73 @@ defmodule RintoPMO.Agent.WbsGenerator do
         @system_prompt
       ] ++ model_args(opts) ++ [user_message(input)]
 
-    [cmd: executable(), args: args, timeout: timeout(opts)]
-    |> OSProcess.run()
-    |> interpret()
+    start_opts = [
+      id: id,
+      cmd: executable(),
+      args: args,
+      owner: self(),
+      framing: :raw
+    ]
+
+    case OSProcess.start(start_opts) do
+      {:ok, _pid} ->
+        # pi is given its prompt as an argument and reads nothing, but a child
+        # holding an open stdin it will never read is a child that can wait
+        # forever for one.
+        _ = OSProcess.close_stdin(id)
+        collect(id, deadline(timeout(opts)), on_chunk(opts), [], [])
+
+      {:error, {:executable_not_found, _cmd}} ->
+        {:error, :pi_not_found}
+
+      {:error, reason} ->
+        {:error, {:spawn_failed, reason}}
+    end
   end
 
-  defp interpret({:ok, %{status: {:exit, 0}, stdout: stdout}}) do
-    case String.trim(stdout) do
+  defp collect(id, deadline, on_chunk, stdout, stderr) do
+    case remaining(deadline) do
+      :expired ->
+        give_up(id)
+
+      wait ->
+        receive do
+          {:os_process, ^id, {:stdout, data}} ->
+            on_chunk.(data)
+            collect(id, deadline, on_chunk, [data | stdout], stderr)
+
+          {:os_process, ^id, {:stderr, data}} ->
+            collect(id, deadline, on_chunk, stdout, [data | stderr])
+
+          {:os_process, ^id, {:exit, status}} ->
+            finish(status, stdout, stderr)
+        after
+          wait -> give_up(id)
+        end
+    end
+  end
+
+  # Stopping makes the instance emit its final event; draining keeps the
+  # leftovers out of a mailbox where nothing would ever read them. What was
+  # produced before the deadline is dropped on purpose -- half a breakdown is
+  # not a smaller breakdown, and passing one back would file it as an answer.
+  defp give_up(id) do
+    _ = OSProcess.stop(id)
+    _ = drain(id)
+    {:error, :timeout}
+  end
+
+  defp drain(id) do
+    receive do
+      {:os_process, ^id, {:exit, _status}} -> :ok
+      {:os_process, ^id, _event} -> drain(id)
+    after
+      100 -> :ok
+    end
+  end
+
+  defp finish({:exit, 0}, stdout, _stderr) do
+    case stdout |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim() do
       "" -> {:error, :empty_output}
       markdown -> {:ok, markdown}
     end
@@ -163,16 +240,35 @@ defmodule RintoPMO.Agent.WbsGenerator do
   # Whatever the provider complained about -- a context window, a key, a rate
   # limit -- pi prints on stderr and exits non-zero. It is logged rather than
   # returned because the reason a caller can act on is "there is no breakdown";
-  # what to tell the person waiting is stamped where the job is recorded.
-  defp interpret({:ok, %{status: {:exit, code}, stderr: stderr}}) do
-    Logger.warning("wbs generation: pi exited #{code}: #{String.trim(stderr)}")
+  # what to tell the person waiting is stamped where the attempt is recorded.
+  defp finish({:exit, code}, _stdout, stderr) do
+    complaint = stderr |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
+    Logger.warning("wbs generation: pi exited #{code}: #{complaint}")
     {:error, {:pi_exit, code}}
   end
 
-  defp interpret({:ok, %{status: status}}), do: {:error, {:spawn_failed, status}}
-  defp interpret({:error, {:timeout, _partial}}), do: {:error, :timeout}
-  defp interpret({:error, {:executable_not_found, _cmd}}), do: {:error, :pi_not_found}
-  defp interpret({:error, reason}), do: {:error, {:spawn_failed, reason}}
+  defp finish(status, _stdout, _stderr), do: {:error, {:spawn_failed, status}}
+
+  # Absent means nobody is watching, which is a legitimate way to call this --
+  # the streaming is for a person, not for the result.
+  defp on_chunk(opts) do
+    case Keyword.get(opts, :on_chunk) do
+      callback when is_function(callback, 1) -> callback
+      _absent -> fn _chunk -> :ok end
+    end
+  end
+
+  defp deadline(:infinity), do: :infinity
+  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
+
+  defp remaining(:infinity), do: :infinity
+
+  defp remaining(deadline) do
+    case deadline - System.monotonic_time(:millisecond) do
+      left when left > 0 -> left
+      _expired -> :expired
+    end
+  end
 
   # Which model breaks documents down is a runtime choice, like naming: it is
   # whichever actor holds the role. Unlike naming there is no inheriting from a

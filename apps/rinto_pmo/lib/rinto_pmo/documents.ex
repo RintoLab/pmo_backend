@@ -37,10 +37,13 @@ defmodule RintoPMO.Documents do
   alias RintoPMO.Documents.BlockMerge
   alias RintoPMO.Documents.BlockOps
   alias RintoPMO.Documents.BlockProposal
+  alias RintoPMO.Documents.Decomposition
+  alias RintoPMO.Documents.DecompositionWorker
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Markdown
+  alias RintoPMO.Documents.Notifier
   alias RintoPMO.Settings
   alias RintoPMO.Utils
 
@@ -218,10 +221,12 @@ defmodule RintoPMO.Documents do
   belongs to whatever reads the breakdown, and that does not exist yet.
   """
   @impl true
-  def decompose_document(%Document{} = document) do
+  def decompose_document(%Document{} = document), do: decompose_document(document, [])
+
+  defp decompose_document(%Document{} = document, opts) do
     with :ok <- decomposable(document),
          {:ok, actor} <- decomposition_actor(),
-         {:ok, markdown} <- breakdown(document, actor) do
+         {:ok, markdown} <- breakdown(document, actor, opts) do
       insert_document(%Document{source_document_id: document.id}, %{
         title: breakdown_title(document),
         project_id: document.project_id,
@@ -229,6 +234,84 @@ defmodule RintoPMO.Documents do
         markdown: markdown
       })
     end
+  end
+
+  @doc """
+  Asks for a document to be broken down, and answers before it has been.
+
+  The model call takes as long as it takes, so it does not happen on this call
+  path -- what comes back is the attempt, `:pending`, with an
+  `RintoPMO.Documents.DecompositionWorker` job behind it.
+
+  Every refusal `decompose_document/1` makes is made here too, so a person
+  clicking a button is told no while they are still looking at it rather than
+  thirty seconds later in a job they have to go and read. They are checked
+  again when the job runs, because the world moves in between.
+
+  One more refusal exists only here: an attempt already in flight. The standing
+  breakdown check cannot see it -- a run that has not finished has produced no
+  document to find -- so without this a second click would start a second model
+  call, and both would try to write a breakdown. The database decides it, via a
+  partial unique index, because two clicks landing together both pass a
+  `SELECT`.
+  """
+  @impl true
+  def request_decomposition(%Document{} = document) do
+    with :ok <- decomposable(document),
+         {:ok, _actor} <- decomposition_actor() do
+      %Decomposition{}
+      |> Decomposition.creation_changeset(document.id)
+      |> Repo.insert()
+      |> case do
+        {:ok, decomposition} ->
+          {:ok, _job} = enqueue_decomposition(decomposition)
+          {:ok, decomposition}
+
+        {:error, %Changeset{} = changeset} ->
+          in_flight_or_invalid(changeset, document)
+      end
+    end
+  end
+
+  @doc """
+  Runs an attempt: the model call, the document, and the record of both.
+
+  Called by the worker and not by a request. Everything a person sees while
+  waiting is broadcast from here -- `:running` as it starts, the model's output
+  as it arrives, and the finished row either way -- on the document's topic,
+  because the person watching is looking at the document and may not be the
+  one who asked.
+
+  Answers `:ok` in every case, including failure. A failed attempt is a
+  finished attempt: it is written down, everyone watching is told, and there is
+  nothing for a queue to retry that would not ask the same question again.
+  """
+  @impl true
+  def run_decomposition(%Decomposition{} = decomposition) do
+    decomposition = mark_running(decomposition)
+    document = get_document!(decomposition.source_document_id)
+
+    case decompose_document(document, on_chunk: broadcaster(decomposition)) do
+      {:ok, breakdown} -> finish_decomposition(decomposition, breakdown)
+      {:error, %Changeset{} = changeset} -> fail_decomposition(decomposition, changeset)
+      {:error, code, details} -> fail_decomposition(decomposition, code, details)
+    end
+  end
+
+  @doc """
+  The most recent attempt to break a document down, or `nil`.
+
+  What a client reads on arriving, and what it falls back to when it has missed
+  the broadcasts. Most recent rather than in-flight: an attempt that failed a
+  minute ago is exactly what somebody opening the page needs to see.
+  """
+  @impl true
+  def latest_decomposition(%Document{} = document) do
+    Decomposition
+    |> where([attempt], attempt.source_document_id == ^document.id)
+    |> order_by([attempt], desc: attempt.id)
+    |> limit(1)
+    |> Repo.one()
   end
 
   @doc """
@@ -1431,6 +1514,65 @@ defmodule RintoPMO.Documents do
       {:error, {:annotation_not_found, %{annotation_id: annotation_id}}}
   end
 
+  defp enqueue_decomposition(%Decomposition{} = decomposition) do
+    %{decomposition_id: decomposition.id}
+    |> DecompositionWorker.new()
+    |> Oban.insert()
+  end
+
+  # The partial unique index is the only thing that can tell "somebody clicked
+  # twice" from "this row is malformed", and it reports it the way every unique
+  # constraint does. Translated here so the caller gets the same shape as the
+  # refusals that were checked before the insert.
+  defp in_flight_or_invalid(%Changeset{} = changeset, %Document{} = document) do
+    if Keyword.has_key?(changeset.errors, :source_document_id) do
+      {:error, :decomposition_in_flight, %{document_id: document.id}}
+    else
+      {:error, changeset}
+    end
+  end
+
+  defp mark_running(%Decomposition{} = decomposition) do
+    {:ok, running} =
+      decomposition
+      |> Decomposition.running_changeset()
+      |> Repo.update()
+
+    :ok = Notifier.broadcast_decomposition(running)
+    running
+  end
+
+  defp finish_decomposition(%Decomposition{} = decomposition, %Document{} = breakdown) do
+    {:ok, succeeded} =
+      decomposition
+      |> Decomposition.succeeded_changeset(breakdown)
+      |> Repo.update()
+
+    Notifier.broadcast_decomposition(succeeded)
+  end
+
+  defp fail_decomposition(%Decomposition{} = decomposition, %Changeset{} = changeset) do
+    fail_decomposition(decomposition, :invalid_breakdown, %{
+      errors: inspect(changeset.errors)
+    })
+  end
+
+  defp fail_decomposition(%Decomposition{} = decomposition, code, details) do
+    {:ok, failed} =
+      decomposition
+      |> Decomposition.failed_changeset("#{code}: #{inspect(details)}")
+      |> Repo.update()
+
+    Notifier.broadcast_decomposition(failed)
+  end
+
+  # Every piece of output, straight out to whoever is watching the document.
+  # Nothing is kept: see `RintoPMO.Documents.Notifier` for why a late joiner
+  # gets the row rather than a replay.
+  defp broadcaster(%Decomposition{} = decomposition) do
+    fn chunk -> Notifier.broadcast_output(decomposition, chunk) end
+  end
+
   defp decomposable(%Document{status: :formal} = document) do
     case breakdown_of(document) do
       nil -> :ok
@@ -1449,7 +1591,7 @@ defmodule RintoPMO.Documents do
     end
   end
 
-  defp breakdown(%Document{} = document, actor) do
+  defp breakdown(%Document{} = document, actor, opts) do
     revision = latest_revision!(document, preload_blocks?: true)
 
     input = %{
@@ -1457,7 +1599,12 @@ defmodule RintoPMO.Documents do
       blocks: Enum.map(revision.blocks, & &1.content)
     }
 
-    opts = [provider: actor.provider, model: actor.model, thinking: actor.thinking_level]
+    opts =
+      Keyword.merge(opts,
+        provider: actor.provider,
+        model: actor.model,
+        thinking: actor.thinking_level
+      )
 
     case wbs_generator().generate(input, opts) do
       {:ok, markdown} ->

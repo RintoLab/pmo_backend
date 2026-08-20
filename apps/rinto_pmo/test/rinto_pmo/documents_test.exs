@@ -1,12 +1,15 @@
 defmodule RintoPMO.DocumentsTest do
   use RintoPMO.DataCase, async: true
+  use Oban.Testing, repo: RintoPMO.Repo
 
   alias RintoPMO.Agent.WbsGeneratorMock
   alias RintoPMO.Conversations
   alias RintoPMO.ConversationsMock
   alias RintoPMO.Documents
+  alias RintoPMO.Documents.DecompositionWorker
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Documents.Notifier
   alias RintoPMO.Projects
   alias RintoPMO.ProjectsMock
   alias RintoPMO.Settings
@@ -572,6 +575,114 @@ defmodule RintoPMO.DocumentsTest do
 
       assert {:ok, _archived} = Documents.archive_document(breakdown)
       assert Documents.breakdown_of(source) == nil
+    end
+  end
+
+  # The attempt is what a person watches while the model works: what a second
+  # click is refused against, what the spinner reads, and where a failure is
+  # written down. The breakdown itself is still just a document.
+  describe "requesting and running a decomposition" do
+    setup do
+      actor = insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
+      {:ok, _settings} = Settings.put_actor("decomposition_actor", actor.id)
+      {:ok, actor: actor}
+    end
+
+    test "answers with a pending attempt and leaves the work to a job" do
+      source = formal_document()
+
+      assert {:ok, decomposition} = Documents.request_decomposition(source)
+      assert decomposition.status == :pending
+      assert decomposition.source_document_id == source.id
+      assert decomposition.result_document_id == nil
+
+      assert_enqueued(worker: DecompositionWorker, args: %{decomposition_id: decomposition.id})
+    end
+
+    # The standing-breakdown check cannot see this one: a run that has not
+    # finished has produced no document to find.
+    test "refuses a second attempt while one is in flight" do
+      source = formal_document()
+      assert {:ok, _first} = Documents.request_decomposition(source)
+
+      assert {:error, :decomposition_in_flight, %{document_id: document_id}} =
+               Documents.request_decomposition(source)
+
+      assert document_id == source.id
+    end
+
+    # Told no while they are still looking at the button, rather than thirty
+    # seconds later in a job they have to go and read.
+    test "makes the same refusals before queueing anything" do
+      project = insert(:project)
+      {:ok, draft} = create_document(project, %{title: "Half an idea"})
+
+      assert {:error, :document_not_formal, %{status: :draft}} =
+               Documents.request_decomposition(draft)
+
+      refute_enqueued(worker: DecompositionWorker)
+    end
+
+    test "runs the attempt, streaming the output and recording the result" do
+      source = formal_document()
+      {:ok, decomposition} = Documents.request_decomposition(source)
+      :ok = Notifier.subscribe(source.id)
+
+      expect(WbsGeneratorMock, :generate, fn _input, opts ->
+        # What a person watching sees, as the model produces it.
+        opts[:on_chunk].("## Canary\n")
+        opts[:on_chunk].("- Wire the split")
+        {:ok, "## Canary\n\n- Wire the split"}
+      end)
+
+      assert :ok = Documents.run_decomposition(decomposition)
+
+      assert_received {:decomposition_updated, %{status: :running}}
+      assert_received {:decomposition_output, id, "## Canary\n"}
+      assert id == decomposition.id
+      assert_received {:decomposition_output, ^id, "- Wire the split"}
+      assert_received {:decomposition_updated, %{status: :succeeded} = finished}
+
+      breakdown = Documents.breakdown_of(source)
+      assert finished.result_document_id == breakdown.id
+      assert finished.error == nil
+    end
+
+    # A recorded failure is not also a queue failure: there is nothing to retry
+    # that would not ask the same question again.
+    test "writes a failure down and tells everyone watching" do
+      source = formal_document()
+      {:ok, decomposition} = Documents.request_decomposition(source)
+      :ok = Notifier.subscribe(source.id)
+
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, :timeout} end)
+
+      assert :ok = Documents.run_decomposition(decomposition)
+
+      assert_received {:decomposition_updated, %{status: :running}}
+      assert_received {:decomposition_updated, %{status: :failed} = failed}
+      assert failed.error =~ "decomposition_failed"
+      assert failed.error =~ "timeout"
+      assert failed.result_document_id == nil
+      assert Documents.breakdown_of(source) == nil
+    end
+
+    # An attempt that failed a minute ago is exactly what somebody opening the
+    # page needs to see, so this is not "in flight".
+    test "latest_decomposition/1 answers the most recent attempt, finished or not" do
+      source = formal_document()
+      assert Documents.latest_decomposition(source) == nil
+
+      {:ok, first} = Documents.request_decomposition(source)
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, :timeout} end)
+      :ok = Documents.run_decomposition(first)
+
+      assert Documents.latest_decomposition(source).id == first.id
+      assert Documents.latest_decomposition(source).status == :failed
+
+      # A failed attempt holds nothing, so asking again is allowed.
+      assert {:ok, second} = Documents.request_decomposition(source)
+      assert Documents.latest_decomposition(source).id == second.id
     end
   end
 
