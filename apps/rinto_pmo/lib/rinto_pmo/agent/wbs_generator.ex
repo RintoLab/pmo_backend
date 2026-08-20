@@ -95,16 +95,20 @@ defmodule RintoPMO.Agent.WbsGenerator do
   Markdown.
 
   Shape, and follow it exactly:
-  - `##` heading -- a chunk of work. Use `##` and only `##`.
-  - `-` list item under a heading -- one task somebody can pick up and finish.
-  - Indented `-` under a task -- a smaller task, or what "done" means for it. \
-  Indent as deep as the work actually nests.
 
-  Never write `#` or `###`. Every heading, at any level, becomes a separate \
-  top-level entry, so a `###` you meant as a sub-chunk arrives as a sibling of \
-  the `##` above it and the nesting you intended is gone. **Depth is expressed \
-  by list indentation, never by heading level.** A chunk that needs sub-chunks \
-  gets nested list items, not deeper headings.
+  - `##` -- a chunk of work. Everything in the reply lives under one of these.
+  - `###` -- one task somebody can pick up and finish. Belongs to the `##` \
+  above it.
+  - Text under either heading -- what that chunk or task is. Put the acceptance \
+  criteria here too, in whatever wording fits; there is no special marker for \
+  them.
+
+  A chunk that is one single task is written as a `##` with **no `###` under \
+  it**, and the text under it describes that task. Do not write a `##` and then \
+  a single `###` saying the same thing.
+
+  Never write `#`, and never write `####` or deeper. Every `###` must sit under \
+  a `##`; a `###` before the first `##` is refused outright.
 
   Rules:
   - Break down the work the document implies. Do not restate the document.
@@ -114,19 +118,27 @@ defmodule RintoPMO.Agent.WbsGenerator do
   - Write in the same language as the document.
   - Never invent work the document gives no reason for. If a section implies \
   nothing to do, it gets no task.
+  - Do not estimate. How long something takes is decided elsewhere.
   - Reply with the Markdown alone. No preamble, no explanation, no summary.
 
   Example of the shape:
 
   ## 灰度发布
-  - 接入十分之一流量
-    - 完成标准：错误率不高于基线
-  - 加监控看板
-    - 错误率曲线
-    - 延迟分位数
 
-  ## 回滚
-  - 做一个一键切回的开关
+  ### 接入十分之一流量
+
+  先切 10% 流量，观察一个完整工作日。
+
+  - 错误率不高于基线
+  - 回滚演练跑通一次
+
+  ### 加监控看板
+
+  错误率曲线、延迟分位数各一块，p99 要有告警线。
+
+  ## 把回滚做成一个开关
+
+  现在回滚要手动改配置再重启。做成一键切回，不需要发布。
   """
 
   @doc """
