@@ -66,7 +66,6 @@ defmodule RintoPMO.Documents.Document do
     field :latest_revision, :any, virtual: true
 
     belongs_to :project, Project
-    belongs_to :source_document, __MODULE__
     has_many :revisions, DocumentRevision
     has_many :annotations, Annotation
     has_many :proposals, BlockProposal
@@ -85,7 +84,6 @@ defmodule RintoPMO.Documents.Document do
     document
     |> cast(nest_initial_revision(attrs), [:project_id])
     |> foreign_key_constraint(:project_id)
-    |> foreign_key_constraint(:source_document_id)
     |> cast_assoc(:revisions, with: &DocumentRevision.initial_changeset/2, required: true)
   end
 

@@ -466,121 +466,6 @@ defmodule RintoPMO.DocumentsTest do
   # starts `:draft` like everything else and has to be adopted in its own right
   # before anything downstream may act on it. The gate sits on the *source* --
   # only a plan somebody vouched for is worth turning into work.
-  describe "decomposing a document into a task document" do
-    setup do
-      actor = insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
-      {:ok, _settings} = Settings.put_actor("decomposition_actor", actor.id)
-      {:ok, actor: actor}
-    end
-
-    test "writes the breakdown as a draft document derived from the source", %{actor: actor} do
-      project = insert(:project)
-
-      {:ok, source} =
-        create_document(project, %{
-          title: "Rollout plan",
-          actor_id: actor.id,
-          markdown: "## Canary\n\nTen percent first.\n\n## Rollback\n\nOne switch."
-        })
-
-      {:ok, source} = Documents.formalize_document(source)
-
-      expect(WbsGeneratorMock, :generate, fn input, opts ->
-        # The whole document, which is the entire input to deciding what the
-        # work is -- and the reason this call is not shaped like naming's.
-        assert input.title == "Rollout plan"
-        assert input.blocks == ["## Canary\n\nTen percent first.", "## Rollback\n\nOne switch."]
-        assert opts[:provider] == "google"
-        assert opts[:model] == "flash"
-        assert opts[:thinking] == "off"
-
-        {:ok, "## Canary\n\n- Wire the ten percent split"}
-      end)
-
-      assert {:ok, breakdown} = Documents.decompose_document(source)
-
-      assert breakdown.status == :draft
-      assert breakdown.source_document_id == source.id
-      assert breakdown.project_id == project.id
-      assert breakdown.latest_revision.title == "Rollout plan · 任务分解"
-
-      [block] = Documents.get_document!(breakdown.id).latest_revision.blocks
-      assert block.content == "## Canary\n\n- Wire the ten percent split"
-      assert block.actor_id == actor.id
-    end
-
-    test "refuses a source nobody has adopted" do
-      project = insert(:project)
-      {:ok, draft} = create_document(project, %{title: "Half an idea"})
-
-      assert {:error, :document_not_formal, %{status: :draft}} =
-               Documents.decompose_document(draft)
-    end
-
-    # One breakdown at a time, the way a topic holds one live proposal per
-    # block. Two would be two answers with nothing to choose between them.
-    test "refuses while a breakdown already stands" do
-      source = formal_document()
-
-      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:ok, "- Something"} end)
-      assert {:ok, first} = Documents.decompose_document(source)
-
-      assert {:error, :decomposition_exists, %{document_id: standing}} =
-               Documents.decompose_document(source)
-
-      assert standing == first.id
-    end
-
-    # Which is how a bad breakdown is redone: throw it away, ask again.
-    test "frees the slot when the standing breakdown is archived" do
-      source = formal_document()
-
-      expect(WbsGeneratorMock, :generate, 2, fn _input, _opts -> {:ok, "- Something"} end)
-      assert {:ok, first} = Documents.decompose_document(source)
-      assert {:ok, _archived} = Documents.archive_document(first)
-
-      assert {:ok, second} = Documents.decompose_document(source)
-      refute second.id == first.id
-    end
-
-    # Naming falls back to the topic's own assistant. This belongs to no topic,
-    # so there is nothing to fall back to and nothing to pick instead.
-    test "refuses when nobody holds the role" do
-      {:ok, _settings} = Settings.put_actor("decomposition_actor", nil)
-      source = formal_document()
-
-      assert {:error, :no_decomposition_actor, %{}} = Documents.decompose_document(source)
-    end
-
-    # No fallback and no invented tree: a breakdown nobody could produce is not
-    # recoverable by producing a worse one.
-    test "relays a model failure instead of writing anything" do
-      source = formal_document()
-
-      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, :timeout} end)
-
-      assert {:error, :decomposition_failed, %{reason: reason}} =
-               Documents.decompose_document(source)
-
-      assert reason =~ "timeout"
-      assert Documents.breakdown_of(source) == nil
-    end
-
-    test "breakdown_of/1 ignores archived ones" do
-      source = formal_document()
-
-      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:ok, "- Something"} end)
-      assert {:ok, breakdown} = Documents.decompose_document(source)
-      assert Documents.breakdown_of(source).id == breakdown.id
-
-      assert {:ok, _archived} = Documents.archive_document(breakdown)
-      assert Documents.breakdown_of(source) == nil
-    end
-  end
-
-  # The attempt is what a person watches while the model works: what a second
-  # click is refused against, what the spinner reads, and where a failure is
-  # written down. The breakdown itself is still just a document.
   describe "requesting and running a decomposition" do
     setup do
       actor = insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
@@ -623,12 +508,29 @@ defmodule RintoPMO.DocumentsTest do
       refute_enqueued(worker: DecompositionWorker)
     end
 
-    test "runs the attempt, streaming the output and recording the result" do
-      source = formal_document()
+    test "runs the attempt, streaming the output and recording the result", %{actor: actor} do
+      project = insert(:project)
+
+      {:ok, source} =
+        create_document(project, %{
+          title: "Rollout plan",
+          actor_id: actor.id,
+          markdown: "## Canary\n\nTen percent first.\n\n## Rollback\n\nOne switch."
+        })
+
+      {:ok, source} = Documents.formalize_document(source)
       {:ok, decomposition} = Documents.request_decomposition(source)
       :ok = Notifier.subscribe(source.id)
 
-      expect(WbsGeneratorMock, :generate, fn _input, opts ->
+      expect(WbsGeneratorMock, :generate, fn input, opts ->
+        # The whole document, which is the entire input to deciding what the
+        # work is -- and the reason this call is not shaped like naming's.
+        assert input.title == "Rollout plan"
+        assert input.blocks == ["## Canary\n\nTen percent first.", "## Rollback\n\nOne switch."]
+        assert opts[:provider] == "google"
+        assert opts[:model] == "flash"
+        assert opts[:thinking] == "off"
+
         # What a person watching sees, as the model produces it.
         opts[:on_chunk].("## Canary\n")
         opts[:on_chunk].("- Wire the split")
@@ -646,6 +548,50 @@ defmodule RintoPMO.DocumentsTest do
       breakdown = Documents.breakdown_of(source)
       assert finished.result_document_id == breakdown.id
       assert finished.error == nil
+
+      # An ordinary document: nobody has vouched for it yet, it is filed with
+      # its source, and its title is built rather than asked for.
+      assert breakdown.status == :draft
+      assert breakdown.project_id == project.id
+
+      breakdown = Documents.get_document!(breakdown.id)
+      assert breakdown.latest_revision.title == "Rollout plan · 任务分解"
+
+      [block] = breakdown.latest_revision.blocks
+      assert block.content == "## Canary\n\n- Wire the split"
+      assert block.actor_id == actor.id
+    end
+
+    # One breakdown at a time, the way a topic holds one live proposal per
+    # block. Two would be two answers with nothing to choose between them.
+    test "refuses while a breakdown already stands" do
+      source = formal_document()
+      run_decomposition(source, "- Something")
+
+      assert {:error, :decomposition_exists, %{document_id: standing}} =
+               Documents.request_decomposition(source)
+
+      assert standing == Documents.breakdown_of(source).id
+    end
+
+    # Which is how a bad breakdown is redone: throw it away, ask again.
+    test "frees the slot when the standing breakdown is archived" do
+      source = formal_document()
+      first = run_decomposition(source, "- Something")
+      assert {:ok, _archived} = Documents.archive_document(first)
+
+      assert Documents.breakdown_of(source) == nil
+      assert {:ok, _second} = Documents.request_decomposition(source)
+    end
+
+    # Naming falls back to the topic's own assistant. This belongs to no topic,
+    # so there is nothing to fall back to and nothing to pick instead.
+    test "refuses when nobody holds the role" do
+      {:ok, _settings} = Settings.put_actor("decomposition_actor", nil)
+      source = formal_document()
+
+      assert {:error, :no_decomposition_actor, %{}} = Documents.request_decomposition(source)
+      refute_enqueued(worker: DecompositionWorker)
     end
 
     # A recorded failure is not also a queue failure: there is nothing to retry
@@ -684,6 +630,15 @@ defmodule RintoPMO.DocumentsTest do
       assert {:ok, second} = Documents.request_decomposition(source)
       assert Documents.latest_decomposition(source).id == second.id
     end
+  end
+
+  # Request and run in one go, for the tests that care about what a finished
+  # decomposition leaves behind rather than about the running of it.
+  defp run_decomposition(source, markdown) do
+    {:ok, attempt} = Documents.request_decomposition(source)
+    expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:ok, markdown} end)
+    :ok = Documents.run_decomposition(attempt)
+    Documents.breakdown_of(source)
   end
 
   defp formal_document do

@@ -117,18 +117,11 @@ defmodule RintoPMO.Documents do
   always sent one.
   """
   @impl true
-  def create_document(attrs), do: insert_document(%Document{}, attrs)
-
-  # The seed carries whatever is set programmatically rather than asked for.
-  # `source_document_id` goes here and not in `cast`: it is a claim about where
-  # a document came from, and a caller able to make that claim could point a
-  # document at a source it was never derived from -- which is what decides
-  # whether that source may still be broken down.
-  defp insert_document(%Document{} = seed, attrs) do
+  def create_document(attrs) do
     with {:ok, attrs} <- put_default_project(attrs),
          {:ok, author_id} <- document_author(attrs),
          {:ok, attrs} <- split_markdown(attrs, author_id) do
-      seed
+      %Document{}
       |> Document.creation_changeset(attrs)
       |> Repo.insert()
       |> case do
@@ -183,51 +176,27 @@ defmodule RintoPMO.Documents do
     |> Repo.update()
   end
 
-  @doc """
-  Breaks a formal document down into a new document holding the work it implies.
-
-  Two documents, and the second one is ordinary: it has a revision history, it
-  can be annotated and proposed against, and it starts `:draft` like everything
-  else. Nothing here files any tasks -- reading the breakdown and creating the
-  work breakdown from it is a separate step, and the gate on it is that
-  somebody adopted this document first.
-
-  ## Three refusals, and there is no fourth
-
-    * the source must be `:formal`. Breaking down something nobody has vouched
-      for would be work built on a draft, and adoption is exactly the moment
-      somebody decided the plan is worth acting on
-    * the source must not already have a breakdown standing. One at a time, the
-      way a topic holds one live proposal per block: a second one is not a
-      second opinion, it is two answers with nothing to choose between them.
-      Archiving the first frees the slot, which is how a bad one is redone
-    * somebody must hold the `decomposition_actor` role. Naming can fall back
-      to the topic's own assistant; this belongs to no topic, so there is
-      nothing to fall back to and picking one off the list would be inventing
-      an answer nobody gave
-
-  Whether the source is archived is deliberately **not** checked. Archiving is
-  a terminal state that needs no special handling here, and a check would only
-  catch breaking down an already-archived document -- not the ordinary case of
-  archiving one that has already been broken down.
-
-  ## What the model is and is not trusted with
-
-  It is given the document and asked for Markdown. The title is not its to
-  choose -- it is built from the source's, the same rule that keeps a title out
-  of a document's body -- and neither is the author or the project.
-
-  The shape of the returned Markdown is not checked. What the notation means
-  belongs to whatever reads the breakdown, and that does not exist yet.
-  """
-  @impl true
-  def decompose_document(%Document{} = document), do: decompose_document(document, [])
-
+  # Breaks a formal document down into a new document holding the work it
+  # implies. Private, and reachable only through `run_decomposition/1`: the
+  # edge from a source to its breakdown lives on the attempt row, so a
+  # breakdown made outside one would be a document nothing could find its way
+  # back from.
+  #
+  # Two documents, and the second one is ordinary: it has a revision history,
+  # it can be annotated and proposed against, and it starts `:draft` like
+  # everything else. Nothing here files any tasks.
+  #
+  # What the model is and is not trusted with: it is given the document and
+  # asked for Markdown. The title is not its to choose -- it is built from the
+  # source's, the same rule that keeps a title out of a document's body -- and
+  # neither is the author nor the project. The shape of the Markdown is not
+  # checked; what the notation means belongs to whatever reads the breakdown,
+  # and that does not exist yet.
   defp decompose_document(%Document{} = document, opts) do
     with :ok <- decomposable(document),
          {:ok, actor} <- decomposition_actor(),
          {:ok, markdown} <- breakdown(document, actor, opts) do
-      insert_document(%Document{source_document_id: document.id}, %{
+      create_document(%{
         title: breakdown_title(document),
         project_id: document.project_id,
         actor_id: actor.id,
@@ -243,17 +212,34 @@ defmodule RintoPMO.Documents do
   path -- what comes back is the attempt, `:pending`, with an
   `RintoPMO.Documents.DecompositionWorker` job behind it.
 
-  Every refusal `decompose_document/1` makes is made here too, so a person
-  clicking a button is told no while they are still looking at it rather than
-  thirty seconds later in a job they have to go and read. They are checked
-  again when the job runs, because the world moves in between.
+  ## The refusals
 
-  One more refusal exists only here: an attempt already in flight. The standing
-  breakdown check cannot see it -- a run that has not finished has produced no
-  document to find -- so without this a second click would start a second model
-  call, and both would try to write a breakdown. The database decides it, via a
-  partial unique index, because two clicks landing together both pass a
-  `SELECT`.
+    * the source must be `:formal`. Breaking down something nobody has vouched
+      for would be work built on a draft, and adoption is exactly the moment
+      somebody decided the plan is worth acting on
+    * the source must not already have a breakdown standing. One at a time, the
+      way a topic holds one live proposal per block: a second one is not a
+      second opinion, it is two answers with nothing to choose between them.
+      Archiving the first frees the slot, which is how a bad one is redone
+    * somebody must hold the `decomposition_actor` role. Naming can fall back
+      to the topic's own assistant; this belongs to no topic, so there is
+      nothing to fall back to and picking one off the list would be inventing
+      an answer nobody gave
+    * no attempt may already be in flight. The standing-breakdown check cannot
+      see one -- a run that has not finished has produced no document to find
+      -- so without this a second click would start a second model call. The
+      database decides it, via a partial unique index, because two clicks
+      landing together both pass a `SELECT`
+
+  They are all made here rather than inside the job, so a person clicking a
+  button is told no while they are still looking at it rather than thirty
+  seconds later in something they have to go and read. The first three are
+  checked again when the job runs, because the world moves in between.
+
+  Whether the source is archived is deliberately **not** checked. Archiving is
+  a terminal state that needs no special handling here, and a check would only
+  catch breaking down an already-archived document -- not the ordinary case of
+  archiving one that has already been broken down.
   """
   @impl true
   def request_decomposition(%Document{} = document) do
@@ -317,15 +303,27 @@ defmodule RintoPMO.Documents do
   @doc """
   The breakdown standing against a document, or `nil`.
 
+  Read through the attempts rather than off the document, because that is where
+  the edge lives: a decomposition row holds both ends -- which document was
+  read and which was written -- and being a record of a run is exactly what it
+  is. A column on `documents` could say only "derived from one document", which
+  is both the wrong shape and a claim sitting on the wrong row.
+
   Archived ones do not count: archiving a breakdown is how somebody says that
-  one was wrong, and it has to leave room for the next.
+  one was wrong, and it has to leave room for the next. So this asks for a
+  succeeded attempt whose result is still standing, not merely the last one.
   """
   @impl true
   def breakdown_of(%Document{} = document) do
-    Document
-    |> where([candidate], candidate.source_document_id == ^document.id)
-    |> where([candidate], is_nil(candidate.archived_at))
-    |> order_by([candidate], asc: candidate.id)
+    Decomposition
+    |> where([attempt], attempt.source_document_id == ^document.id)
+    |> where([attempt], attempt.status == :succeeded)
+    |> join(:inner, [attempt], breakdown in Document,
+      on: breakdown.id == attempt.result_document_id
+    )
+    |> where([_attempt, breakdown], is_nil(breakdown.archived_at))
+    |> order_by([attempt], desc: attempt.id)
+    |> select([_attempt, breakdown], breakdown)
     |> limit(1)
     |> Repo.one()
   end
