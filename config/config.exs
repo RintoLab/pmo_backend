@@ -81,16 +81,17 @@ config :rinto_pmo, RintoPMO.Agent.WbsGenerator,
   # whichever actor holds the `decomposition_actor` role -- see
   # `RintoPMO.Settings` and `PUT /settings/decomposition_actor`.
   #
-  # Far longer than naming's, and deliberately: this call reads a whole
-  # document before it writes anything, and somebody is watching it happen.
+  # How long the call may produce **nothing** before it is treated as dead.
+  # There is no budget for the call as a whole, deliberately: what decides how
+  # long a breakdown takes is how much work the document implies, and cutting a
+  # model off mid-answer throws away everything it has done. A model still
+  # producing output is still working. See `RintoPMO.Agent.WbsGenerator`.
   #
-  # Measured rather than guessed. Three real design documents -- 2KB, 11KB and
-  # 15KB -- took 98s, 116s and 120s on deepseek-v4-flash. What decides the wait
-  # is how much breakdown comes out, not how much document goes in: seven times
-  # the input cost twenty percent more time. So the ceiling has to clear the
-  # longest *answer* somebody might ask for, and 180s left almost no room over
-  # what was already observed.
-  timeout: 300_000
+  # The number has to clear the longest silence in a *healthy* call, which is
+  # the wait before the first token. Three real design documents ran 98s to
+  # 120s end to end when this was measured, so three minutes of complete
+  # silence is well past anything a working call does.
+  idle_timeout: 180_000
 
 config :rinto_pmo, RintoPMO.Agent.PromptBuilder,
   # Characters of block content inlined per referenced document before the rest

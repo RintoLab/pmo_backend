@@ -22,10 +22,13 @@ defmodule RintoPMO.Agent.WbsGenerator do
   belongs to whoever wrote it. A document too long for the model to take is a
   failure like any other and is reported as one.
 
-  ## Its timeout is its own
+  ## Its clock measures silence, not duration
 
-  Naming's is set for a small request. Reading a document and writing a
-  breakdown is not that, so this reads its own setting rather than borrowing.
+  Naming is given a wall-clock budget, which suits a call that should take a
+  moment. There is no honest budget for this one: what decides how long it
+  takes is how much work the document implies, which is the question being
+  asked. So a call that is still producing output is left alone however long
+  it runs, and what gets cut off is a call that has gone quiet.
 
   ## There is no fallback
 
@@ -60,12 +63,12 @@ defmodule RintoPMO.Agent.WbsGenerator do
           {:provider, String.t() | nil}
           | {:model, String.t() | nil}
           | {:thinking, String.t() | nil}
-          | {:timeout, timeout()}
+          | {:idle_timeout, timeout()}
           | {:on_chunk, (String.t() -> any())}
 
   @type error ::
           :pi_not_found
-          | :timeout
+          | :stalled
           | :empty_output
           | {:pi_exit, non_neg_integer(), String.t()}
           | {:spawn_failed, term()}
@@ -134,16 +137,17 @@ defmodule RintoPMO.Agent.WbsGenerator do
     * `:provider` / `:model` / `:thinking` -- the actor to answer as, taken
       from whoever holds the `decomposition_actor` role. Both a provider and a
       model, or neither.
-    * `:timeout` -- wall clock for the whole call, default from configuration
+    * `:idle_timeout` -- how long the call may produce nothing before it is
+      treated as dead. Not a budget for the whole call, which has none.
     * `:on_chunk` -- called with each piece of output as it arrives. For
       showing somebody that something is happening; the return value is
       ignored and the breakdown is still answered whole. Omit it and nothing
       is watching, which is a legitimate way to call this.
 
   Failure is reported and never papered over -- see the moduledoc. A call that
-  runs out of time answers `{:error, :timeout}` and **discards what it had**,
-  even though a listener has already seen some of it: half a breakdown is not
-  a smaller breakdown, and returning one would file it as an answer.
+  goes quiet answers `{:error, :stalled}` and **discards what it had**, even
+  though a listener has already seen some of it: half a breakdown is not a
+  smaller breakdown, and returning one would file it as an answer.
   """
   @impl Behaviour
   @spec generate(input(), [opt()]) :: {:ok, String.t()} | {:error, error()}
@@ -197,7 +201,7 @@ defmodule RintoPMO.Agent.WbsGenerator do
         # holding an open stdin it will never read is a child that can wait
         # forever for one.
         _ = OSProcess.close_stdin(id)
-        collect(id, deadline(timeout(opts)), on_chunk(opts), [], [])
+        collect(id, idle_timeout(opts), on_chunk(opts), [], [])
 
       {:error, {:executable_not_found, _cmd}} ->
         {:error, :pi_not_found}
@@ -207,36 +211,41 @@ defmodule RintoPMO.Agent.WbsGenerator do
     end
   end
 
-  defp collect(id, deadline, on_chunk, stdout, stderr) do
-    case remaining(deadline) do
-      :expired ->
-        give_up(id)
+  # The clock measures **silence, not duration**. Every piece of output starts
+  # it again, which the `after` clause does for free by virtue of this being a
+  # fresh `receive` each time round.
+  #
+  # A budget for the whole call would be a guess at how much breakdown somebody
+  # is entitled to, and there is no honest number for that: what decides how
+  # long this takes is how much work the document implies, which is the
+  # question being asked. A model that is still producing is still working, and
+  # cutting it off mid-answer throws away everything it has done. What is worth
+  # catching is the call that has stopped -- a provider that accepted the
+  # request and went quiet -- and silence is exactly what that looks like.
+  defp collect(id, idle, on_chunk, stdout, stderr) do
+    receive do
+      {:os_process, ^id, {:stdout, data}} ->
+        on_chunk.(data)
+        collect(id, idle, on_chunk, [data | stdout], stderr)
 
-      wait ->
-        receive do
-          {:os_process, ^id, {:stdout, data}} ->
-            on_chunk.(data)
-            collect(id, deadline, on_chunk, [data | stdout], stderr)
+      {:os_process, ^id, {:stderr, data}} ->
+        collect(id, idle, on_chunk, stdout, [data | stderr])
 
-          {:os_process, ^id, {:stderr, data}} ->
-            collect(id, deadline, on_chunk, stdout, [data | stderr])
-
-          {:os_process, ^id, {:exit, status}} ->
-            finish(status, stdout, stderr)
-        after
-          wait -> give_up(id)
-        end
+      {:os_process, ^id, {:exit, status}} ->
+        finish(status, stdout, stderr)
+    after
+      idle -> give_up(id)
     end
   end
 
   # Stopping makes the instance emit its final event; draining keeps the
   # leftovers out of a mailbox where nothing would ever read them. What was
-  # produced before the deadline is dropped on purpose -- half a breakdown is
+  # produced before it went quiet is dropped on purpose -- half a breakdown is
   # not a smaller breakdown, and passing one back would file it as an answer.
   defp give_up(id) do
     _ = OSProcess.stop(id)
     _ = drain(id)
-    {:error, :timeout}
+    {:error, :stalled}
   end
 
   defp drain(id) do
@@ -312,18 +321,6 @@ defmodule RintoPMO.Agent.WbsGenerator do
     end
   end
 
-  defp deadline(:infinity), do: :infinity
-  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
-
-  defp remaining(:infinity), do: :infinity
-
-  defp remaining(deadline) do
-    case deadline - System.monotonic_time(:millisecond) do
-      left when left > 0 -> left
-      _expired -> :expired
-    end
-  end
-
   # Which model breaks documents down is a runtime choice, like naming: it is
   # whichever actor holds the role. Unlike naming there is no inheriting from a
   # topic, so a caller with neither provider nor model has already decided to
@@ -357,12 +354,12 @@ defmodule RintoPMO.Agent.WbsGenerator do
     JSON.encode!(%{"title" => input.title, "blocks" => input.blocks})
   end
 
-  # Long by the standards of the other model call in this system, and it should
-  # be: this one reads a whole document before it writes anything, and a person
-  # is watching the spinner rather than waiting on something else. Real
-  # documents took 98s to 120s when this was measured -- see `config.exs` for
-  # what was measured and why the ceiling is where it is.
-  defp timeout(opts), do: Keyword.get(opts, :timeout) || setting(:timeout) || 300_000
+  # How long a call may say nothing before it is treated as dead. Not how long
+  # it may take -- see `collect/5`. It has to clear the wait before the first
+  # token, which on a thinking model is the longest silence in a healthy call.
+  defp idle_timeout(opts) do
+    Keyword.get(opts, :idle_timeout) || setting(:idle_timeout) || 180_000
+  end
 
   defp executable, do: Application.get_env(:rinto_pmo, :pi_executable, "pi")
 

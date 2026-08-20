@@ -601,13 +601,13 @@ defmodule RintoPMO.DocumentsTest do
       {:ok, decomposition} = Documents.request_decomposition(source)
       :ok = Notifier.subscribe(source.id)
 
-      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, :timeout} end)
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, :stalled} end)
 
       assert :ok = Documents.run_decomposition(decomposition)
 
       assert_received {:decomposition_updated, %{status: :running}}
       assert_received {:decomposition_updated, %{status: :failed} = failed}
-      assert failed.error == "the model call ran out of time"
+      assert failed.error == "the model stopped responding"
       assert failed.result_document_id == nil
       assert Documents.breakdown_of(source) == nil
     end
@@ -646,7 +646,7 @@ defmodule RintoPMO.DocumentsTest do
       assert Documents.latest_decomposition(source) == nil
 
       {:ok, first} = Documents.request_decomposition(source)
-      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, :timeout} end)
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, :stalled} end)
       :ok = Documents.run_decomposition(first)
 
       assert Documents.latest_decomposition(source).id == first.id

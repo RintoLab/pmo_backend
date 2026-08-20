@@ -1629,7 +1629,7 @@ defmodule RintoPMO.Documents do
   # sentence that mattered.
   defp failure_reason({:pi_exit, code, ""}), do: "the model call exited #{code}, saying nothing"
   defp failure_reason({:pi_exit, _code, complaint}), do: complaint
-  defp failure_reason(:timeout), do: "the model call ran out of time"
+  defp failure_reason(:stalled), do: "the model stopped responding"
   defp failure_reason(:empty_output), do: "the model answered with nothing"
   defp failure_reason(:pi_not_found), do: "the agent runtime is not installed on the server"
   defp failure_reason(other), do: inspect(other)
