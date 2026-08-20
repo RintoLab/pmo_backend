@@ -359,8 +359,10 @@ defmodule RintoPMO.Agent.WbsGenerator do
 
   # Long by the standards of the other model call in this system, and it should
   # be: this one reads a whole document before it writes anything, and a person
-  # is watching the spinner rather than waiting on something else.
-  defp timeout(opts), do: Keyword.get(opts, :timeout) || setting(:timeout) || 180_000
+  # is watching the spinner rather than waiting on something else. Real
+  # documents took 98s to 120s when this was measured -- see `config.exs` for
+  # what was measured and why the ceiling is where it is.
+  defp timeout(opts), do: Keyword.get(opts, :timeout) || setting(:timeout) || 300_000
 
   defp executable, do: Application.get_env(:rinto_pmo, :pi_executable, "pi")
 

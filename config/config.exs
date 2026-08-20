@@ -83,7 +83,14 @@ config :rinto_pmo, RintoPMO.Agent.WbsGenerator,
   #
   # Far longer than naming's, and deliberately: this call reads a whole
   # document before it writes anything, and somebody is watching it happen.
-  timeout: 180_000
+  #
+  # Measured rather than guessed. Three real design documents -- 2KB, 11KB and
+  # 15KB -- took 98s, 116s and 120s on deepseek-v4-flash. What decides the wait
+  # is how much breakdown comes out, not how much document goes in: seven times
+  # the input cost twenty percent more time. So the ceiling has to clear the
+  # longest *answer* somebody might ask for, and 180s left almost no room over
+  # what was already observed.
+  timeout: 300_000
 
 config :rinto_pmo, RintoPMO.Agent.PromptBuilder,
   # Characters of block content inlined per referenced document before the rest
