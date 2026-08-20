@@ -4,6 +4,7 @@ defmodule RintoPMOWeb.V1.DocumentController do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Utils
   alias RintoPMOWeb.V1.DecompositionJSON
+  alias RintoPMOWeb.V1.TaskJSON
 
   @statuses Map.new(Document.statuses(), &{Atom.to_string(&1), &1})
 
@@ -107,6 +108,33 @@ defmodule RintoPMOWeb.V1.DocumentController do
     conn
     |> put_view(DecompositionJSON)
     |> render(:show, decomposition: context.latest_decomposition(document))
+  end
+
+  @doc """
+  Files an adopted task document as the project's work breakdown.
+
+  The other end of `decompose/2`: that turned a plan into a document somebody
+  could argue with, this turns the document they settled on into the work.
+  Between them sits the only gate that matters -- somebody adopted it, with
+  `POST /documents/{id}/formalize`.
+
+  Answers `201` with every task created, flat and in document order, with
+  `parent_id` on each. Same shape as `GET /projects/{slug}/tasks`, so a client
+  builds the tree the way it already does.
+
+  The document comes out `applied` and cannot be filed twice. Editing it
+  afterwards changes nothing about the tasks, deliberately: work that turned
+  out wrong is cancelled, work that is missing comes from another document.
+  """
+  def file_breakdown(conn, %{"id" => id}) do
+    breakdown = Utils.module(:documents).get_document!(id)
+
+    with {:ok, tasks} <- Utils.module(:tasks).file_breakdown(breakdown) do
+      conn
+      |> put_status(:created)
+      |> put_view(TaskJSON)
+      |> render(:index, tasks: tasks)
+    end
   end
 
   defp document_filter(params) do

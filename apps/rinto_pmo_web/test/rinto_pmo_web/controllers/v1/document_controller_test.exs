@@ -2,6 +2,7 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
   use RintoPMOWeb.ConnCase, async: true
 
   alias RintoPMO.DocumentsMock
+  alias RintoPMO.TasksMock
 
   test "GET /api/v1/documents lists all document summaries", %{conn: conn} do
     document = document_with_revision()
@@ -239,6 +240,38 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
 
     assert %{"status" => "failed", "error" => "decomposition_failed: timeout"} =
              json_response(conn, 200)["data"]
+  end
+
+  # 201 and every task created, flat with `parent_id` on each -- the same shape
+  # the project's task list gives, so a client builds the tree the way it does.
+  test "POST /api/v1/documents/:id/file_breakdown answers with what it made", %{conn: conn} do
+    document = document_with_revision()
+    summary = insert(:task, kind: :summary, title: "灰度发布")
+    child = insert(:task, title: "接入十分之一流量", parent_id: summary.id)
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+    expect(TasksMock, :file_breakdown, fn ^document -> {:ok, [summary, child]} end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/file_breakdown")
+
+    assert [first, second] = json_response(conn, 201)["data"]
+    assert first["title"] == "灰度发布"
+    assert first["kind"] == "summary"
+    assert second["parent_id"] == summary.id
+  end
+
+  test "POST /api/v1/documents/:id/file_breakdown relays a refusal", %{conn: conn} do
+    document = document_with_revision()
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+    expect(TasksMock, :file_breakdown, fn ^document ->
+      {:error, :document_not_formal, %{status: :applied}}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/file_breakdown")
+
+    assert %{"error" => "document_not_formal"} = json_response(conn, 422)
   end
 
   # The rest of this file mocks the context to test the controller alone. These

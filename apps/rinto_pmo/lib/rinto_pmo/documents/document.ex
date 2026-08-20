@@ -112,6 +112,19 @@ defmodule RintoPMO.Documents.Document do
     |> add_error(:status, "an applied document cannot go back to formal")
   end
 
+  @doc false
+  def apply_changeset(%__MODULE__{status: :formal} = document),
+    do: change(document, status: :applied)
+
+  # Not idempotent, unlike adopting. Filing a breakdown twice is two work
+  # breakdowns from one document, and answering the second call with success
+  # would say the second one did not happen when it is exactly what did.
+  def apply_changeset(%__MODULE__{status: status} = document) do
+    document
+    |> change()
+    |> add_error(:status, "a #{status} document cannot be filed as a work breakdown")
+  end
+
   defp nest_initial_revision(attrs) when is_map(attrs) do
     attrs = stringify_keys(attrs)
 

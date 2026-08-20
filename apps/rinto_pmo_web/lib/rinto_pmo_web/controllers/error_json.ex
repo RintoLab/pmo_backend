@@ -59,8 +59,7 @@ defmodule RintoPMOWeb.ErrorJSON do
     # Breaking a document down. The first three are the document being in no
     # state to be broken down, or nobody having said who would do it; the
     # fourth is somebody having clicked twice.
-    document_not_formal:
-      {422, "The document has to be adopted before it can be broken down into tasks."},
+    document_not_formal: {422, "The document has to be adopted, and not already used, for this."},
     decomposition_exists:
       {422, "The document already has a breakdown. Archive it to make another."},
     no_decomposition_actor:

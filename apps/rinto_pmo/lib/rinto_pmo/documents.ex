@@ -285,6 +285,46 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
+  Marks a document as consumed by whatever downstream took it.
+
+  The end of the axis: nothing moves out of `:applied`, and asking twice is
+  refused rather than answered idempotently -- filing one document as two work
+  breakdowns is exactly what the state exists to prevent.
+
+  Composes inside a caller's transaction, which is the point. Filing a
+  breakdown creates tasks and consumes the document, and either both happen or
+  the document is still there to be filed.
+  """
+  @impl true
+  def apply_document(%Document{} = document) do
+    document
+    |> Document.apply_changeset()
+    |> Repo.update()
+  end
+
+  @doc """
+  The document a breakdown was derived from, or `nil`.
+
+  Read through the attempt, which is where the edge lives. `nil` for a document
+  nobody generated -- somebody may write a breakdown by hand, and it is no less
+  fileable for having no source.
+
+  What this answers is "which document do the tasks point at as their spec":
+  the plan somebody implements against is the design that was broken down, not
+  the list of work it produced.
+  """
+  @impl true
+  def source_of(%Document{} = breakdown) do
+    Decomposition
+    |> where([attempt], attempt.result_document_id == ^breakdown.id)
+    |> join(:inner, [attempt], source in Document, on: source.id == attempt.source_document_id)
+    |> order_by([attempt], desc: attempt.id)
+    |> select([_attempt, source], source)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  @doc """
   The most recent attempt to break a document down, or `nil`.
 
   What a client reads on arriving, and what it falls back to when it has missed

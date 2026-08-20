@@ -101,6 +101,9 @@ defmodule RintoPMO.Documents.Behaviour do
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
   @callback breakdown_of(Document.t()) :: Document.t() | nil
+  @callback apply_document(Document.t()) ::
+              {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
+  @callback source_of(Document.t()) :: Document.t() | nil
   @callback request_decomposition(Document.t()) ::
               {:ok, Decomposition.t()}
               | {:error, Ecto.Changeset.t()}

@@ -115,22 +115,31 @@ defmodule RintoPMO.Agent.WbsGeneratorTest do
       assert WbsGenerator.generate(@input, idle_timeout: @idle) == {:error, :stalled}
     end
 
-    # The point of the whole arrangement: this call runs several times the
-    # window and finishes anyway, because it never stops producing.
+    # Wider than the two above, and it has to be. This is the one test that
+    # fails if the window is crossed, so its margins are what protect it from
+    # the machine rather than from the code: the suite runs this right after
+    # dialyzer, and under that load both the ~400ms spawn and the gaps stretch.
+    # It caught exactly that once, so the numbers are a floor and not a taste.
+    @generous 1_500
+
+    # The point of the whole arrangement: this call runs twice the window and
+    # finishes anyway, because it never stops producing.
     test "waits as long as output keeps arriving", %{tmp_dir: tmp_dir} do
       fake_pi(tmp_dir,
         script: """
-        for i in 1 2 3 4 5 6 7 8 9 10; do
+        i=0
+        while [ $i -lt 30 ]; do
+          i=$((i + 1))
           printf -- '- task %s\\n' "$i"
-          sleep 0.15
+          sleep 0.1
         done
         """
       )
 
-      assert {:ok, breakdown} = WbsGenerator.generate(@input, idle_timeout: @idle)
+      assert {:ok, breakdown} = WbsGenerator.generate(@input, idle_timeout: @generous)
 
       assert breakdown =~ "- task 1"
-      assert breakdown =~ "- task 10"
+      assert breakdown =~ "- task 30"
     end
 
     test "drops what it had rather than filing half a breakdown", %{tmp_dir: tmp_dir} do

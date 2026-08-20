@@ -75,8 +75,7 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     task_not_splittable:
       {422, "The task cannot be split in its current state.", %{current_status: "done"}},
     document_not_formal:
-      {422, "The document has to be adopted before it can be broken down into tasks.",
-       %{status: "draft"}},
+      {422, "The document has to be adopted, and not already used, for this.", %{status: "draft"}},
     decomposition_exists:
       {422, "The document already has a breakdown. Archive it to make another.",
        %{document_id: "019f-breakdown"}},

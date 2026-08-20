@@ -1,6 +1,14 @@
 defmodule RintoPMO.TasksTest do
   use RintoPMO.DataCase, async: true
 
+  alias RintoPMO.Agent.WbsGeneratorMock
+  alias RintoPMO.Conversations
+  alias RintoPMO.ConversationsMock
+  alias RintoPMO.Documents
+  alias RintoPMO.DocumentsMock
+  alias RintoPMO.Projects
+  alias RintoPMO.ProjectsMock
+  alias RintoPMO.Settings
   alias RintoPMO.Tasks
   alias RintoPMO.Tasks.Task
 
@@ -956,6 +964,161 @@ defmodule RintoPMO.TasksTest do
       assert stats.by_assignee == []
       assert stats.by_status == %{open: 0, in_progress: 0, done: 0, cancelled: 0}
     end
+  end
+
+  # The other end of decomposition: the document somebody adopted becomes the
+  # work. The real `Documents` runs here rather than a mock, because what is
+  # being tested is that two contexts move together -- tasks appear and the
+  # document is spent, or neither.
+  describe "file_breakdown/1" do
+    setup do
+      stub_with(DocumentsMock, Documents)
+      stub_with(ProjectsMock, Projects)
+      stub_with(ConversationsMock, Conversations)
+      insert(:default_project)
+      :ok
+    end
+
+    test "makes a summary over its tasks, and a plain task for a chunk with none" do
+      project = insert(:project)
+
+      breakdown =
+        adopted(project, """
+        ## 灰度发布
+
+        分两步走。
+
+        ### 接入十分之一流量
+
+        先切 10%。
+
+        ### 加监控看板
+
+        ## 把回滚做成一个开关
+
+        现在要手动改配置。
+        """)
+
+      assert {:ok, filed} = Tasks.file_breakdown(breakdown)
+
+      assert [chunk, first, second, standalone] = filed
+
+      assert Enum.map(filed, & &1.title) ==
+               ["灰度发布", "接入十分之一流量", "加监控看板", "把回滚做成一个开关"]
+
+      assert chunk.kind == :summary
+      assert chunk.description == "分两步走。"
+      assert first.kind == :work
+      assert first.parent_id == chunk.id
+      assert first.description == "先切 10%。"
+      assert second.parent_id == chunk.id
+      assert second.description == nil
+
+      # A chunk nobody broke down further is one job, not a cover over one job.
+      assert standalone.kind == :work
+      assert standalone.parent_id == nil
+      assert standalone.description == "现在要手动改配置。"
+
+      assert Enum.all?(filed, &(&1.project_id == project.id))
+      assert Enum.all?(filed, &(&1.status == :open))
+      assert Enum.all?(filed, &(&1.assignee_id == nil))
+      assert Enum.all?(filed, &(&1.estimate_optimistic == nil))
+    end
+
+    # The spec somebody implements against is the design that was broken down,
+    # not the list of work it produced.
+    test "points the tasks at the document the breakdown came from" do
+      project = insert(:project)
+      actor = insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
+      {:ok, _settings} = Settings.put_actor("decomposition_actor", actor.id)
+
+      {:ok, source} =
+        Documents.create_document(%{
+          title: "上线方案",
+          project_id: project.id,
+          actor_id: actor.id,
+          markdown: "## 灰度\n\n先接十分之一。"
+        })
+
+      {:ok, source} = Documents.formalize_document(source)
+      {:ok, attempt} = Documents.request_decomposition(source)
+
+      expect(WbsGeneratorMock, :generate, fn _input, _opts ->
+        {:ok, "## 灰度发布\n\n### 接入十分之一流量\n"}
+      end)
+
+      :ok = Documents.run_decomposition(attempt)
+
+      breakdown = Documents.breakdown_of(source)
+      {:ok, breakdown} = Documents.formalize_document(breakdown)
+
+      assert {:ok, filed} = Tasks.file_breakdown(breakdown)
+      assert Enum.all?(filed, &(&1.document_id == source.id))
+    end
+
+    # Written by hand rather than generated: no source, and no less fileable.
+    test "leaves the spec pointer empty when nothing generated the document" do
+      breakdown = adopted(insert(:project), "## 一件活\n")
+
+      assert {:ok, [task]} = Tasks.file_breakdown(breakdown)
+      assert task.document_id == nil
+    end
+
+    test "spends the document, so it cannot be filed twice" do
+      breakdown = adopted(insert(:project), "## 一件活\n")
+
+      assert {:ok, _filed} = Tasks.file_breakdown(breakdown)
+      assert Documents.get_document!(breakdown.id).status == :applied
+
+      assert {:error, :document_not_formal, %{status: :applied}} =
+               Tasks.file_breakdown(Documents.get_document!(breakdown.id))
+    end
+
+    test "refuses a document nobody has adopted" do
+      project = insert(:project)
+
+      {:ok, draft} =
+        Documents.create_document(%{
+          title: "半成品",
+          project_id: project.id,
+          actor_id: insert(:actor).id,
+          markdown: "## 一件活\n"
+        })
+
+      assert {:error, :document_not_formal, %{status: :draft}} = Tasks.file_breakdown(draft)
+      assert Tasks.list_tasks(project, %{}) == []
+    end
+
+    test "relays what the parser refused" do
+      breakdown = adopted(insert(:project), "### 无家可归\n\n## 组\n")
+
+      assert {:error, :task_before_chunk, %{}} = Tasks.file_breakdown(breakdown)
+    end
+
+    # Either the work exists and the document is spent, or neither happened.
+    test "files nothing and spends nothing when one task is refused" do
+      project = insert(:project)
+      breakdown = adopted(project, "## 组\n\n### #{String.duplicate("长", 300)}\n")
+
+      assert {:error, :validation_error, details} = Tasks.file_breakdown(breakdown)
+      assert details["chunk"] == "组"
+
+      assert Tasks.list_tasks(project, %{}) == []
+      assert Documents.get_document!(breakdown.id).status == :formal
+    end
+  end
+
+  defp adopted(project, markdown) do
+    {:ok, document} =
+      Documents.create_document(%{
+        title: "任务文档",
+        project_id: project.id,
+        actor_id: insert(:actor).id,
+        markdown: markdown
+      })
+
+    {:ok, formal} = Documents.formalize_document(document)
+    formal
   end
 
   defp ids(tasks), do: Enum.map(tasks, & &1.id)

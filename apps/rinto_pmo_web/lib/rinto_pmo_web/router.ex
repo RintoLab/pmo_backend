@@ -57,6 +57,11 @@ defmodule RintoPMOWeb.Router do
     post "/documents/:id/decompose", DocumentController, :decompose
     get "/documents/:id/decomposition", DocumentController, :decomposition
 
+    # And the other end of it: the breakdown somebody adopted becomes the work.
+    # An action on the document because that is what it consumes -- the
+    # document comes out `applied` and cannot be filed a second time.
+    post "/documents/:id/file_breakdown", DocumentController, :file_breakdown
+
     resources "/documents", DocumentController, only: [:index, :show, :create, :delete] do
       resources "/revisions", DocumentRevisionController,
         only: [:index, :show, :create],
