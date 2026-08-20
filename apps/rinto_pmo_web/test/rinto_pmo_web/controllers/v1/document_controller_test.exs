@@ -310,12 +310,12 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
   # Built rather than inserted: these tests are about what the controller does
   # with what the context hands it.
   defp decomposition(document) do
-    %RintoPMO.Documents.Decomposition{
+    build(:document_decomposition,
       id: UUIDv7.generate(),
+      source_document: nil,
       source_document_id: document.id,
-      status: :pending,
       inserted_at: DateTime.utc_now(),
       updated_at: DateTime.utc_now()
-    }
+    )
   end
 end

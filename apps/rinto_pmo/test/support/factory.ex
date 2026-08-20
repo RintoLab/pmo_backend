@@ -11,6 +11,7 @@ defmodule RintoPMO.Factory do
   alias RintoPMO.Conversations.Message
   alias RintoPMO.Conversations.MessageRef
   alias RintoPMO.Documents.BlockProposal
+  alias RintoPMO.Documents.Decomposition
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
@@ -46,6 +47,10 @@ defmodule RintoPMO.Factory do
 
   def document_factory do
     %Document{project: build(:project)}
+  end
+
+  def document_decomposition_factory do
+    %Decomposition{source_document: build(:document)}
   end
 
   def document_revision_factory do

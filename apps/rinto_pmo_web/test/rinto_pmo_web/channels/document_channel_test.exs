@@ -2,7 +2,6 @@ defmodule RintoPMOWeb.DocumentChannelTest do
   use RintoPMOWeb.ChannelCase, async: true
 
   alias RintoPMO.Documents
-  alias RintoPMO.Documents.Decomposition
   alias RintoPMO.Documents.Notifier
   alias RintoPMO.DocumentsMock
   alias RintoPMO.Projects
@@ -81,12 +80,9 @@ defmodule RintoPMOWeb.DocumentChannelTest do
     document
   end
 
-  # Built rather than run: this is about what the channel does with what it is
-  # told, and running a decomposition would drag a model call in behind it.
+  # Inserted rather than run: this is about what the channel does with what it
+  # is told, and running a decomposition would drag a model call in behind it.
   defp attempt(document, status) do
-    %Decomposition{}
-    |> Decomposition.creation_changeset(document.id)
-    |> Ecto.Changeset.change(status: status)
-    |> RintoPMO.Repo.insert!()
+    insert(:document_decomposition, source_document: document, status: status)
   end
 end
