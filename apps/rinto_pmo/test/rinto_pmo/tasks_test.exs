@@ -1106,6 +1106,71 @@ defmodule RintoPMO.TasksTest do
       assert Tasks.list_tasks(project, %{}) == []
       assert Documents.get_document!(breakdown.id).status == :formal
     end
+
+    # Verbatim from a real run against `docs/document-annotations.md`, quirks
+    # and all: escaped underscores in the headings, descriptions that are
+    # mostly lists, acceptance written as prose rather than marked up. Hand
+    # written Markdown would have tested the parser against my typing.
+    test "files what the model actually produced" do
+      project = insert(:project)
+
+      breakdown =
+        adopted(project, """
+        ## 数据模型
+
+        ### 建 annotations 表
+
+        写迁移创建 annotations 表：
+
+        - document_id、actor_id、content 非空
+        - status 默认 `open`，取值 `open | resolved | dismissed`
+
+        验收：迁移 up/down 可往返。
+
+        ### 建 annotation_replies 表
+
+        写迁移创建 annotation_replies 表：
+
+        - (annotation_id, position) 唯一约束
+
+        验收：唯一约束生效。
+
+        ## 追评与状态逻辑
+
+        ### 追评 position 分配
+
+        创建追评时，position 取最大 position + 1；删除不重排。
+        """)
+
+      assert {:ok, filed} = Tasks.file_breakdown(breakdown)
+
+      assert Enum.map(filed, &{&1.kind, &1.title}) == [
+               {:summary, "数据模型"},
+               {:work, "建 annotations 表"},
+               {:work, "建 annotation_replies 表"},
+               {:summary, "追评与状态逻辑"},
+               {:work, "追评 position 分配"}
+             ]
+
+      # The heading is stored `建 annotation\_replies 表`, and a title column is
+      # not Markdown. This is the whole reason titles come off the AST.
+      refute Enum.any?(filed, &String.contains?(&1.title, "\\"))
+
+      [_, first, second, _, third] = filed
+
+      # Descriptions keep the escaping, and must: they are Markdown -- the
+      # lists in them do not render otherwise -- so `document\_id` is how you
+      # write a literal underscore. Stripping it here to match the title would
+      # turn somebody's `_x_` into emphasis they never asked for.
+      assert first.description =~ "- document\\_id、actor\\_id、content 非空"
+      assert first.description =~ "验收：迁移 up/down 可往返。"
+      assert second.description =~ "唯一约束生效"
+      assert third.description =~ "取最大 position + 1"
+
+      # Chunks carry no description of their own here, because the model wrote
+      # none -- it puts the words on the tasks.
+      assert Enum.filter(filed, &(&1.kind == :summary)) |> Enum.all?(&(&1.description == nil))
+    end
   end
 
   defp adopted(project, markdown) do

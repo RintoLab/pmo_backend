@@ -803,6 +803,61 @@ paths:
                 $ref: "#/components/schemas/DecompositionResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/file_breakdown:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Documents, Tasks]
+      operationId: fileDocumentBreakdown
+      summary: File an adopted task document as the project's work breakdown
+      description: >
+        The other end of `POST /documents/{document_id}/decompose`. That turned
+        a plan into a document somebody could argue with; this turns the
+        document they settled on into the work itself. Between them sits the
+        only gate that matters -- somebody adopted it, with
+        `POST /documents/{document_id}/formalize`.
+
+
+        **What it reads.** A `##` with `###` under it becomes a summary node
+        covering them; a `##` with none becomes one piece of work. Everything
+        written under either heading becomes that task's `description`,
+        acceptance criteria included -- there is no separate field for them and
+        no marker inside the text. Descriptions are Markdown and have to be
+        rendered as such: they contain lists, and a literal underscore in them
+        is written `\_`.
+
+
+        **What it does not read.** No estimates -- how long work takes is
+        decided by whoever is going to do it. No ordering beyond the order
+        things were written, which is the order they come back in.
+
+
+        Every task's `document_id` points at the document that was *broken
+        down*, not at this one: the spec somebody implements against is the
+        design, not the list of work. A breakdown written by hand rather than
+        generated has no source, and its tasks carry `null`.
+
+
+        **Once.** The document comes out `applied` and a second call is
+        refused. Tasks and that transition are one transaction, so a breakdown
+        never half-lands: a task the domain rejects leaves nothing filed and
+        the document still `formal`, there to be fixed and filed. Editing the
+        document afterwards changes nothing about the tasks -- work that turned
+        out wrong is cancelled, work that is missing comes from breaking down
+        another document.
+      responses:
+        "201":
+          description: >-
+            Every task created, flat and in document order with `parent_id` on
+            each -- the same shape `GET /projects/{slug}/tasks` answers with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /documents/{document_id}/revisions:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -4581,6 +4636,8 @@ components:
         - decomposition_exists
         - no_decomposition_actor
         - decomposition_in_flight
+        - no_chunks
+        - task_before_chunk
         - corrupt_image
         - internal_server_error
         - attachment_unwritable

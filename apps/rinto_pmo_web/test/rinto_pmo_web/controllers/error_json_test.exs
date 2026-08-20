@@ -85,6 +85,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
        %{}},
     decomposition_in_flight:
       {409, "The document is already being broken down.", %{document_id: "019f-source"}},
+    no_chunks: {422, "The document has no headings, so there is no work in it to file.", %{}},
+    task_before_chunk:
+      {422, "A task heading stands above the first chunk heading, so it belongs to nothing.", %{}},
     corrupt_image: {422, "The image header could not be read.", %{}},
     internal_server_error: {500, "An internal server error occurred.", %{}},
     agent_unavailable:
