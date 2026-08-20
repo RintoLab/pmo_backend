@@ -238,25 +238,25 @@ defmodule RintoPMO.DocumentsTest do
     end
   end
 
-  # Writing something down is not vouching for it, so a document is fleeting
-  # until a person says otherwise. That makes fleeting the common case, which is
+  # Writing something down is not vouching for it, so a document is `:draft`
+  # until a person says otherwise. That makes draft the common case, which is
   # the whole reason such documents have to stay visible: filtering them out by
   # default would hide nearly the entire corpus.
-  describe "fleeting documents" do
-    test "every document is created fleeting" do
+  describe "document status" do
+    test "every document is created draft" do
       assert {:ok, document} = Documents.create_document(%{title: "Written down"})
-      assert document.fleeting
-      assert Documents.get_document!(document.id).fleeting
+      assert document.status == :draft
+      assert Documents.get_document!(document.id).status == :draft
     end
 
     # The same rule as block attribution: a caller that could declare its own
     # work adopted would be declaring that the review never needed to happen.
     test "ignores a caller trying to create a document already adopted" do
       assert {:ok, document} =
-               Documents.create_document(%{title: "Claims to count", fleeting: false})
+               Documents.create_document(%{title: "Claims to count", status: :formal})
 
-      assert document.fleeting
-      assert Documents.get_document!(document.id).fleeting
+      assert document.status == :draft
+      assert Documents.get_document!(document.id).status == :draft
     end
 
     test "lists both kinds together, or either one alone" do
@@ -269,35 +269,49 @@ defmodule RintoPMO.DocumentsTest do
       assert document_ids(Documents.list_documents(%{project: project.id})) ==
                MapSet.new([scratch.id, adopted.id])
 
-      assert document_ids(Documents.list_documents(%{fleeting: true})) ==
+      assert document_ids(Documents.list_documents(%{status: :draft})) ==
                MapSet.new([scratch.id])
 
-      assert document_ids(Documents.list_documents(%{fleeting: false})) ==
+      assert document_ids(Documents.list_documents(%{status: :formal})) ==
                MapSet.new([adopted.id])
 
-      assert document_ids(Documents.list_documents(%{project: project.id, fleeting: false})) ==
+      assert document_ids(Documents.list_documents(%{project: project.id, status: :formal})) ==
                MapSet.new([adopted.id])
     end
 
-    test "formalizes a fleeting document idempotently, touching nothing else" do
+    test "formalizes a draft document idempotently, touching nothing else" do
       project = insert(:project)
       {:ok, document} = create_document(project, %{title: "Scratch"})
 
       assert {:ok, formal} = Documents.formalize_document(document)
-      refute formal.fleeting
+      assert formal.status == :formal
       assert formal.id == document.id
 
       assert {:ok, formal_again} = Documents.formalize_document(formal)
-      refute formal_again.fleeting
+      assert formal_again.status == :formal
 
       revisions = Documents.list_revisions(document)
       assert length(revisions) == 1
       assert Documents.get_document!(document.id).latest_revision.title == "Scratch"
     end
 
+    # Idempotent is not the same as permissive. An applied document has already
+    # been consumed downstream, and reporting success would tell the caller it
+    # is available to be consumed again.
+    test "refuses to walk an applied document back to formal" do
+      project = insert(:project)
+      {:ok, document} = create_document(project, %{title: "Consumed"})
+      {:ok, document} = Documents.formalize_document(document)
+
+      applied = %{document | status: :applied}
+
+      assert {:error, changeset} = Documents.formalize_document(applied)
+      assert "an applied document cannot go back to formal" in errors_on(changeset).status
+    end
+
     # Adoption is about standing, so it survives everything the content does.
-    # Nothing in the write path can put a document back to fleeting.
-    test "a new revision does not return an adopted document to fleeting" do
+    # Nothing in the write path can put a document back to `:draft`.
+    test "a new revision does not return an adopted document to draft" do
       project = insert(:project)
       actor = insert(:actor)
 
@@ -326,7 +340,7 @@ defmodule RintoPMO.DocumentsTest do
                  ]
                })
 
-      refute Documents.get_document!(document.id).fleeting
+      assert Documents.get_document!(document.id).status == :formal
     end
   end
 

@@ -49,8 +49,8 @@ defmodule RintoPMO.Documents do
   Lists non-archived documents with their latest revision, newest first.
 
   `filter` accepts `:project` -- a project id, or `:unassigned` for documents
-  belonging to none -- and `:fleeting`. An absent key filters nothing, which is
-  the only sane default here: every document is created fleeting, so a list that
+  belonging to none -- and `:status`. An absent key filters nothing, which is
+  the only sane default here: every document is created `:draft`, so a list that
   quietly dropped them would hide nearly everything, starting with whatever was
   written most recently.
   """
@@ -98,7 +98,7 @@ defmodule RintoPMO.Documents do
   A missing or blank body is allowed: an empty document is a legitimate
   starting point, and there is nothing to credit to an actor either.
 
-  Every document is created fleeting, and `attrs` has no say in it -- see
+  Every document is created `:draft`, and `attrs` has no say in it -- see
   `RintoPMO.Documents.Document`. Only `formalize_document/1` clears the flag.
 
   ## No `project_id` means the default project
@@ -153,16 +153,17 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
-  Idempotently adopts a fleeting document as a formal one.
+  Idempotently adopts a `:draft` document as a `:formal` one.
 
   The one way out of the state every document is created in, and a person's
-  action alone: the flag records that somebody looked at a document and decided
-  it counts, which is not a judgement its author can make on its own behalf.
+  action alone: it records that somebody looked at a document and decided it
+  counts, which is not a judgement its author can make on its own behalf.
   Nothing about the content moves -- no revision, no proposal -- because adoption
   is about standing, not text.
 
   There is no way back. A document that turns out not to be worth keeping is
-  archived, not returned to fleeting; see `RintoPMO.Documents.Document`.
+  archived, not returned to `:draft`; and one already consumed downstream is
+  refused outright. See `RintoPMO.Documents.Document`.
   """
   @impl true
   def formalize_document(%Document{} = document) do
@@ -877,8 +878,8 @@ defmodule RintoPMO.Documents do
       {:project, project_id}, query ->
         where(query, [document], document.project_id == ^project_id)
 
-      {:fleeting, fleeting}, query ->
-        where(query, [document], document.fleeting == ^fleeting)
+      {:status, status}, query ->
+        where(query, [document], document.status == ^status)
 
       {_other, _value}, query ->
         query

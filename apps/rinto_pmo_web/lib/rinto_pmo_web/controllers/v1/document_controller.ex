@@ -1,7 +1,10 @@
 defmodule RintoPMOWeb.V1.DocumentController do
   use RintoPMOWeb, :controller
 
+  alias RintoPMO.Documents.Document
   alias RintoPMO.Utils
+
+  @statuses Map.new(Document.statuses(), &{Atom.to_string(&1), &1})
 
   def index(conn, params) do
     with {:ok, filter} <- document_filter(params) do
@@ -50,10 +53,11 @@ defmodule RintoPMOWeb.V1.DocumentController do
   end
 
   @doc """
-  Adopts a fleeting document as a formal one.
+  Adopts a `draft` document as a `formal` one.
 
   A person's action -- see `RintoPMO.Documents.formalize_document/1` -- so it is
-  reachable only here and not from the agent CLI.
+  reachable only here and not from the agent CLI. An `applied` document is
+  refused: there is no way back along this axis.
   """
   def formalize(conn, %{"id" => id}) do
     context = Utils.module(:documents)
@@ -66,7 +70,7 @@ defmodule RintoPMOWeb.V1.DocumentController do
 
   defp document_filter(params) do
     with {:ok, filter} <- project_filter(params) do
-      fleeting_filter(filter, params)
+      status_filter(filter, params)
     end
   end
 
@@ -85,12 +89,16 @@ defmodule RintoPMOWeb.V1.DocumentController do
     end
   end
 
-  defp fleeting_filter(filter, params) do
-    case Map.get(params, "fleeting") do
-      nil -> {:ok, filter}
-      "true" -> {:ok, Map.put(filter, :fleeting, true)}
-      "false" -> {:ok, Map.put(filter, :fleeting, false)}
-      _other -> {:error, :bad_request, %{fleeting: ["is invalid"]}}
+  defp status_filter(filter, params) do
+    case Map.get(params, "status") do
+      nil ->
+        {:ok, filter}
+
+      value ->
+        case Map.fetch(@statuses, value) do
+          {:ok, status} -> {:ok, Map.put(filter, :status, status)}
+          :error -> {:error, :bad_request, %{status: ["is invalid"]}}
+        end
     end
   end
 end

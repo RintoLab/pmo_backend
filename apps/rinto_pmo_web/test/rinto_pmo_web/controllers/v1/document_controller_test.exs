@@ -15,7 +15,7 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
 
     assert [data] = json_response(conn, 200)["data"]
     assert data["id"] == document.id
-    assert data["fleeting"] == true
+    assert data["status"] == "draft"
     assert data["latest_revision"]["title"] == "Plan"
     refute Map.has_key?(data["latest_revision"], "blocks")
   end
@@ -39,32 +39,32 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
     assert json_response(conn, 200)["data"] == []
   end
 
-  test "GET /api/v1/documents filters on fleeting, alongside the project", %{conn: conn} do
+  test "GET /api/v1/documents filters on status, alongside the project", %{conn: conn} do
     project = insert(:project)
 
     expect(DocumentsMock, :list_documents, fn filter ->
-      assert filter == %{project: project.id, fleeting: true}
+      assert filter == %{project: project.id, status: :draft}
       []
     end)
 
-    conn = get(conn, ~p"/api/v1/documents?project_id=#{project.id}&fleeting=true")
+    conn = get(conn, ~p"/api/v1/documents?project_id=#{project.id}&status=draft")
     assert json_response(conn, 200)["data"] == []
 
     expect(DocumentsMock, :list_documents, fn filter ->
-      assert filter == %{fleeting: false}
+      assert filter == %{status: :applied}
       []
     end)
 
-    conn = get(conn, ~p"/api/v1/documents?fleeting=false")
+    conn = get(conn, ~p"/api/v1/documents?status=applied")
     assert json_response(conn, 200)["data"] == []
   end
 
-  test "GET /api/v1/documents rejects a fleeting filter that is not a boolean", %{conn: conn} do
-    conn = get(conn, ~p"/api/v1/documents?fleeting=maybe")
+  test "GET /api/v1/documents rejects a status outside the set", %{conn: conn} do
+    conn = get(conn, ~p"/api/v1/documents?status=maybe")
 
     assert %{
              "error" => "bad_request",
-             "details" => %{"fleeting" => ["is invalid"]}
+             "details" => %{"status" => ["is invalid"]}
            } = json_response(conn, 400)
   end
 
@@ -152,21 +152,21 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
              json_response(conn, 400)
   end
 
-  test "POST /api/v1/documents/:id/formalize adopts a fleeting document", %{conn: conn} do
+  test "POST /api/v1/documents/:id/formalize adopts a draft document", %{conn: conn} do
     document = document_with_revision()
-    fleeting = %{document | fleeting: true}
-    formal = %{document | fleeting: false}
+    draft = %{document | status: :draft}
+    formal = %{document | status: :formal}
 
     expect(DocumentsMock, :get_document!, fn id ->
       assert id == document.id
-      fleeting
+      draft
     end)
 
-    expect(DocumentsMock, :formalize_document, fn ^fleeting -> {:ok, formal} end)
+    expect(DocumentsMock, :formalize_document, fn ^draft -> {:ok, formal} end)
 
     conn = post(conn, ~p"/api/v1/documents/#{document.id}/formalize")
 
-    assert json_response(conn, 200)["data"]["fleeting"] == false
+    assert json_response(conn, 200)["data"]["status"] == "formal"
   end
 
   test "DELETE /api/v1/documents/:id archives idempotently", %{conn: conn} do

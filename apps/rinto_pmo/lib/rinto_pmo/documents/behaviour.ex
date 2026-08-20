@@ -7,7 +7,7 @@ defmodule RintoPMO.Documents.Behaviour do
 
   @type filter :: %{
           optional(:project) => :unassigned | UUIDv7.t(),
-          optional(:fleeting) => boolean()
+          optional(:status) => Document.status()
         }
 
   @type proposal_filter :: %{
