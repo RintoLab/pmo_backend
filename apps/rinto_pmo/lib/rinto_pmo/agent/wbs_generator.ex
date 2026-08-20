@@ -267,10 +267,33 @@ defmodule RintoPMO.Agent.WbsGenerator do
   defp finish({:exit, code}, _stdout, stderr) do
     complaint = stderr |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
     Logger.warning("wbs generation: pi exited #{code}: #{complaint}")
-    {:error, {:pi_exit, code, truncate(complaint)}}
+    {:error, {:pi_exit, code, complaint |> message_of() |> truncate()}}
   end
 
   defp finish(status, _stdout, _stderr), do: {:error, {:spawn_failed, status}}
+
+  # What a provider refuses with arrives as `429: {"type":…,"message":"…"}` --
+  # a status, then the response body whole. The sentence a person needs is the
+  # `message`; the envelope around it is noise in a panel.
+  #
+  # This is the one piece of provider output this module reads, and it is
+  # written so that reading it wrong costs nothing: anything that is not a JSON
+  # object carrying a string `message` is passed through exactly as it came,
+  # which is what happened before this existed. So a provider changing its
+  # shape degrades to verbatim rather than to silence, and there is no
+  # vocabulary here to drift out of date.
+  #
+  # Whatever sits before the JSON is kept -- the status code says whether this
+  # was a refusal, a limit, or the provider falling over, and that is worth the
+  # four characters.
+  defp message_of(complaint) do
+    with [_whole, prefix, json] <- Regex.run(~r/\A(.*?)(\{.*\})\s*\z/s, complaint),
+         {:ok, %{"message" => message}} when is_binary(message) <- JSON.decode(json) do
+      prefix <> message
+    else
+      _not_a_message_we_recognise -> complaint
+    end
+  end
 
   # A provider that decides to print a stack trace should not put one in a
   # field somebody reads in a panel. The whole of it is in the log.
