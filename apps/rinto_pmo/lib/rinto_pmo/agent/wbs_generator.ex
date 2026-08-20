@@ -91,11 +91,17 @@ defmodule RintoPMO.Agent.WbsGenerator do
   JSON: a title, and its sections in order. Reply with the work breakdown as \
   Markdown.
 
-  Shape:
-  - `##` heading -- a chunk of work, covering the tasks under it.
+  Shape, and follow it exactly:
+  - `##` heading -- a chunk of work. Use `##` and only `##`.
   - `-` list item under a heading -- one task somebody can pick up and finish.
-  - Indented `-` under a task -- what "done" means for it, if it is not obvious \
-  from the title alone.
+  - Indented `-` under a task -- a smaller task, or what "done" means for it. \
+  Indent as deep as the work actually nests.
+
+  Never write `#` or `###`. Every heading, at any level, becomes a separate \
+  top-level entry, so a `###` you meant as a sub-chunk arrives as a sibling of \
+  the `##` above it and the nesting you intended is gone. **Depth is expressed \
+  by list indentation, never by heading level.** A chunk that needs sub-chunks \
+  gets nested list items, not deeper headings.
 
   Rules:
   - Break down the work the document implies. Do not restate the document.
@@ -106,6 +112,18 @@ defmodule RintoPMO.Agent.WbsGenerator do
   - Never invent work the document gives no reason for. If a section implies \
   nothing to do, it gets no task.
   - Reply with the Markdown alone. No preamble, no explanation, no summary.
+
+  Example of the shape:
+
+  ## 灰度发布
+  - 接入十分之一流量
+    - 完成标准：错误率不高于基线
+  - 加监控看板
+    - 错误率曲线
+    - 延迟分位数
+
+  ## 回滚
+  - 做一个一键切回的开关
   """
 
   @doc """
