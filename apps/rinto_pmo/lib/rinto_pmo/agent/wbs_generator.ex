@@ -30,6 +30,46 @@ defmodule RintoPMO.Agent.WbsGenerator do
   asked. So a call that is still producing output is left alone however long
   it runs, and what gets cut off is a call that has gone quiet.
 
+  ## It reads pi's event stream, not pi's rendered output
+
+  `--mode json`, and the reason is the paragraph above. `--mode text` prints
+  nothing until the process is done: measured against a real provider, a
+  19-second answer arrived whole at +19s, and a 78-second breakdown of a 17KB
+  document arrived as three pieces at the same instant, 78.594s in. Down a
+  pipe there is no partial output at all, so silence and duration are the same
+  measurement, and the clock above degenerates into the whole-call budget it
+  was written not to be -- which is what killed three real documents, all of
+  them large, at exactly the timeout while smaller ones went through.
+
+  `--mode json` writes one JSON object per line as things happen, including
+  `thinking_delta` while the model is still thinking, which is where the long
+  silences are. Verified against three providers.
+
+  The price is a private format: these events are pi's, they carry no
+  compatibility promise, and a pi upgrade may rename them. So nothing here
+  depends on reading them *well*:
+
+    * a line that is not JSON, or an event this does not know, is ignored --
+      it still counts as the process being alive, which is most of what
+      reading it is for
+    * the answer is taken from the final `turn_end`, which carries the whole
+      message; the `text_delta` pieces are a fallback, so a provider that
+      streams nothing still produces a breakdown
+    * a failure is read from the same event, see below
+
+  If the event names change, the worst case is the behaviour before this
+  existed: no streaming, and one answer at the end.
+
+  ## Failure arrives on stdout now, and exit code 0
+
+  Under `--mode text` a provider that refuses makes pi exit non-zero with the
+  complaint on stderr. Under `--mode json` **pi exits 0** and puts the refusal
+  in the final `turn_end` as `stopReason: "error"` with an `errorMessage`.
+  Both paths are read, because the first is still how pi's own failures
+  arrive. Missing the second would turn every provider refusal into
+  `:empty_output` and throw away the one sentence the person waiting can act
+  on.
+
   ## There is no fallback
 
   A topic that misses its one chance to be named can be named from its first
@@ -41,10 +81,13 @@ defmodule RintoPMO.Agent.WbsGenerator do
 
   ## What comes back
 
-  Markdown, and this module does not check its shape. What the notation means
-  is settled where the task list is read, not here -- and until that exists
-  there is nothing to validate against. See
-  `docs/implementation-plan-task-decomposition.md`.
+  Markdown -- the model's own answer, unwrapped from the events it arrived in
+  -- and this module does not check its shape. What the notation means is
+  settled where the task list is read -- `RintoPMO.Tasks.Breakdown` -- and a
+  shape it refuses is a document to fix rather than a generation to redo, so
+  the complaint belongs at filing time where somebody can act on it. The
+  system prompt here and that parser are the two halves of one convention and
+  move together.
   """
 
   alias RintoPMO.OSProcess
@@ -71,6 +114,7 @@ defmodule RintoPMO.Agent.WbsGenerator do
           | :stalled
           | :empty_output
           | {:pi_exit, non_neg_integer(), String.t()}
+          | {:provider_refused, String.t()}
           | {:spawn_failed, term()}
 
   defmodule Behaviour do
@@ -180,9 +224,11 @@ defmodule RintoPMO.Agent.WbsGenerator do
   # output has to be passed on as it arrives, so this drives the process
   # directly and mirrors what `run/1` does around the receive loop.
   #
-  # `:raw` rather than `:lines`: a person watching wants text appearing, not
-  # tidy units, and raw frames cannot strand a last line that never got its
-  # newline. Whoever is listening concatenates.
+  # `:lines` rather than `:raw`: what arrives is one JSON object per line and a
+  # half-read object says nothing at all, so the framing that used to be wrong
+  # here -- tidy units instead of text appearing -- is now the only one that
+  # parses. What a watcher sees is unaffected: the pieces handed on are the
+  # model's own deltas, which are finer than lines anyway.
   defp run(input, session_dir, opts) do
     id = "rinto-pmo-wbs-#{System.unique_integer([:positive, :monotonic])}"
 
@@ -190,7 +236,7 @@ defmodule RintoPMO.Agent.WbsGenerator do
       [
         "--print",
         "--mode",
-        "text",
+        "json",
         "--no-session",
         "--no-tools",
         "--session-dir",
@@ -204,7 +250,7 @@ defmodule RintoPMO.Agent.WbsGenerator do
       cmd: executable(),
       args: args,
       owner: self(),
-      framing: :raw
+      framing: :lines
     ]
 
     case OSProcess.start(start_opts) do
@@ -213,7 +259,7 @@ defmodule RintoPMO.Agent.WbsGenerator do
         # holding an open stdin it will never read is a child that can wait
         # forever for one.
         _ = OSProcess.close_stdin(id)
-        collect(id, idle_timeout(opts), on_chunk(opts), [], [])
+        collect(id, idle_timeout(opts), on_chunk(opts), %{deltas: [], answer: nil, stderr: []})
 
       {:error, {:executable_not_found, _cmd}} ->
         {:error, :pi_not_found}
@@ -234,19 +280,44 @@ defmodule RintoPMO.Agent.WbsGenerator do
   # cutting it off mid-answer throws away everything it has done. What is worth
   # catching is the call that has stopped -- a provider that accepted the
   # request and went quiet -- and silence is exactly what that looks like.
-  defp collect(id, idle, on_chunk, stdout, stderr) do
+  defp collect(id, idle, on_chunk, acc) do
     receive do
-      {:os_process, ^id, {:stdout, data}} ->
-        on_chunk.(data)
-        collect(id, idle, on_chunk, [data | stdout], stderr)
+      {:os_process, ^id, {:stdout, line}} ->
+        collect(id, idle, on_chunk, read(line, on_chunk, acc))
 
       {:os_process, ^id, {:stderr, data}} ->
-        collect(id, idle, on_chunk, stdout, [data | stderr])
+        collect(id, idle, on_chunk, %{acc | stderr: [data | acc.stderr]})
 
       {:os_process, ^id, {:exit, status}} ->
-        finish(status, stdout, stderr)
+        finish(status, acc)
     after
       idle -> give_up(id)
+    end
+  end
+
+  # One line of pi's event stream. Anything unrecognised is dropped on the
+  # floor, deliberately: the events are pi's own and carry no promise, and a
+  # line this cannot read has still done the one thing every line does, which
+  # is prove the call is alive.
+  #
+  # `thinking_delta` is read the same way -- dropped, but only after it has
+  # reset the clock. It is not handed on: a person waiting for a task list has
+  # not asked to watch the model talk itself into one.
+  defp read(line, on_chunk, acc) do
+    case JSON.decode(line) do
+      {:ok, %{"assistantMessageEvent" => %{"type" => "text_delta", "delta" => delta}}}
+      when is_binary(delta) ->
+        on_chunk.(delta)
+        %{acc | deltas: [delta | acc.deltas]}
+
+      # The whole message, and whether it went wrong. Later ones win: `--print`
+      # with no tools makes one turn, and if that ever stops being true the
+      # last word is the right one to keep.
+      {:ok, %{"type" => "turn_end", "message" => %{} = message}} ->
+        %{acc | answer: message}
+
+      _unreadable_or_uninteresting ->
+        acc
     end
   end
 
@@ -269,10 +340,21 @@ defmodule RintoPMO.Agent.WbsGenerator do
     end
   end
 
-  defp finish({:exit, 0}, stdout, _stderr) do
-    case stdout |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim() do
-      "" -> {:error, :empty_output}
-      markdown -> {:ok, markdown}
+  # Exit 0 is not success: under `--mode json` it is also how a provider
+  # refusal comes back. The refusal is checked first, because a refused turn
+  # carries no text and would otherwise be reported as an empty answer -- true,
+  # useless, and hiding the sentence that says why.
+  defp finish({:exit, 0}, acc) do
+    case refusal(acc.answer) do
+      nil ->
+        case answer(acc) do
+          "" -> {:error, :empty_output}
+          markdown -> {:ok, markdown}
+        end
+
+      complaint ->
+        Logger.warning("wbs generation: the provider refused: #{complaint}")
+        {:error, {:provider_refused, complaint |> message_of() |> truncate()}}
     end
   end
 
@@ -285,13 +367,50 @@ defmodule RintoPMO.Agent.WbsGenerator do
   # attempt recorded `{:pi_exit, 1}`, which tells the person waiting nothing at
   # all, while the one sentence that would have told them everything sat in a
   # log they were not reading. It is still logged, for whoever is reading logs.
-  defp finish({:exit, code}, _stdout, stderr) do
-    complaint = stderr |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
+  defp finish({:exit, code}, acc) do
+    complaint = acc.stderr |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
     Logger.warning("wbs generation: pi exited #{code}: #{complaint}")
     {:error, {:pi_exit, code, complaint |> message_of() |> truncate()}}
   end
 
-  defp finish(status, _stdout, _stderr), do: {:error, {:spawn_failed, status}}
+  defp finish(status, _acc), do: {:error, {:spawn_failed, status}}
+
+  # The model's answer: the finished message when there is one, and otherwise
+  # what was streamed. Both, rather than either, and in that order -- the
+  # finished message is the whole of it by definition, while the deltas are
+  # what a provider that streams nothing would leave us with. A run where both
+  # are empty is an empty answer, which is reported as one.
+  defp answer(%{answer: %{} = message, deltas: deltas}) do
+    case text_of(message) do
+      "" -> deltas |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
+      text -> String.trim(text)
+    end
+  end
+
+  defp answer(%{deltas: deltas}) do
+    deltas |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
+  end
+
+  # A message's text parts, in order. Thinking is a part of its own and is not
+  # one of them: what the model worked out on the way is not the breakdown.
+  defp text_of(%{"content" => content}) when is_list(content) do
+    Enum.map_join(content, fn
+      %{"type" => "text", "text" => text} when is_binary(text) -> text
+      _not_text -> ""
+    end)
+  end
+
+  defp text_of(_message_without_content), do: ""
+
+  # Whether a finished turn is a refusal, and in the provider's words. Anything
+  # other than a stated error is not one -- a turn with no `stopReason` at all
+  # is an older or newer pi, and guessing "that means it failed" would turn
+  # every answer into a failure the day the field is renamed.
+  defp refusal(%{"stopReason" => "error", "errorMessage" => message}) when is_binary(message),
+    do: message
+
+  defp refusal(%{"stopReason" => "error"}), do: "the provider refused without saying why"
+  defp refusal(_not_a_refusal), do: nil
 
   # What a provider refuses with arrives as `429: {"type":…,"message":"…"}` --
   # a status, then the response body whole. Only the `message` is kept: it
@@ -367,8 +486,19 @@ defmodule RintoPMO.Agent.WbsGenerator do
   end
 
   # How long a call may say nothing before it is treated as dead. Not how long
-  # it may take -- see `collect/5`. It has to clear the wait before the first
-  # token, which on a thinking model is the longest silence in a healthy call.
+  # it may take -- see `collect/4`.
+  #
+  # Three minutes, and it is a measurement again rather than a stand-in: with
+  # the event stream, a healthy call is never quiet for long, because thinking
+  # emits deltas too. It was briefly ten, to stop `--mode text` -- which said
+  # nothing at all until it was done -- from killing every large document; that
+  # is what the move to `--mode json` fixed, so the number comes back down.
+  #
+  # What it still cannot tell apart is a dead provider from a live one that
+  # streams nothing whatsoever. Such a provider is capped at three minutes of
+  # work here. Three were measured and all three stream, so that is a corner
+  # rather than a case -- and the day one turns up, this is the number to
+  # revisit, not the loop.
   defp idle_timeout(opts) do
     Keyword.get(opts, :idle_timeout) || setting(:idle_timeout) || 180_000
   end

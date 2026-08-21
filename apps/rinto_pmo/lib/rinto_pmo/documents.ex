@@ -190,8 +190,9 @@ defmodule RintoPMO.Documents do
   # asked for Markdown. The title is not its to choose -- it is built from the
   # source's, the same rule that keeps a title out of a document's body -- and
   # neither is the author nor the project. The shape of the Markdown is not
-  # checked; what the notation means belongs to whatever reads the breakdown,
-  # and that does not exist yet.
+  # checked here; what the notation means belongs to whatever reads the
+  # breakdown -- `RintoPMO.Tasks.Breakdown`, at filing time, where a shape
+  # nobody can file is something a person can still go and fix.
   defp decompose_document(%Document{} = document, opts) do
     with :ok <- decomposable(document),
          {:ok, actor} <- decomposition_actor(),
@@ -1669,6 +1670,7 @@ defmodule RintoPMO.Documents do
   # sentence that mattered.
   defp failure_reason({:pi_exit, code, ""}), do: "the model call exited #{code}, saying nothing"
   defp failure_reason({:pi_exit, _code, complaint}), do: complaint
+  defp failure_reason({:provider_refused, complaint}), do: complaint
   defp failure_reason(:stalled), do: "the model stopped responding"
   defp failure_reason(:empty_output), do: "the model answered with nothing"
   defp failure_reason(:pi_not_found), do: "the agent runtime is not installed on the server"
