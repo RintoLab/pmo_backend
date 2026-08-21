@@ -1,11 +1,16 @@
 defmodule RintoPMOWeb.V1.SettingControllerTest do
   use RintoPMOWeb.ConnCase, async: true
 
+  @empty_settings %{
+    "title_actor" => nil,
+    "decomposition_actor" => nil,
+    "estimation_actor" => nil
+  }
+
   test "GET settings answers with every role, filled or not", %{conn: conn} do
     conn = get(conn, ~p"/api/v1/settings")
 
-    assert json_response(conn, 200)["data"] ==
-             %{"title_actor" => nil, "decomposition_actor" => nil}
+    assert json_response(conn, 200)["data"] == @empty_settings
   end
 
   test "PUT settings/:key puts an actor in the role", %{conn: conn} do
@@ -26,8 +31,7 @@ defmodule RintoPMOWeb.V1.SettingControllerTest do
 
     conn = put(conn, ~p"/api/v1/settings/title_actor", %{"actor_id" => nil})
 
-    assert json_response(conn, 200)["data"] ==
-             %{"title_actor" => nil, "decomposition_actor" => nil}
+    assert json_response(conn, 200)["data"] == @empty_settings
   end
 
   test "PUT settings/:key refuses an actor with no model to ask", %{conn: conn} do

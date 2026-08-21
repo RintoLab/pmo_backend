@@ -142,6 +142,27 @@ defmodule RintoPMOWeb.Router do
     post "/tasks/:id/cancel", TaskController, :cancel
     post "/tasks/:id/reopen", TaskController, :reopen
 
+    # Direct model calls, one-shot rather than a conversation. A work item is
+    # estimated itself; a summary is estimated as the work under it that still
+    # has no value. Results write onto the task fields; a person who disagrees
+    # PATCHes, and asking twice is allowed -- this is a helper for an empty
+    # field, not an authority on what belongs in it.
+    #
+    # One endpoint taking `kind`, unlike the transitions above. Those are
+    # events, and one route each is what stops a client inventing a transition
+    # the domain refuses. Difficulty and time are not two events: they are one
+    # operation putting a different question to the model.
+    #
+    # Answers with the *job*. Nothing records the asking: what a client does
+    # next is listen on `task:{id}`, and `GET /jobs/{job_id}` is the way back
+    # if it was not listening when the answer came.
+    post "/tasks/:id/estimate", TaskController, :estimate
+
+    # The only thing a client can ask about a background job, and the only
+    # place anything about one is kept. `404` means pruned, which means over --
+    # see `RintoPMO.Jobs`.
+    get "/jobs/:id", JobController, :show
+
     resources "/attachments", AttachmentController, only: [:show, :create, :delete]
     get "/attachments/:id/content", AttachmentController, :content
 

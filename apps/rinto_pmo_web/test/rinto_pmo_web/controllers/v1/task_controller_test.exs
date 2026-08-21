@@ -198,7 +198,8 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
             remaining: %{optimistic: 60, likely: 120, pessimistic: 240, expected: 130},
             unestimated_tasks: 1,
             unestimated_tasks_remaining: 1
-          }
+          },
+          actual: %{total: 90, unmeasured_tasks: 2}
         }
       end)
 
@@ -215,7 +216,8 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
                  "remaining" => %{"optimistic" => 60},
                  "unestimated_tasks" => 1,
                  "unestimated_tasks_remaining" => 1
-               }
+               },
+               "actual" => %{"total" => 90, "unmeasured_tasks" => 2}
              } = json_response(conn, 200)["data"]
     end
   end
@@ -444,7 +446,7 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
 
       expect(TasksMock, :get_task!, fn _id -> chunk end)
 
-      expect(TasksMock, :transition_task, fn ^chunk, :start ->
+      expect(TasksMock, :transition_task, fn ^chunk, :start, _attrs ->
         {:error, :task_state_conflict, %{kind: :summary, reason: "a summary node holds no work"}}
       end)
 
@@ -459,7 +461,7 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
 
       expect(TasksMock, :get_task!, fn _id -> task end)
 
-      expect(TasksMock, :transition_task, fn ^task, :complete ->
+      expect(TasksMock, :transition_task, fn ^task, :complete, _attrs ->
         {:error, :task_state_conflict, %{status: :open, event: :complete}}
       end)
 
@@ -467,6 +469,99 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
 
       assert %{"error" => "task_state_conflict", "details" => %{"status" => "open"}} =
                json_response(conn, 409)
+    end
+
+    test "POST /tasks/:id/complete passes actual_minutes through", %{conn: conn} do
+      task = insert(:task, status: :in_progress)
+
+      expect(TasksMock, :get_task!, fn _id -> task end)
+
+      expect(TasksMock, :transition_task, fn ^task, :complete, attrs ->
+        assert attrs == %{"actual_minutes" => 90}
+        {:ok, %{task | status: :done, actual_minutes: 90}}
+      end)
+
+      conn = post(conn, ~p"/api/v1/tasks/#{task.id}/complete", %{"actual_minutes" => 90})
+
+      assert json_response(conn, 200)["data"]["actual_minutes"] == 90
+    end
+  end
+
+  describe "estimation" do
+    test "POST /tasks/:id/estimate answers with the queued job", %{conn: conn} do
+      task = insert(:task)
+      job = queued_job()
+
+      expect(TasksMock, :get_task!, fn _id -> task end)
+      expect(TasksMock, :request_estimation, fn ^task, :difficulty -> {:ok, job} end)
+
+      conn = post(conn, ~p"/api/v1/tasks/#{task.id}/estimate", %{"kind" => "difficulty"})
+
+      assert %{
+               "id" => id,
+               "worker" => "RintoPMO.Tasks.EstimationWorker",
+               "status" => "running",
+               "error" => nil
+             } = json_response(conn, 202)["data"]
+
+      # The job's id, not the task's. The task id is the one in the path.
+      assert id == job.id
+    end
+
+    test "the kind picks the question", %{conn: conn} do
+      task = insert(:task)
+      job = queued_job()
+
+      expect(TasksMock, :get_task!, fn _id -> task end)
+      expect(TasksMock, :request_estimation, fn ^task, :time -> {:ok, job} end)
+
+      conn = post(conn, ~p"/api/v1/tasks/#{task.id}/estimate", %{"kind" => "time"})
+
+      assert json_response(conn, 202)
+    end
+
+    # Required rather than defaulted: there is no obvious default between the
+    # two, and guessing would spend a model call on the question nobody asked.
+    test "a missing or unknown kind is refused before anything is queued", %{conn: conn} do
+      task = insert(:task)
+
+      missing = post(conn, ~p"/api/v1/tasks/#{task.id}/estimate", %{})
+
+      assert %{"error" => "bad_request", "details" => %{"kind" => ["is invalid"]}} =
+               json_response(missing, 400)
+
+      unknown = post(conn, ~p"/api/v1/tasks/#{task.id}/estimate", %{"kind" => "vibes"})
+      assert %{"error" => "bad_request"} = json_response(unknown, 400)
+    end
+
+    test "relays a refusal", %{conn: conn} do
+      task = insert(:task, estimate_optimistic: 1, estimate_likely: 2, estimate_pessimistic: 3)
+
+      expect(TasksMock, :get_task!, fn _id -> task end)
+
+      expect(TasksMock, :request_estimation, fn ^task, :time ->
+        {:error, :nothing_to_estimate,
+         %{kind: :time, reason: "every work item already has an estimate"}}
+      end)
+
+      conn = post(conn, ~p"/api/v1/tasks/#{task.id}/estimate", %{"kind" => "time"})
+
+      assert %{"error" => "nothing_to_estimate"} = json_response(conn, 422)
+    end
+
+    # A double-click is answered like the first click. The context hands back
+    # the job already queued, and nothing here can tell -- which is the point.
+    test "a second ask is answered with the same job", %{conn: conn} do
+      task = insert(:task)
+      job = queued_job()
+
+      expect(TasksMock, :get_task!, 2, fn _id -> task end)
+      expect(TasksMock, :request_estimation, 2, fn ^task, :difficulty -> {:ok, job} end)
+
+      first = post(conn, ~p"/api/v1/tasks/#{task.id}/estimate", %{"kind" => "difficulty"})
+      second = post(conn, ~p"/api/v1/tasks/#{task.id}/estimate", %{"kind" => "difficulty"})
+
+      assert json_response(first, 202)["data"] == json_response(second, 202)["data"]
     end
   end
 
@@ -486,12 +581,28 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
 
     expect(TasksMock, :get_task!, fn _id -> task end)
 
-    expect(TasksMock, :transition_task, fn ^task, event ->
+    expect(TasksMock, :transition_task, fn ^task, event, _attrs ->
       assert event == expected_event
       {:ok, task}
     end)
 
     task
+  end
+
+  # Built rather than inserted: the controller only reads it, and Oban's
+  # queues are off in test so nothing would run it anyway.
+  defp queued_job do
+    %Oban.Job{
+      id: 4242,
+      worker: "RintoPMO.Tasks.EstimationWorker",
+      queue: "default",
+      state: "available",
+      args: %{"task_id" => UUIDv7.generate(), "kind" => "difficulty"},
+      errors: [],
+      priority: 0,
+      inserted_at: ~U[2026-08-22 09:00:00.000000Z],
+      scheduled_at: ~U[2026-08-22 09:00:00.000000Z]
+    }
   end
 
   defp expect_project do

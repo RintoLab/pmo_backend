@@ -23,9 +23,10 @@ defmodule RintoPMO.Settings do
     * `RintoPMO.Conversations.Titles` falls back to the topic's own assistant.
       Naming happens inside a conversation, so there is always another actor
       standing right there to inherit from.
-    * decomposing a document refuses outright. It belongs to no conversation,
-      so there is nothing to fall back *to*, and picking some actor off the
-      list would be this module inventing an answer nobody gave it.
+    * decomposing a document, or estimating a task, refuses outright. Those
+      jobs belong to no conversation, so there is nothing to fall back *to*,
+      and picking some actor off the list would be this module inventing an
+      answer nobody gave it.
 
   Neither is a rule about roles in general. An empty role is an ordinary state;
   what to do about it is a question about the job, not about the pointer.
@@ -48,10 +49,13 @@ defmodule RintoPMO.Settings do
   * `"title_actor"` -- names topics from their first message
   * `"decomposition_actor"` -- breaks a formal document down into a task
     document. Unlike naming, this one has no fallback: see above.
+  * `"estimation_actor"` -- rates a task's difficulty or produces its
+    three-point estimate. Same as decomposition: it belongs to no conversation,
+    so an empty role is a refusal rather than a fallback.
   """
   @type key :: String.t()
 
-  @keys ~w(title_actor decomposition_actor)
+  @keys ~w(title_actor decomposition_actor estimation_actor)
 
   @doc """
   The roles that exist.

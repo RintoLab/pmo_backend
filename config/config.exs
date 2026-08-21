@@ -30,7 +30,8 @@ config :rinto_pmo,
     # that everything around them -- eligibility, fallbacks, conditional writes
     # -- is testable without a model.
     title_generator: RintoPMO.Agent.TitleGenerator,
-    wbs_generator: RintoPMO.Agent.WbsGenerator
+    wbs_generator: RintoPMO.Agent.WbsGenerator,
+    task_estimator: RintoPMO.Agent.TaskEstimator
   ]
 
 config :rinto_pmo, RintoPMO.Attachments,
@@ -93,6 +94,16 @@ config :rinto_pmo, RintoPMO.Agent.WbsGenerator,
   # silence is well past anything a working call does.
   idle_timeout: 180_000
 
+config :rinto_pmo, RintoPMO.Agent.TaskEstimator,
+  # Which model rates difficulty and produces estimates is *not* configured
+  # here: it is whichever actor holds the `estimation_actor` role -- see
+  # `RintoPMO.Settings` and `PUT /settings/estimation_actor`.
+  #
+  # Silence, not duration, same as `WbsGenerator`: a model that is still
+  # producing is still working. Three minutes of complete silence is well past
+  # anything a working call does.
+  idle_timeout: 180_000
+
 config :rinto_pmo, RintoPMO.Agent.PromptBuilder,
   # Characters of block content inlined per referenced document before the rest
   # is elided.
@@ -120,7 +131,30 @@ config :rinto_pmo, RintoPMO.OSProcess,
 
 config :rinto_pmo, Oban,
   repo: RintoPMO.Repo,
-  queues: [default: 10]
+  queues: [default: 10],
+  plugins: [
+    # Both workers that ask a model anything deduplicate over `:incomplete`,
+    # which assumes a job cannot sit in `executing` forever. A node that dies
+    # mid-call -- Ctrl-C on the dev server, a deploy -- leaves exactly that,
+    # and the row then holds its uniqueness slot for good: that document can
+    # never be decomposed again, that task can never be estimated again.
+    # Lifeline is what makes the assumption true.
+    #
+    # `rescue_after` has to clear the longest *healthy* run, because Lifeline
+    # cannot tell a dead node from a slow one and will rescue either. Neither
+    # model call has a wall-clock budget -- they stop on silence, not on
+    # duration (see `RintoPMO.Agent.WbsGenerator`) -- so there is no number to
+    # derive this from. An hour is far past the two minutes real documents
+    # take, and being late to rescue costs only waiting.
+    {Oban.Plugins.Lifeline, rescue_after: :timer.minutes(60)},
+
+    # `RintoPMO.Jobs` answers "no such job" as "it is over, stop waiting", and
+    # that is only honest if the rows that disappear are the finished ones,
+    # which is what pruning does. A day is long enough that a client polling a
+    # job id always finds it, and short enough that the table does not grow
+    # without bound.
+    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24}
+  ]
 
 config :rinto_pmo_web,
   namespace: RintoPMOWeb,

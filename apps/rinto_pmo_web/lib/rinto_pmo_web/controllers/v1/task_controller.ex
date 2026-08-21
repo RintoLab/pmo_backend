@@ -1,12 +1,15 @@
 defmodule RintoPMOWeb.V1.TaskController do
   use RintoPMOWeb, :controller
 
+  alias RintoPMO.Jobs
   alias RintoPMO.Tasks.Task
   alias RintoPMO.Utils
   alias RintoPMOWeb.Plugs.ActorToken
+  alias RintoPMOWeb.V1.JobJSON
 
   @statuses Map.new(Task.statuses(), &{Atom.to_string(&1), &1})
   @kinds Map.new(Task.kinds(), &{Atom.to_string(&1), &1})
+  @estimation_kinds %{"difficulty" => :difficulty, "time" => :time}
 
   # The status machine is exposed one endpoint per event rather than as a
   # settable field. `PATCH {status: "done"}` would let a client invent
@@ -131,8 +134,13 @@ defmodule RintoPMOWeb.V1.TaskController do
 
   @doc """
   Marks a task done.
+
+  Accepts optional `actual_minutes` so finishing and recording how long it
+  took can be one act. Absent or null leaves whatever was already stored.
   """
-  def complete(conn, %{"id" => id}), do: transition(conn, id, :complete)
+  def complete(conn, %{"id" => id} = params) do
+    transition(conn, id, :complete, Map.take(params, ["actual_minutes"]))
+  end
 
   @doc """
   Abandons a task without deleting it, keeping what was spent on it.
@@ -144,11 +152,53 @@ defmodule RintoPMOWeb.V1.TaskController do
   """
   def reopen(conn, %{"id" => id}), do: transition(conn, id, :reopen)
 
-  defp transition(conn, id, event) do
+  @doc """
+  Asks a model to fill in what this node is missing.
+
+  One endpoint with a `kind`, unlike the transitions above: those are events on
+  a state machine and each one means something different, while these two are
+  the same operation asking the model a different question. Everything around
+  them -- what is targeted, what is refused, what comes back -- is identical.
+
+  Answers `202` with the *job*, not the numbers: the model call runs in a
+  queue. The `id` in that job is an Oban job id and the only handle there is --
+  not to be confused with the task id in the path. Keep it, listen on
+  `task:{id}` for the result, and ask `GET /jobs/{job_id}` if the connection
+  dropped while the model was thinking.
+  """
+  def estimate(conn, %{"id" => id} = params) do
+    context = tasks_context()
+
+    with {:ok, kind} <- estimation_kind(params),
+         {:ok, job} <- context.request_estimation(context.get_task!(id), kind) do
+      accept_estimation(conn, job)
+    end
+  end
+
+  # Required rather than defaulted. There is no obvious default between the
+  # two, and guessing would spend a model call on the question nobody asked.
+  defp estimation_kind(params) do
+    case Map.fetch(@estimation_kinds, Map.get(params, "kind")) do
+      {:ok, kind} -> {:ok, kind}
+      :error -> {:error, :bad_request, %{"kind" => ["is invalid"]}}
+    end
+  end
+
+  # Answered the same whether this call queued the job or found one already
+  # queued: a double-click is one estimation, and a client that gets the same
+  # id back twice needs no branch for it.
+  defp accept_estimation(conn, job) do
+    conn
+    |> put_status(:accepted)
+    |> put_view(JobJSON)
+    |> render(:show, job: Jobs.describe(job))
+  end
+
+  defp transition(conn, id, event, attrs \\ %{}) do
     context = tasks_context()
     task = context.get_task!(id)
 
-    with {:ok, task} <- context.transition_task(task, event) do
+    with {:ok, task} <- context.transition_task(task, event, attrs) do
       render(conn, :show, task: task)
     end
   end

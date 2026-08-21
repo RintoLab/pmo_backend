@@ -28,7 +28,8 @@ defmodule RintoPMOWeb.V1.TaskJSON do
         overdue: stats.overdue,
         by_status: stats.by_status,
         by_assignee: Enum.map(stats.by_assignee, &assignee_counts/1),
-        estimate: stats.estimate
+        estimate: stats.estimate,
+        actual: stats.actual
       }
     }
   end
@@ -58,6 +59,10 @@ defmodule RintoPMOWeb.V1.TaskJSON do
       due_on: task.due_on,
       estimate: estimate(task),
       unestimated_tasks: task.unestimated_tasks,
+      difficulty: task.difficulty,
+      unrated_tasks: task.unrated_tasks,
+      actual_minutes: task.actual_minutes,
+      unmeasured_tasks: task.unmeasured_tasks,
       assigned_at: task.assigned_at,
       started_at: task.started_at,
       completed_at: task.completed_at,

@@ -72,6 +72,12 @@ defmodule RintoPMOWeb.ErrorJSONTest do
        %{reason: "diverged", block_ids: ["block-1"]}},
     invalid_estimate:
       {422, "The task estimate is invalid.", %{field: "likely", reason: "must be ordered"}},
+    invalid_difficulty:
+      {422, "The task difficulty is invalid.",
+       %{field: "difficulty", reason: "must be a Fibonacci story point (1, 2, 3, 5, 8, 13, 21)"}},
+    invalid_actual:
+      {422, "The recorded actual duration is invalid.",
+       %{field: "actual_minutes", reason: "must be a non-negative whole number of minutes"}},
     task_not_splittable:
       {422, "The task cannot be split in its current state.", %{current_status: "done"}},
     document_not_formal:
@@ -85,6 +91,12 @@ defmodule RintoPMOWeb.ErrorJSONTest do
        %{}},
     decomposition_in_flight:
       {409, "The document is already being broken down.", %{document_id: "019f-source"}},
+    no_estimation_actor:
+      {422, "No actor holds the estimation role. Set one with `PUT /settings/estimation_actor`.",
+       %{}},
+    nothing_to_estimate:
+      {422, "There is nothing left to estimate on this task.",
+       %{kind: "difficulty", reason: "every work item already has a difficulty"}},
     no_chunks: {422, "The document has no headings, so there is no work in it to file.", %{}},
     task_before_chunk:
       {422, "A task heading stands above the first chunk heading, so it belongs to nothing.", %{}},

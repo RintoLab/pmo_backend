@@ -57,9 +57,18 @@ defmodule RintoPMO.Tasks do
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Documents.Document
   alias RintoPMO.Projects.Project
+  alias RintoPMO.Settings
   alias RintoPMO.Tasks.Breakdown
+  alias RintoPMO.Tasks.EstimationWorker
+  alias RintoPMO.Tasks.Notifier
   alias RintoPMO.Tasks.Task
   alias RintoPMO.Utils
+
+  # The two questions a model gets asked about a task. Not a schema and not a
+  # column: nothing stores a kind, it only travels -- in a job's args, and out
+  # on the socket so a client can tell which of the two buttons stopped
+  # spinning.
+  @estimation_kinds [:difficulty, :time]
 
   # The one context this one reads: filing a breakdown consumes a document and
   # asks it which design it came from.
@@ -75,6 +84,11 @@ defmodule RintoPMO.Tasks do
 
     alias RintoPMO.Projects.Project
     alias RintoPMO.Tasks.Task
+
+    @typedoc """
+    Which of the two questions a model is being asked about a task.
+    """
+    @type estimation_kind :: :difficulty | :time
 
     @type filter :: %{
             optional(:kind) => Task.kind(),
@@ -106,6 +120,10 @@ defmodule RintoPMO.Tasks do
               remaining: estimate() | nil,
               unestimated_tasks: non_neg_integer(),
               unestimated_tasks_remaining: non_neg_integer()
+            },
+            actual: %{
+              total: non_neg_integer() | nil,
+              unmeasured_tasks: non_neg_integer()
             }
           }
 
@@ -131,6 +149,13 @@ defmodule RintoPMO.Tasks do
 
     @callback transition_task(Task.t(), Task.event()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
+    @callback transition_task(Task.t(), Task.event(), map()) ::
+                {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
+
+    @callback request_estimation(Task.t(), estimation_kind()) ::
+                {:ok, Oban.Job.t()} | refusal()
+    @callback run_estimation(integer(), UUIDv7.t(), estimation_kind()) ::
+                :ok | {:cancel, String.t()}
 
     @callback split_task(Task.t(), [map()]) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
@@ -196,7 +221,11 @@ defmodule RintoPMO.Tasks do
   """
   @impl true
   def create_task(%Project{} = project, attrs) do
-    with {:ok, attrs} <- put_estimate(attrs) do
+    kind = kind_of(attrs)
+
+    with {:ok, attrs} <- put_estimate(attrs, kind),
+         {:ok, attrs} <- put_difficulty(attrs, kind),
+         {:ok, attrs} <- put_actual(attrs, kind) do
       chset = Task.creation_changeset(%Task{project_id: project.id}, attrs)
 
       with {:ok, chset} <- validate_parent(chset, project.id, nil) do
@@ -213,7 +242,9 @@ defmodule RintoPMO.Tasks do
   """
   @impl true
   def update_task(%Task{} = task, attrs) do
-    with {:ok, attrs} <- put_estimate(attrs, task.kind) do
+    with {:ok, attrs} <- put_estimate(attrs, task.kind),
+         {:ok, attrs} <- put_difficulty(attrs, task.kind),
+         {:ok, attrs} <- put_actual(attrs, task.kind) do
       chset = Task.changeset(task, attrs)
 
       with {:ok, chset} <- validate_parent(chset, task.project_id, task.id) do
@@ -340,12 +371,18 @@ defmodule RintoPMO.Tasks do
   it.
   """
   @impl true
-  def transition_task(%Task{} = task, event) do
+  def transition_task(%Task{} = task, event) when is_atom(event) do
+    transition_task(task, event, %{})
+  end
+
+  @impl true
+  def transition_task(%Task{} = task, event, attrs) when is_map(attrs) do
     with :ok <- require_work(task),
          {:ok, _next} <- allowed_transition(task, event),
-         :ok <- require_assignee(task, event) do
+         :ok <- require_assignee(task, event),
+         {:ok, attrs} <- complete_attrs(event, attrs) do
       task
-      |> Task.transition_changeset(event)
+      |> Task.transition_changeset(event, attrs)
       |> Repo.update()
     end
   end
@@ -550,7 +587,9 @@ defmodule RintoPMO.Tasks do
   # here and nowhere else, which is exactly the hole an agent generating a
   # breakdown would fall into.
   defp insert_child(%Task{} = summary, attrs, repo) do
-    with {:ok, attrs} <- put_estimate(attrs) do
+    with {:ok, attrs} <- put_estimate(attrs),
+         {:ok, attrs} <- put_difficulty(attrs),
+         {:ok, attrs} <- put_actual(attrs) do
       %Task{project_id: summary.project_id, parent_id: summary.id}
       |> Task.changeset(attrs)
       |> repo.insert()
@@ -596,7 +635,9 @@ defmodule RintoPMO.Tasks do
         optimistic: sum(task.estimate_optimistic),
         likely: sum(task.estimate_likely),
         pessimistic: sum(task.estimate_pessimistic),
-        unestimated_tasks: filter(count(task.id), is_nil(task.estimate_optimistic))
+        unestimated_tasks: filter(count(task.id), is_nil(task.estimate_optimistic)),
+        actual: sum(task.actual_minutes),
+        unmeasured_tasks: filter(count(task.id), is_nil(task.actual_minutes))
       })
       |> Repo.all()
 
@@ -606,7 +647,8 @@ defmodule RintoPMO.Tasks do
       overdue: count_overdue(project),
       by_status: by_status(rows),
       by_assignee: by_assignee(rows),
-      estimate: estimate_stats(rows)
+      estimate: estimate_stats(rows),
+      actual: actual_stats(rows)
     }
   end
 
@@ -625,6 +667,13 @@ defmodule RintoPMO.Tasks do
       remaining: sum_estimate(remaining),
       unestimated_tasks: Enum.sum_by(rows, & &1.unestimated_tasks),
       unestimated_tasks_remaining: Enum.sum_by(remaining, & &1.unestimated_tasks)
+    }
+  end
+
+  defp actual_stats(rows) do
+    %{
+      total: rows |> Enum.map(& &1.actual) |> sum_present(),
+      unmeasured_tasks: Enum.sum_by(rows, & &1.unmeasured_tasks)
     }
   end
 
@@ -719,6 +768,296 @@ defmodule RintoPMO.Tasks do
     |> repo.aggregate(:count, :id)
   end
 
+  @doc """
+  Asks a model to fill in what this subtree is missing.
+
+  `:difficulty` rates work in Fibonacci story points; `:time` produces a
+  three-point estimate, calibrated with completed work from the same project.
+  One function and not two, because the two differ in the question put to the
+  model and in nothing else: same target, same targeting, same refusals, same
+  answer.
+
+  The target is one node. A work item is estimated itself; a summary is
+  estimated as the work under it that still has no value. Answers with the
+  *job*, before the model has been asked -- the call takes as long as it takes.
+
+  Refused when there is nothing left to estimate, or when nobody holds the
+  `estimation_actor` role. Both are answered here, synchronously, because both
+  are conditions of asking rather than outcomes of the answer.
+
+  Asking twice is not refused. This is a helper for somebody who has an empty
+  field and does not feel like filling it in, so a second ask is a second ask;
+  it overwrites, and neither answer claims to be the better one. What it does
+  not do is fire twice for one double-click: while a job of this kind is still
+  in flight on this task, `Oban` hands back the job already queued.
+
+  The two kinds are separate slots. One of each may be in flight on the same
+  task -- they are different questions.
+  """
+  @impl true
+  def request_estimation(%Task{} = task, kind) when kind in @estimation_kinds do
+    with :ok <- something_to_estimate(task, kind),
+         {:ok, _actor} <- estimation_actor() do
+      enqueue_estimation(task, kind)
+    end
+  end
+
+  @doc """
+  Runs one estimation: the model call, the writes, and the word to whoever is
+  watching.
+
+  Called by the worker and not by a request. There is no row to move through
+  states -- what happened is the numbers on the tasks, and the only thing that
+  needs saying is that it is over. So the last thing this does either way is
+  broadcast the outcome on `RintoPMO.Tasks.Notifier`.
+
+  Answers `:ok`, or `{:cancel, reason}` when the model call failed. `:cancel`
+  and not `:error`: this is over either way, and asking the same question
+  nineteen more times is not a retry policy, it is nineteen more model calls.
+  The reason lands in the job's own `errors`, which is where somebody
+  debugging a provider looks, and it goes out on the socket in the same
+  breath, which is where the person who clicked sees it.
+  """
+  @impl true
+  def run_estimation(job_id, task_id, kind) when kind in @estimation_kinds do
+    case Repo.get(Task, task_id) do
+      # The task was deleted while the job waited. Nothing to run and nobody
+      # to tell -- the topic it would be announced on is a topic for a task
+      # that is not there.
+      nil ->
+        :ok
+
+      task ->
+        case unfilled_work(task, kind) do
+          # Somebody filled everything in while the job waited. That is the
+          # result they wanted, so it is a success and not a complaint.
+          [] -> succeed(job_id, task_id, kind)
+          targets -> estimate_and_apply(job_id, task, kind, targets)
+        end
+    end
+  end
+
+  defp something_to_estimate(%Task{} = task, kind) do
+    case subtree_work(task) do
+      [] ->
+        {:error, :nothing_to_estimate, %{kind: kind, reason: "no work items to estimate"}}
+
+      work ->
+        case unfilled(work, kind) do
+          [] ->
+            {:error, :nothing_to_estimate,
+             %{kind: kind, reason: nothing_to_estimate_reason(kind)}}
+
+          _targets ->
+            :ok
+        end
+    end
+  end
+
+  defp nothing_to_estimate_reason(:difficulty),
+    do: "every work item already has a difficulty"
+
+  defp nothing_to_estimate_reason(:time),
+    do: "every work item already has an estimate"
+
+  defp unfilled_work(%Task{} = task, kind), do: unfilled(subtree_work(task), kind)
+
+  defp unfilled(tasks, :difficulty), do: Enum.filter(tasks, &is_nil(&1.difficulty))
+  defp unfilled(tasks, :time), do: Enum.filter(tasks, &is_nil(&1.estimate_optimistic))
+
+  defp subtree_work(%Task{kind: :work} = task), do: [task]
+
+  defp subtree_work(%Task{kind: :summary} = task) do
+    children = Enum.group_by(project_tasks(task.project_id), & &1.parent_id)
+    collect_work(task.id, children)
+  end
+
+  defp collect_work(id, children) do
+    children
+    |> Map.get(id, [])
+    |> Enum.flat_map(fn
+      %Task{kind: :work} = task -> [task]
+      %Task{kind: :summary, id: child_id} -> collect_work(child_id, children)
+    end)
+  end
+
+  defp estimation_actor do
+    case Settings.get_actor("estimation_actor") do
+      nil -> {:error, :no_estimation_actor, %{}}
+      actor -> {:ok, actor}
+    end
+  end
+
+  # Deduplicated over `:incomplete` only, and over the question rather than
+  # the asking of it: a double-click while one is in flight gets the job that
+  # is already queued, and a deliberate second ask, after the first is over,
+  # gets a job of its own.
+  defp enqueue_estimation(%Task{} = task, kind) do
+    %{task_id: task.id, kind: kind}
+    |> EstimationWorker.new()
+    |> Oban.insert()
+  end
+
+  defp estimate_and_apply(job_id, %Task{} = task, kind, targets) do
+    with {:ok, actor} <- estimation_actor(),
+         {:ok, items} <- call_estimator(kind, task, targets, actor) do
+      case apply_estimation(kind, targets, items) do
+        0 -> fail(job_id, task.id, kind, "the model did not estimate any of the tasks")
+        _count -> succeed(job_id, task.id, kind)
+      end
+    else
+      {:error, :no_estimation_actor, _details} ->
+        fail(job_id, task.id, kind, "no actor holds the estimation role")
+
+      {:error, reason} ->
+        fail(job_id, task.id, kind, failure_reason(reason))
+    end
+  end
+
+  defp call_estimator(kind, %Task{} = task, targets, actor) do
+    opts = [
+      provider: actor.provider,
+      model: actor.model,
+      thinking: actor.thinking_level
+    ]
+
+    case kind do
+      :difficulty ->
+        task_estimator().estimate_difficulty(%{tasks: Enum.map(targets, &task_payload/1)}, opts)
+
+      :time ->
+        input = %{
+          tasks: Enum.map(targets, &task_payload_with_difficulty/1),
+          history: history(task.project_id)
+        }
+
+        task_estimator().estimate_time(input, opts)
+    end
+  end
+
+  defp task_payload(%Task{} = task) do
+    %{id: to_string(task.id), title: task.title, description: task.description}
+  end
+
+  defp task_payload_with_difficulty(%Task{} = task) do
+    Map.put(task_payload(task), :difficulty, task.difficulty)
+  end
+
+  defp history(project_id) do
+    Task
+    |> where([task], task.project_id == ^project_id)
+    |> where([task], task.kind == :work)
+    |> where([task], task.status == :done)
+    |> where([task], not is_nil(task.actual_minutes))
+    |> order_by([task], desc: task.completed_at)
+    |> limit(50)
+    |> Repo.all()
+    |> Enum.map(&history_item/1)
+  end
+
+  defp history_item(%Task{} = task) do
+    %{
+      title: task.title,
+      difficulty: task.difficulty,
+      estimate: history_estimate(task),
+      actual_minutes: task.actual_minutes
+    }
+  end
+
+  defp history_estimate(%Task{estimate_optimistic: nil}), do: nil
+
+  defp history_estimate(%Task{} = task) do
+    %{
+      optimistic: task.estimate_optimistic,
+      likely: task.estimate_likely,
+      pessimistic: task.estimate_pessimistic,
+      expected: Task.expected(task)
+    }
+  end
+
+  defp apply_estimation(:difficulty, targets, items) do
+    allowed = Map.new(targets, &{to_string(&1.id), &1})
+
+    Enum.reduce(items, 0, fn item, count ->
+      with id when is_binary(id) <- Map.get(item, "id"),
+           %Task{} = task <- Map.get(allowed, id),
+           {:ok, _updated} <- write_difficulty(task, Map.get(item, "difficulty")) do
+        count + 1
+      else
+        _skipped -> count
+      end
+    end)
+  end
+
+  defp apply_estimation(:time, targets, items) do
+    allowed = Map.new(targets, &{to_string(&1.id), &1})
+
+    Enum.reduce(items, 0, fn item, count ->
+      with id when is_binary(id) <- Map.get(item, "id"),
+           %Task{} = task <- Map.get(allowed, id),
+           {:ok, _updated} <- write_estimate(task, item) do
+        count + 1
+      else
+        _skipped -> count
+      end
+    end)
+  end
+
+  defp write_difficulty(%Task{difficulty: difficulty}, _value) when not is_nil(difficulty) do
+    :already_set
+  end
+
+  defp write_difficulty(%Task{} = task, value) do
+    case put_difficulty(%{"difficulty" => value}) do
+      {:ok, attrs} -> task |> Task.changeset(attrs) |> Repo.update()
+      _invalid -> :invalid
+    end
+  end
+
+  defp write_estimate(%Task{estimate_optimistic: minutes}, _item) when not is_nil(minutes) do
+    :already_set
+  end
+
+  defp write_estimate(%Task{} = task, item) do
+    estimate = %{
+      "optimistic" => Map.get(item, "optimistic"),
+      "likely" => Map.get(item, "likely"),
+      "pessimistic" => Map.get(item, "pessimistic")
+    }
+
+    case put_estimate(%{"estimate" => estimate}) do
+      {:ok, attrs} -> task |> Task.changeset(attrs) |> Repo.update()
+      _invalid -> :invalid
+    end
+  end
+
+  defp succeed(job_id, task_id, kind) do
+    :ok = Notifier.broadcast_estimation(job_id, task_id, kind, :succeeded, nil)
+    :ok
+  end
+
+  # Told twice, on purpose, and to two different audiences. The broadcast is
+  # for the person watching, and carries the sentence on its own; it is gone
+  # the moment it is delivered. The `:cancel` leaves the same words in the
+  # job's `errors`, wrapped by Oban in an `Oban.PerformError` and inspected --
+  # readable enough for somebody debugging a provider, which is the only
+  # reader that copy has.
+  defp fail(job_id, task_id, kind, reason) when is_binary(reason) do
+    :ok = Notifier.broadcast_estimation(job_id, task_id, kind, :failed, reason)
+    {:cancel, reason}
+  end
+
+  defp failure_reason({:pi_exit, code, ""}), do: "the model call exited #{code}, saying nothing"
+  defp failure_reason({:pi_exit, _code, complaint}), do: complaint
+  defp failure_reason({:provider_refused, complaint}), do: complaint
+  defp failure_reason(:stalled), do: "the model stopped responding"
+  defp failure_reason(:empty_output), do: "the model answered with nothing"
+  defp failure_reason(:pi_not_found), do: "the agent runtime is not installed on the server"
+  defp failure_reason(:invalid_output), do: "the model did not return a JSON array of estimates"
+  defp failure_reason(other), do: inspect(other)
+
+  defp task_estimator, do: Utils.module(:task_estimator)
+
   # ---------------------------------------------------------------- rollup
 
   defp project_tasks(project_id) do
@@ -749,15 +1088,26 @@ defmodule RintoPMO.Tasks do
       %{
         task
         | status: rolled |> Enum.map(& &1.status) |> Task.rollup(),
-          unestimated_tasks: Enum.sum_by(rolled, &count_unestimated/1)
+          unestimated_tasks: Enum.sum_by(rolled, &count_unestimated/1),
+          unrated_tasks: Enum.sum_by(rolled, &count_unrated/1),
+          unmeasured_tasks: Enum.sum_by(rolled, &count_unmeasured/1)
       }
       |> put_summed_estimate(rolled)
+      |> put_summed_actual(rolled)
     end
   end
 
   defp count_unestimated(%Task{kind: :summary} = task), do: task.unestimated_tasks
   defp count_unestimated(%Task{estimate_optimistic: nil}), do: 1
   defp count_unestimated(%Task{}), do: 0
+
+  defp count_unrated(%Task{kind: :summary} = task), do: task.unrated_tasks
+  defp count_unrated(%Task{difficulty: nil}), do: 1
+  defp count_unrated(%Task{}), do: 0
+
+  defp count_unmeasured(%Task{kind: :summary} = task), do: task.unmeasured_tasks
+  defp count_unmeasured(%Task{actual_minutes: nil}), do: 1
+  defp count_unmeasured(%Task{}), do: 0
 
   # Summed over the descendants that actually carry one. A cover with nothing
   # estimated under it reports no estimate rather than zero: zero is a claim
@@ -774,6 +1124,19 @@ defmodule RintoPMO.Tasks do
             estimate_likely: Enum.sum_by(estimated, & &1.estimate_likely),
             estimate_pessimistic: Enum.sum_by(estimated, & &1.estimate_pessimistic)
         }
+    end
+  end
+
+  # Summed over the descendants that actually carry one. Same rule as the
+  # estimate: a cover with nothing measured under it reports no actual rather
+  # than zero, because zero is a claim that the chunk took no time.
+  defp put_summed_actual(%Task{} = task, rolled) do
+    case Enum.reject(rolled, &is_nil(&1.actual_minutes)) do
+      [] ->
+        task
+
+      measured ->
+        %{task | actual_minutes: Enum.sum_by(measured, & &1.actual_minutes)}
     end
   end
 
@@ -877,6 +1240,88 @@ defmodule RintoPMO.Tasks do
   defp stringify_keys(map) when is_map(map) do
     Map.new(map, fn {key, value} -> {to_string(key), value} end)
   end
+
+  defp kind_of(attrs) do
+    case attrs |> stringify_keys() |> Map.get("kind") do
+      kind when kind in ["summary", :summary] -> :summary
+      _other -> :work
+    end
+  end
+
+  @difficulties [1, 2, 3, 5, 8, 13, 21]
+
+  defp put_difficulty(attrs, kind \\ :work) do
+    attrs = stringify_keys(attrs)
+
+    case Map.fetch(attrs, "difficulty") do
+      :error ->
+        {:ok, attrs}
+
+      {:ok, nil} ->
+        {:ok, attrs}
+
+      {:ok, _value} when kind == :summary ->
+        {:error, :invalid_difficulty,
+         %{field: "difficulty", reason: "a summary node does not carry a difficulty"}}
+
+      {:ok, value} when value in @difficulties ->
+        {:ok, attrs}
+
+      {:ok, _invalid} ->
+        {:error, :invalid_difficulty,
+         %{
+           field: "difficulty",
+           reason: "must be a Fibonacci story point (1, 2, 3, 5, 8, 13, 21)"
+         }}
+    end
+  end
+
+  defp put_actual(attrs, kind \\ :work) do
+    attrs = stringify_keys(attrs)
+
+    case Map.fetch(attrs, "actual_minutes") do
+      :error ->
+        {:ok, attrs}
+
+      {:ok, nil} ->
+        {:ok, attrs}
+
+      {:ok, _value} when kind == :summary ->
+        {:error, :invalid_actual,
+         %{
+           field: "actual_minutes",
+           reason: "a summary node takes its actual duration from its children"
+         }}
+
+      {:ok, value} when is_integer(value) and value >= 0 ->
+        {:ok, attrs}
+
+      {:ok, _invalid} ->
+        {:error, :invalid_actual,
+         %{field: "actual_minutes", reason: "must be a non-negative whole number of minutes"}}
+    end
+  end
+
+  defp complete_attrs(:complete, attrs) do
+    attrs = stringify_keys(attrs)
+
+    case Map.fetch(attrs, "actual_minutes") do
+      :error ->
+        {:ok, %{}}
+
+      {:ok, nil} ->
+        {:ok, %{}}
+
+      {:ok, value} when is_integer(value) and value >= 0 ->
+        {:ok, %{"actual_minutes" => value}}
+
+      {:ok, _invalid} ->
+        {:error, :invalid_actual,
+         %{field: "actual_minutes", reason: "must be a non-negative whole number of minutes"}}
+    end
+  end
+
+  defp complete_attrs(_event, _attrs), do: {:ok, %{}}
 
   # ---------------------------------------------------------------- parenting
 

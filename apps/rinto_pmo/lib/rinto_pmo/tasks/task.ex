@@ -56,6 +56,20 @@ defmodule RintoPMO.Tasks.Task do
   Its estimate is the sum over its descendants, computed on read by
   `RintoPMO.Tasks` and written onto the struct the same way its status is.
 
+  ## Difficulty is a Fibonacci story point
+
+  `1 / 2 / 3 / 5 / 8 / 13 / 21`, or none. It is a rating of the work, not a
+  duration -- duration is the estimate, and this is the knob later estimates
+  are calibrated against. It does not sum, so a cover stores none and reports
+  none; what it does report is how many work descendants still have no rating.
+
+  ## Actual duration is recorded, not derived
+
+  `actual_minutes` is how long the work took. `started_at` to `completed_at`
+  is wall time and counts the night, which is not a calibration sample.
+  Minutes, like the estimate, so a cover can sum them. Cleared on reopen, the
+  same way `completed_at` is: the finish never held.
+
   ## Status only moves through `transition_changeset/3`
 
   Every field that exists to make a status honest -- `started_at`,
@@ -79,6 +93,7 @@ defmodule RintoPMO.Tasks.Task do
   @kinds [:work, :summary]
   @statuses [:open, :in_progress, :done, :cancelled]
   @live_statuses [:open, :in_progress]
+  @difficulties [1, 2, 3, 5, 8, 13, 21]
 
   # The event table, read as "from this status, this event lands there".
   # Anything absent is a `task_state_conflict`; there is no silent no-op,
@@ -105,6 +120,15 @@ defmodule RintoPMO.Tasks.Task do
     field :estimate_likely, :integer
     field :estimate_pessimistic, :integer
 
+    # Fibonacci story points. Null until somebody (or the estimator) rates it.
+    # A cover stores none: difficulty does not sum.
+    field :difficulty, :integer
+
+    # How long the work actually took, in minutes. Recorded rather than derived
+    # from the clocks, and cleared on reopen. A cover stores none and sums on
+    # read, the same way as the estimate.
+    field :actual_minutes, :integer
+
     # How many work descendants under a cover carry no estimate. A count of
     # tasks, not minutes -- the name says `_tasks` because everything else near
     # it is minutes and a bare `unestimated` reads as one. Null on a `:work`
@@ -113,6 +137,12 @@ defmodule RintoPMO.Tasks.Task do
     # A summed estimate that quietly skipped half the tree would read as a
     # complete number, which is the one thing an estimate must never do.
     field :unestimated_tasks, :integer, virtual: true
+
+    # Same shape, for difficulty and for actual duration. Null on a `:work`
+    # row. `unrated_tasks` counts descendants with no story point;
+    # `unmeasured_tasks` counts descendants with no `actual_minutes`.
+    field :unrated_tasks, :integer, virtual: true
+    field :unmeasured_tasks, :integer, virtual: true
     field :assigned_at, :utc_datetime_usec
     field :started_at, :utc_datetime_usec
     field :completed_at, :utc_datetime_usec
@@ -147,6 +177,12 @@ defmodule RintoPMO.Tasks.Task do
   """
   @spec live_statuses() :: [status()]
   def live_statuses, do: @live_statuses
+
+  @doc """
+  The Fibonacci story points a task can be rated with.
+  """
+  @spec difficulties() :: [pos_integer()]
+  def difficulties, do: @difficulties
 
   @doc """
   The PERT expected value of a three-point estimate, in minutes.
@@ -220,7 +256,9 @@ defmodule RintoPMO.Tasks.Task do
       :due_on,
       :estimate_optimistic,
       :estimate_likely,
-      :estimate_pessimistic
+      :estimate_pessimistic,
+      :difficulty,
+      :actual_minutes
     ])
     |> validate_required([:title, :kind])
     |> validate_length(:title, min: 1, max: 255)
@@ -242,7 +280,8 @@ defmodule RintoPMO.Tasks.Task do
     # a summary's start is whenever its children started, and keeping the old
     # value would date the chunk from before it existed as one. The estimate
     # goes the same way: the chunk is worth what its parts are worth, and a
-    # guess made before anyone knew what the parts were is not that.
+    # guess made before anyone knew what the parts were is not that. Difficulty
+    # and actual duration are work measurements too, and leave with them.
     change(task,
       kind: :summary,
       status: :open,
@@ -252,7 +291,9 @@ defmodule RintoPMO.Tasks.Task do
       completed_at: nil,
       estimate_optimistic: nil,
       estimate_likely: nil,
-      estimate_pessimistic: nil
+      estimate_pessimistic: nil,
+      difficulty: nil,
+      actual_minutes: nil
     )
   end
 
@@ -276,25 +317,43 @@ defmodule RintoPMO.Tasks.Task do
   end
 
   @doc false
-  def transition_changeset(%__MODULE__{} = task, event) do
+  def transition_changeset(%__MODULE__{} = task, event, attrs \\ %{}) do
     task
     |> change()
-    |> apply_event(event)
+    |> apply_event(event, attrs)
   end
 
-  defp apply_event(chset, :start), do: change(chset, status: :in_progress, started_at: now())
-  defp apply_event(chset, :complete), do: change(chset, status: :done, completed_at: now())
+  defp apply_event(chset, :start, _attrs),
+    do: change(chset, status: :in_progress, started_at: now())
+
+  defp apply_event(chset, :complete, attrs) do
+    # `actual_minutes` is accepted here so finishing and recording how long it
+    # took can be one act. Absent means leave whatever was already stored --
+    # somebody may have PATCHed it earlier. The value has already been checked
+    # by the context; this only writes it.
+    minutes = Map.get(attrs, "actual_minutes", Map.get(attrs, :actual_minutes))
+
+    changes = %{status: :done, completed_at: now()}
+
+    changes =
+      if is_integer(minutes), do: Map.put(changes, :actual_minutes, minutes), else: changes
+
+    change(chset, changes)
+  end
 
   # Cancelling keeps `started_at`: work really was done on it, and the record
   # of that is the difference between "we dropped it" and "we never began".
-  # `completed_at` stays nil, because nothing was completed.
-  defp apply_event(chset, :cancel), do: change(chset, status: :cancelled)
+  # `completed_at` stays nil, because nothing was completed. `actual_minutes`
+  # stays too, if anyone recorded what was spent before dropping it.
+  defp apply_event(chset, :cancel, _attrs), do: change(chset, status: :cancelled)
 
   # Reopening says the finish never held, so the timestamps that claimed it did
   # go with it. Leaving `completed_at` behind would make a task that is open
   # and complete at once, and every count built on it would have to pick one.
-  defp apply_event(chset, :reopen),
-    do: change(chset, status: :open, started_at: nil, completed_at: nil)
+  # `actual_minutes` is the duration of a finish that did not hold, so it goes
+  # too. Difficulty stays: the work is the same work.
+  defp apply_event(chset, :reopen, _attrs),
+    do: change(chset, status: :open, started_at: nil, completed_at: nil, actual_minutes: nil)
 
   defp reject_work_on_summary(chset) do
     case fetch_field!(chset, :kind) do

@@ -55,6 +55,8 @@ defmodule RintoPMOWeb.ErrorJSON do
     rebase_conflict:
       {409, "The proposal cannot be carried across what landed under it without a decision."},
     invalid_estimate: {422, "The task estimate is invalid."},
+    invalid_difficulty: {422, "The task difficulty is invalid."},
+    invalid_actual: {422, "The recorded actual duration is invalid."},
     task_not_splittable: {422, "The task cannot be split in its current state."},
     # Breaking a document down. The first three are the document being in no
     # state to be broken down, or nobody having said who would do it; the
@@ -66,6 +68,9 @@ defmodule RintoPMOWeb.ErrorJSON do
       {422,
        "No actor holds the decomposition role. Set one with `PUT /settings/decomposition_actor`."},
     decomposition_in_flight: {409, "The document is already being broken down."},
+    no_estimation_actor:
+      {422, "No actor holds the estimation role. Set one with `PUT /settings/estimation_actor`."},
+    nothing_to_estimate: {422, "There is nothing left to estimate on this task."},
     # Filing one as a work breakdown. Both mean the document is not the shape a
     # breakdown is, which is a thing to fix in the document.
     no_chunks: {422, "The document has no headings, so there is no work in it to file."},

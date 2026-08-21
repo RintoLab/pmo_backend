@@ -1,6 +1,8 @@
 defmodule RintoPMO.TasksTest do
   use RintoPMO.DataCase, async: true
+  use Oban.Testing, repo: RintoPMO.Repo
 
+  alias RintoPMO.Agent.TaskEstimatorMock
   alias RintoPMO.Agent.WbsGeneratorMock
   alias RintoPMO.Conversations
   alias RintoPMO.ConversationsMock
@@ -10,6 +12,8 @@ defmodule RintoPMO.TasksTest do
   alias RintoPMO.ProjectsMock
   alias RintoPMO.Settings
   alias RintoPMO.Tasks
+  alias RintoPMO.Tasks.EstimationWorker
+  alias RintoPMO.Tasks.Notifier
   alias RintoPMO.Tasks.Task
 
   describe "create_task/2" do
@@ -272,6 +276,7 @@ defmodule RintoPMO.TasksTest do
       assert reopened.status == :open
       assert reopened.started_at == nil
       assert reopened.completed_at == nil
+      assert reopened.actual_minutes == nil
       assert reopened.assignee_id == task.assignee_id
     end
   end
@@ -1184,6 +1189,424 @@ defmodule RintoPMO.TasksTest do
 
     {:ok, formal} = Documents.formalize_document(document)
     formal
+  end
+
+  describe "difficulty" do
+    test "accepts a Fibonacci story point and refuses anything else" do
+      project = insert(:project)
+
+      assert {:ok, task} = Tasks.create_task(project, %{"title" => "Rated", "difficulty" => 5})
+      assert task.difficulty == 5
+
+      assert {:ok, big} = Tasks.create_task(project, %{"title" => "Huge", "difficulty" => 21})
+      assert big.difficulty == 21
+
+      assert {:error, :invalid_difficulty, %{field: "difficulty"}} =
+               Tasks.create_task(project, %{"title" => "Off-scale", "difficulty" => 4})
+
+      assert {:error, :invalid_difficulty, %{field: "difficulty"}} =
+               Tasks.create_task(project, %{"title" => "Past the ceiling", "difficulty" => 34})
+
+      assert {:error, :invalid_difficulty, %{field: "difficulty"}} =
+               Tasks.create_task(project, %{"title" => "Zero", "difficulty" => 0})
+    end
+
+    test "an explicit null clears the rating" do
+      task = insert(:task, difficulty: 8)
+
+      assert {:ok, cleared} = Tasks.update_task(task, %{"difficulty" => nil})
+      assert cleared.difficulty == nil
+    end
+
+    test "a summary node takes no difficulty of its own" do
+      chunk = insert(:summary_task)
+
+      assert {:error, :invalid_difficulty, %{field: "difficulty", reason: reason}} =
+               Tasks.update_task(chunk, %{"difficulty" => 3})
+
+      assert reason =~ "does not carry"
+    end
+
+    test "a cover counts unrated work under it and does not invent a difficulty" do
+      project = insert(:project)
+      chunk = insert(:summary_task, project: project)
+      insert(:task, project: project, parent: chunk, difficulty: 5)
+      insert(:task, project: project, parent: chunk)
+
+      rolled = Tasks.get_task!(chunk.id)
+
+      assert rolled.difficulty == nil
+      assert rolled.unrated_tasks == 1
+    end
+
+    test "splitting drops the rating made before anyone knew the parts" do
+      task = insert(:task, difficulty: 8)
+
+      assert {:ok, summary} = Tasks.split_task(task, [%{"title" => "Half", "difficulty" => 3}])
+
+      stored = Repo.get!(Task, summary.id)
+      assert stored.difficulty == nil
+      assert hd(summary.children).difficulty == 3
+      assert Tasks.get_task!(summary.id).unrated_tasks == 0
+    end
+  end
+
+  describe "actual_minutes" do
+    test "records a non-negative duration and refuses a summary" do
+      project = insert(:project)
+
+      assert {:ok, task} =
+               Tasks.create_task(project, %{"title" => "Timed", "actual_minutes" => 90})
+
+      assert task.actual_minutes == 90
+
+      assert {:error, :invalid_actual, %{field: "actual_minutes"}} =
+               Tasks.create_task(project, %{"title" => "Negative", "actual_minutes" => -1})
+
+      chunk = insert(:summary_task)
+
+      assert {:error, :invalid_actual, %{field: "actual_minutes"}} =
+               Tasks.update_task(chunk, %{"actual_minutes" => 10})
+    end
+
+    test "complete can stamp the duration in the same act" do
+      task = insert(:task, assignee: build(:actor), status: :in_progress)
+
+      assert {:ok, done} = Tasks.transition_task(task, :complete, %{"actual_minutes" => 45})
+      assert done.status == :done
+      assert done.actual_minutes == 45
+    end
+
+    test "complete without a duration leaves whatever was already stored" do
+      task =
+        insert(:task,
+          assignee: build(:actor),
+          status: :in_progress,
+          actual_minutes: 20
+        )
+
+      assert {:ok, done} = Tasks.transition_task(task, :complete)
+      assert done.actual_minutes == 20
+    end
+
+    test "reopening clears the duration of a finish that did not hold" do
+      task =
+        insert(:task,
+          assignee: build(:actor),
+          status: :done,
+          actual_minutes: 40,
+          completed_at: ~U[2026-01-02 00:00:00.000000Z]
+        )
+
+      assert {:ok, reopened} = Tasks.transition_task(task, :reopen)
+      assert reopened.actual_minutes == nil
+    end
+
+    test "a cover sums recorded durations and counts what it had to skip" do
+      project = insert(:project)
+      chunk = insert(:summary_task, project: project)
+      insert(:task, project: project, parent: chunk, actual_minutes: 30)
+      insert(:task, project: project, parent: chunk, actual_minutes: 15)
+      insert(:task, project: project, parent: chunk)
+
+      rolled = Tasks.get_task!(chunk.id)
+
+      assert rolled.actual_minutes == 45
+      assert rolled.unmeasured_tasks == 1
+    end
+  end
+
+  describe "requesting and running an estimation" do
+    setup do
+      actor =
+        insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
+
+      {:ok, _settings} = Settings.put_actor("estimation_actor", actor.id)
+      {:ok, actor: actor}
+    end
+
+    test "answers with the job and leaves the work to the queue" do
+      task = insert(:task)
+
+      assert {:ok, %Oban.Job{} = job} = Tasks.request_estimation(task, :difficulty)
+      assert job.worker == "RintoPMO.Tasks.EstimationWorker"
+
+      assert_enqueued(worker: EstimationWorker, args: %{task_id: task.id, kind: :difficulty})
+    end
+
+    # A double-click is one estimation. Not refused and not a second model
+    # call: the caller is handed the job that is already queued.
+    test "a second ask while one is in flight is the same job" do
+      task = insert(:task)
+
+      assert {:ok, first} = Tasks.request_estimation(task, :difficulty)
+      assert {:ok, second} = Tasks.request_estimation(task, :difficulty)
+
+      assert second.id == first.id
+      assert second.conflict?
+      assert 1 == length(all_enqueued(worker: EstimationWorker))
+    end
+
+    # Deliberately asking again, after the first is over, is a new question and
+    # gets a job of its own. It may overwrite what the first one wrote.
+    test "asking again after one has finished makes a new job" do
+      task = insert(:task)
+      {:ok, first} = Tasks.request_estimation(task, :difficulty)
+
+      expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts ->
+        {:ok, [%{"id" => to_string(task.id), "difficulty" => 8}]}
+      end)
+
+      assert :ok = Tasks.run_estimation(first.id, task.id, :difficulty)
+      Repo.update_all(Oban.Job, set: [state: "completed"])
+
+      # The value is filled in now, so the only thing left to ask about is a
+      # task that already has one -- which is the shape of a person redoing it.
+      task = Repo.get!(Task, task.id)
+      {:ok, _cleared} = Tasks.update_task(task, %{"difficulty" => nil})
+
+      assert {:ok, second} = Tasks.request_estimation(Repo.get!(Task, task.id), :difficulty)
+      refute second.id == first.id
+      refute second.conflict?
+    end
+
+    test "allows difficulty and time to run at the same time" do
+      task = insert(:task)
+
+      assert {:ok, difficulty} = Tasks.request_estimation(task, :difficulty)
+      assert {:ok, time} = Tasks.request_estimation(task, :time)
+
+      # Two questions, two jobs: the debounce is over `(task_id, kind)`, so
+      # asking the other one is never mistaken for asking twice.
+      refute time.id == difficulty.id
+      refute time.conflict?
+
+      assert_enqueued(worker: EstimationWorker, args: %{task_id: task.id, kind: :difficulty})
+      assert_enqueued(worker: EstimationWorker, args: %{task_id: task.id, kind: :time})
+    end
+
+    test "refuses when every work item already has a value" do
+      task = insert(:task, difficulty: 3)
+
+      assert {:error, :nothing_to_estimate, %{kind: :difficulty}} =
+               Tasks.request_estimation(task, :difficulty)
+
+      refute_enqueued(worker: EstimationWorker)
+    end
+
+    test "refuses an empty cover" do
+      chunk = insert(:summary_task)
+
+      assert {:error, :nothing_to_estimate, %{reason: reason}} =
+               Tasks.request_estimation(chunk, :difficulty)
+
+      assert reason =~ "no work items"
+    end
+
+    test "refuses when nobody holds the role" do
+      {:ok, _settings} = Settings.put_actor("estimation_actor", nil)
+      task = insert(:task)
+
+      assert {:error, :no_estimation_actor, %{}} = Tasks.request_estimation(task, :difficulty)
+      refute_enqueued(worker: EstimationWorker)
+    end
+
+    test "writes ratings onto unfilled work and leaves filled work alone" do
+      project = insert(:project)
+      chunk = insert(:summary_task, project: project)
+      fresh = insert(:task, project: project, parent: chunk, title: "New")
+      rated = insert(:task, project: project, parent: chunk, title: "Old", difficulty: 2)
+
+      {:ok, job} = Tasks.request_estimation(chunk, :difficulty)
+
+      expect(TaskEstimatorMock, :estimate_difficulty, fn input, opts ->
+        assert opts[:provider] == "google"
+        assert opts[:model] == "flash"
+        assert Enum.map(input.tasks, & &1.id) == [to_string(fresh.id)]
+
+        {:ok,
+         [
+           %{"id" => to_string(fresh.id), "difficulty" => 5},
+           %{"id" => to_string(rated.id), "difficulty" => 13}
+         ]}
+      end)
+
+      assert :ok = Tasks.run_estimation(job.id, chunk.id, :difficulty)
+      assert Repo.get!(Task, fresh.id).difficulty == 5
+      assert Repo.get!(Task, rated.id).difficulty == 2
+    end
+
+    # The only thing anybody is told, and the last thing the job does. There
+    # is no row to read afterwards, so a message that did not go out is a
+    # spinner that never stops.
+    test "announces the outcome when it succeeds" do
+      task = insert(:task)
+      {:ok, job} = Tasks.request_estimation(task, :difficulty)
+      :ok = Notifier.subscribe(task.id)
+
+      expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts ->
+        {:ok, [%{"id" => to_string(task.id), "difficulty" => 8}]}
+      end)
+
+      assert :ok = Tasks.run_estimation(job.id, task.id, :difficulty)
+
+      assert_receive {:estimation_finished, result}
+      assert result.job_id == job.id
+      assert result.task_id == task.id
+      assert result.kind == :difficulty
+      assert result.status == :succeeded
+      assert result.error == nil
+    end
+
+    test "announces a failure too, in the words the provider used" do
+      task = insert(:task)
+      {:ok, job} = Tasks.request_estimation(task, :difficulty)
+      :ok = Notifier.subscribe(task.id)
+
+      expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts -> {:error, :stalled} end)
+
+      assert {:cancel, _reason} = Tasks.run_estimation(job.id, task.id, :difficulty)
+
+      assert_receive {:estimation_finished, %{status: :failed, error: error}}
+      assert error == "the model stopped responding"
+    end
+
+    # `:cancel` and not `:error`: the queue must not ask the same expensive
+    # question again on its own.
+    test "a failed model call cancels the job rather than failing it" do
+      task = insert(:task)
+      {:ok, job} = Tasks.request_estimation(task, :difficulty)
+
+      expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts -> {:error, :stalled} end)
+
+      assert {:cancel, "the model stopped responding"} =
+               Tasks.run_estimation(job.id, task.id, :difficulty)
+    end
+
+    test "a time estimate is calibrated with completed work from the same project" do
+      project = insert(:project)
+
+      insert(:task,
+        project: project,
+        title: "Past",
+        status: :done,
+        difficulty: 3,
+        actual_minutes: 50,
+        estimate_optimistic: 30,
+        estimate_likely: 45,
+        estimate_pessimistic: 90,
+        completed_at: ~U[2026-01-02 00:00:00.000000Z]
+      )
+
+      open = insert(:task, project: project, title: "Next", difficulty: 3)
+      {:ok, job} = Tasks.request_estimation(open, :time)
+
+      expect(TaskEstimatorMock, :estimate_time, fn input, _opts ->
+        assert [sample] = input.history
+        assert sample.title == "Past"
+        assert sample.actual_minutes == 50
+        assert sample.difficulty == 3
+        assert sample.estimate.likely == 45
+
+        assert hd(input.tasks).id == to_string(open.id)
+        assert hd(input.tasks).difficulty == 3
+
+        {:ok,
+         [
+           %{
+             "id" => to_string(open.id),
+             "optimistic" => 40,
+             "likely" => 55,
+             "pessimistic" => 80
+           }
+         ]}
+      end)
+
+      assert :ok = Tasks.run_estimation(job.id, open.id, :time)
+      stored = Repo.get!(Task, open.id)
+      assert stored.estimate_optimistic == 40
+      assert stored.estimate_likely == 55
+      assert stored.estimate_pessimistic == 80
+    end
+
+    test "leaves the task alone when the model call fails" do
+      task = insert(:task)
+      {:ok, job} = Tasks.request_estimation(task, :difficulty)
+
+      expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts -> {:error, :stalled} end)
+
+      assert {:cancel, _reason} = Tasks.run_estimation(job.id, task.id, :difficulty)
+      assert Repo.get!(Task, task.id).difficulty == nil
+    end
+
+    test "passes on the provider's own words when the model call fails" do
+      task = insert(:task)
+      {:ok, job} = Tasks.request_estimation(task, :difficulty)
+      :ok = Notifier.subscribe(task.id)
+
+      expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts ->
+        {:error, {:pi_exit, 1, "google: API key not valid. Please pass a valid API key."}}
+      end)
+
+      assert {:cancel, _reason} = Tasks.run_estimation(job.id, task.id, :difficulty)
+
+      assert_receive {:estimation_finished,
+                      %{error: "google: API key not valid. Please pass a valid API key."}}
+    end
+
+    test "fails when the model returns nothing that can be written" do
+      task = insert(:task)
+      {:ok, job} = Tasks.request_estimation(task, :difficulty)
+      :ok = Notifier.subscribe(task.id)
+
+      expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts ->
+        {:ok, [%{"id" => to_string(task.id), "difficulty" => 4}]}
+      end)
+
+      assert {:cancel, _reason} = Tasks.run_estimation(job.id, task.id, :difficulty)
+      assert_receive {:estimation_finished, %{status: :failed}}
+      assert Repo.get!(Task, task.id).difficulty == nil
+    end
+
+    # There is no row to be stranded and no in-flight slot to hold, so a task
+    # that went away between the ask and the run is simply nothing to do.
+    test "does nothing when the task went away while the job waited" do
+      task = insert(:task)
+      {:ok, job} = Tasks.request_estimation(task, :difficulty)
+      {:ok, _deleted} = Tasks.delete_task(task)
+
+      assert :ok = Tasks.run_estimation(job.id, task.id, :difficulty)
+    end
+
+    # The kind survives the round trip through the job's args as a string, so
+    # the worker is where it becomes an atom again.
+    test "the worker carries the job's id and kind into the context" do
+      task = insert(:task)
+      :ok = Notifier.subscribe(task.id)
+
+      expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts ->
+        {:ok, [%{"id" => to_string(task.id), "difficulty" => 8}]}
+      end)
+
+      assert :ok = perform_job(EstimationWorker, %{task_id: task.id, kind: "difficulty"})
+
+      assert_receive {:estimation_finished, %{kind: :difficulty, task_id: announced}}
+      assert announced == task.id
+      assert Repo.get!(Task, task.id).difficulty == 8
+    end
+
+    test "the worker carries a time estimation too" do
+      task = insert(:task, difficulty: 3)
+      :ok = Notifier.subscribe(task.id)
+
+      expect(TaskEstimatorMock, :estimate_time, fn _input, _opts ->
+        {:ok,
+         [%{"id" => to_string(task.id), "optimistic" => 1, "likely" => 2, "pessimistic" => 3}]}
+      end)
+
+      assert :ok = perform_job(EstimationWorker, %{task_id: task.id, kind: "time"})
+      assert_receive {:estimation_finished, %{kind: :time, status: :succeeded}}
+    end
   end
 
   defp ids(tasks), do: Enum.map(tasks, & &1.id)

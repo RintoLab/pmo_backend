@@ -78,6 +78,13 @@ tags:
     description: >
       Uploaded images, referenced from AI chat messages. Validated once at
       upload so that expanding a reference later is a plain read.
+  - name: Jobs
+    description: >
+      Background work, looked up by the id the endpoint that started it handed
+      back. Read-only and deliberately thin: this is not a queue console, it is
+      the way back for a client that lost its connection while something was
+      running. Absent means finished -- pruning only ever reaches jobs that are
+      over.
   - name: Settings
     description: >
       Which actor does a job that belongs to the system rather than to any one
@@ -1916,7 +1923,14 @@ paths:
       summary: Mark a task done
       description: >
         Only from `in_progress`, and never on a summary node. Stamps
-        `completed_at`.
+        `completed_at`. Optional `actual_minutes` records how long it took in
+        the same act; absent or null leaves whatever was already stored.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskCompleteInput"
       responses:
         "200":
           description: Task completed
@@ -1958,9 +1972,10 @@ paths:
       operationId: reopenTask
       summary: Return a finished or abandoned task to open
       description: >
-        Clears `started_at` and `completed_at`: the finish never held, and a
-        task that is open and complete at once would make every count built on
-        it pick one. The assignee stays.
+        Clears `started_at`, `completed_at`, and `actual_minutes`: the finish
+        never held, and a task that is open and complete at once would make
+        every count built on it pick one. Difficulty stays -- the work is the
+        same work. The assignee stays.
       responses:
         "200":
           description: Task reopened
@@ -1972,6 +1987,124 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/TaskStateConflict"
+  /tasks/{id}/estimate:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+    post:
+      tags: [Tasks]
+      operationId: estimateTask
+      summary: Have a model fill in what this node is missing
+      description: >
+        `kind: difficulty` rates unfilled work in Fibonacci story points;
+        `kind: time` produces a three-point estimate, calibrated with completed
+        work from the same project (difficulty, the estimate given then, and
+        `actual_minutes`). One endpoint rather than two: the two differ in the
+        question put to the model and in nothing else.
+
+
+        Unlike `start` / `complete` / `cancel` above, which are events on a
+        state machine and get a route each, this is one operation with a
+        parameter. `kind` is required -- there is no sensible default between
+        the two, and guessing would spend a model call on the question nobody
+        asked.
+
+
+        The target is the task in the path. A work item is estimated itself; a
+        summary is estimated as the work under it that still has no value.
+        Which work is targeted is decided when the job *starts*, so a value
+        somebody types while the model is thinking will be written over --
+        deliberate, and a `PATCH` away from fixed.
+
+
+        Answers `202` with the *job*, not the numbers. Note the two ids: the
+        one in the path is the task's `uuid`, the one in `data` is an integer
+        Oban job id.
+
+
+        **Nothing records the asking.** There is no attempt resource and no
+        history: what an estimation leaves behind is the numbers on the tasks.
+        The job id is the only handle there is -- keep it.
+
+
+        **Watching is the socket**: join `task:{id}` on `/socket` (see
+        `RintoPMOWeb.TaskChannel`). One `estimation` frame arrives when the job
+        is over, for both kinds, told apart by `kind`. There is no progress
+        frame and no output frame -- the answer is numbers, not prose.
+
+
+        **If you were not listening**, ask `GET /jobs/{job_id}`. A `404` there
+        means the job has been pruned, which only happens to jobs that are
+        over: stop waiting and re-read the task.
+
+
+        Asking twice is allowed. This is a helper for somebody looking at an
+        empty field, not an authority on what belongs in it -- a later answer
+        may overwrite an earlier one, and neither claims to be the better one.
+        A double-click is not two model calls, though: while one of this kind
+        is in flight, this answers with the job already queued. The two kinds
+        are separate slots and one of each may run at once.
+
+
+        Refused before anything is queued: `bad_request` (no `kind`, or one
+        that is not `difficulty` or `time`), `nothing_to_estimate` (every work
+        item already has a value, or the cover has no work), and
+        `no_estimation_actor` (nobody holds the role, and unlike naming there
+        is no fallback).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskEstimationInput"
+      responses:
+        "202":
+          description: The queued job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /jobs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+        description: The `id` a `202` handed back.
+    get:
+      tags: [Jobs]
+      operationId: getJob
+      summary: Whether the job this id names is still going
+      description: >
+        The way back for a client that started something, lost its connection,
+        and came back holding an id. The socket is the normal way to find out;
+        this is what to ask when the message went out while nobody was
+        listening.
+
+
+        `404` means the job has been pruned, and pruning only reaches jobs that
+        are over. Read it as "stop waiting and re-read the resource", not as an
+        error to report.
+
+
+        Eight queue states collapse into three: anything not yet finished is
+        `running`, `completed` is `succeeded`, and `discarded` or `cancelled`
+        is `failed`. Nothing the worker put in `args` or `meta` comes back out.
+      responses:
+        "200":
+          description: The job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /attachments:
     post:
       tags: [Attachments]
@@ -2299,7 +2432,7 @@ components:
       description: The system-wide role being filled.
       schema:
         type: string
-        enum: [title_actor, decomposition_actor]
+        enum: [title_actor, decomposition_actor, estimation_actor]
     ActorId:
       name: id
       in: path
@@ -3357,6 +3490,41 @@ components:
             itself answers the question. A summed estimate that quietly skipped
             half the tree reads exactly like a complete one; this is what tells
             them apart.
+        difficulty:
+          type: integer
+          nullable: true
+          enum: [1, 2, 3, 5, 8, 13, 21]
+          description: >
+            Fibonacci story point. A rating of the work, not a duration --
+            duration is `estimate`, and this is the knob later estimates are
+            calibrated against. Null until rated. A summary node stores none
+            and reports none: difficulty does not sum.
+        unrated_tasks:
+          type: integer
+          minimum: 0
+          nullable: true
+          readOnly: true
+          description: >
+            How many work descendants under a cover carry no difficulty. Null
+            on a `work` row. Same honesty rule as `unestimated_tasks`.
+        actual_minutes:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            How long the work actually took, in minutes. Recorded rather than
+            derived from `started_at` / `completed_at`, which is wall time and
+            counts the night. Cleared on reopen. On a summary node this is the
+            sum over its measured descendants, or null when none of them carry
+            one.
+        unmeasured_tasks:
+          type: integer
+          minimum: 0
+          nullable: true
+          readOnly: true
+          description: >
+            How many work descendants under a cover carry no `actual_minutes`.
+            Null on a `work` row.
         assigned_at:
           type: string
           format: date-time
@@ -3422,6 +3590,21 @@ components:
             `estimate_optimistic` / `estimate_likely` / `estimate_pessimistic`
             columns are never writable -- setting one alone would slip past
             every rule about the shape being whole and ordered.
+        difficulty:
+          type: integer
+          nullable: true
+          enum: [1, 2, 3, 5, 8, 13, 21]
+          description: >
+            Fibonacci story point, or null to clear. Refused on a summary node
+            (`invalid_difficulty`).
+        actual_minutes:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            Recorded duration in minutes, or null to clear. Refused on a
+            summary node (`invalid_actual`). Completing a task can set this in
+            the same act; PATCH is how it is filled in afterwards.
       additionalProperties: false
     TaskUpdateInput:
       type: object
@@ -3464,6 +3647,75 @@ components:
             `estimate_optimistic` / `estimate_likely` / `estimate_pessimistic`
             columns are never writable -- setting one alone would slip past
             every rule about the shape being whole and ordered.
+        difficulty:
+          type: integer
+          nullable: true
+          enum: [1, 2, 3, 5, 8, 13, 21]
+          description: >
+            Fibonacci story point, or null to clear. Refused on a summary node
+            (`invalid_difficulty`).
+        actual_minutes:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            Recorded duration in minutes, or null to clear. Refused on a
+            summary node (`invalid_actual`).
+      additionalProperties: false
+    TaskCompleteInput:
+      type: object
+      properties:
+        actual_minutes:
+          type: integer
+          minimum: 0
+          description: >
+            How long the work took, in minutes. Absent or null leaves whatever
+            was already stored.
+      additionalProperties: false
+    Job:
+      type: object
+      required: [id, worker, status, error, inserted_at]
+      properties:
+        id:
+          type: integer
+          description: The handle a `202` hands back. Keep it across reconnects.
+        worker:
+          type: string
+          description: Which kind of work this is, e.g. `RintoPMO.Tasks.EstimationWorker`.
+        status:
+          type: string
+          enum: [running, succeeded, failed]
+          description: >
+            The queue's eight states collapsed into the only question a client
+            asks: keep waiting, or stop.
+        error:
+          type: string
+          nullable: true
+          description: >
+            What the last attempt said, as the queue wrote it down -- formatted
+            for a person reading a log, not for a UI. A client that was
+            connected already got the sentence over the socket; this is the
+            copy left for one that was not.
+        inserted_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    TaskEstimationInput:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [difficulty, time]
+          description: >
+            Which question to put to the model. Required -- there is no default.
+      additionalProperties: false
+    JobResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Job"
       additionalProperties: false
     TaskActorInput:
       type: object
@@ -3558,6 +3810,14 @@ components:
             `estimate_optimistic` / `estimate_likely` / `estimate_pessimistic`
             columns are never writable -- setting one alone would slip past
             every rule about the shape being whole and ordered.
+        difficulty:
+          type: integer
+          nullable: true
+          enum: [1, 2, 3, 5, 8, 13, 21]
+        actual_minutes:
+          type: integer
+          minimum: 0
+          nullable: true
       additionalProperties: false
     TaskSplitResponse:
       type: object
@@ -3600,7 +3860,7 @@ components:
       additionalProperties: false
     TaskStats:
       type: object
-      required: [total, unassigned, overdue, by_status, by_assignee]
+      required: [total, unassigned, overdue, by_status, by_assignee, actual]
       properties:
         total:
           type: integer
@@ -3625,6 +3885,8 @@ components:
             $ref: "#/components/schemas/TaskAssigneeStats"
         estimate:
           $ref: "#/components/schemas/TaskEstimateStats"
+        actual:
+          $ref: "#/components/schemas/TaskActualStats"
       additionalProperties: false
     TaskEstimateStats:
       type: object
@@ -3653,6 +3915,24 @@ components:
         unestimated_tasks_remaining:
           type: integer
           minimum: 0
+      additionalProperties: false
+    TaskActualStats:
+      type: object
+      required: [total, unmeasured_tasks]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            Sum of recorded `actual_minutes` on work items. Null when nothing
+            has been measured -- zero would say the project took no time.
+        unmeasured_tasks:
+          type: integer
+          minimum: 0
+          description: >
+            How many work items carry no `actual_minutes`. A count of tasks,
+            not minutes.
       additionalProperties: false
     TaskStatsResponse:
       type: object
@@ -4217,7 +4497,7 @@ components:
       additionalProperties: false
     Settings:
       type: object
-      required: [title_actor, decomposition_actor]
+      required: [title_actor, decomposition_actor, estimation_actor]
       properties:
         title_actor:
           allOf:
@@ -4239,6 +4519,14 @@ components:
             decomposition belongs to no conversation, so there is no assistant
             to inherit from and the attempt is refused until somebody fills the
             role.
+        estimation_actor:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: >
+            The actor that rates a task's difficulty or produces its three-point
+            estimate. Same as decomposition: the job belongs to no conversation,
+            so an empty role is a refusal rather than a fallback.
       additionalProperties: false
     SettingsResponse:
       type: object
@@ -4631,11 +4919,15 @@ components:
         - invalid_markdown
         - default_project_missing
         - invalid_estimate
+        - invalid_difficulty
+        - invalid_actual
         - task_not_splittable
         - document_not_formal
         - decomposition_exists
         - no_decomposition_actor
         - decomposition_in_flight
+        - no_estimation_actor
+        - nothing_to_estimate
         - no_chunks
         - task_before_chunk
         - corrupt_image
