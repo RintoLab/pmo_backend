@@ -38,9 +38,10 @@ pub struct Skill {
 
 /// Every skill this binary can install.
 ///
-/// Deliberately not installed as a set: the two are written for different
-/// audiences, and a server-side agent carrying the client-side workflow is the
-/// noise the two-skill split exists to avoid.
+/// Deliberately not installed as a set: each is written for a different job,
+/// and an agent carrying a workflow it will never run is the noise the split
+/// exists to avoid. A server-side agent writing documents has no use for the
+/// claim-implement-report loop, and neither of them retires work.
 pub const SKILLS: &[Skill] = &[
     Skill {
         name: "rinto-document-authoring",
@@ -49,6 +50,10 @@ pub const SKILLS: &[Skill] = &[
     Skill {
         name: "rinto-docs-reference",
         body: include_str!("../../skills/rinto-docs-reference/SKILL.md"),
+    },
+    Skill {
+        name: "rinto-backlog-cleanup",
+        body: include_str!("../../skills/rinto-backlog-cleanup/SKILL.md"),
     },
 ];
 
