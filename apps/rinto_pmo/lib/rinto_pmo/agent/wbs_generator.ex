@@ -90,6 +90,7 @@ defmodule RintoPMO.Agent.WbsGenerator do
   move together.
   """
 
+  alias RintoPMO.Agent.Events
   alias RintoPMO.OSProcess
 
   require Logger
@@ -295,29 +296,37 @@ defmodule RintoPMO.Agent.WbsGenerator do
     end
   end
 
-  # One line of pi's event stream. Anything unrecognised is dropped on the
-  # floor, deliberately: the events are pi's own and carry no promise, and a
-  # line this cannot read has still done the one thing every line does, which
-  # is prove the call is alive.
+  # One line of pi's event stream, read through `RintoPMO.Agent.Events` --
+  # which is where the names live, because a conversation reads the same ones
+  # down a different transport.
   #
-  # `thinking_delta` is read the same way -- dropped, but only after it has
-  # reset the clock. It is not handed on: a person waiting for a task list has
-  # not asked to watch the model talk itself into one.
+  # Anything unrecognised is dropped on the floor, deliberately: a line this
+  # cannot read has still done the one thing every line does, which is prove
+  # the call is alive.
+  #
+  # Thinking is dropped the same way, but only after it has reset the clock.
+  # It is not handed on: a person waiting for a task list has not asked to
+  # watch the model talk itself into one.
   defp read(line, on_chunk, acc) do
     case JSON.decode(line) do
-      {:ok, %{"assistantMessageEvent" => %{"type" => "text_delta", "delta" => delta}}}
-      when is_binary(delta) ->
+      {:ok, frame} -> read_frame(frame, on_chunk, acc)
+      _unreadable -> acc
+    end
+  end
+
+  defp read_frame(frame, on_chunk, acc) do
+    case Events.delta(frame) do
+      {:text, delta} ->
         on_chunk.(delta)
         %{acc | deltas: [delta | acc.deltas]}
 
-      # The whole message, and whether it went wrong. Later ones win: `--print`
-      # with no tools makes one turn, and if that ever stops being true the
-      # last word is the right one to keep.
-      {:ok, %{"type" => "turn_end", "message" => %{} = message}} ->
-        %{acc | answer: message}
-
-      _unreadable_or_uninteresting ->
+      {:thinking, _delta} ->
         acc
+
+      # Later turns win: `--print` with no tools makes one, and if that ever
+      # stops being true the last word is the right one to keep.
+      nil ->
+        %{acc | answer: Events.finished_message(frame) || acc.answer}
     end
   end
 
@@ -381,36 +390,18 @@ defmodule RintoPMO.Agent.WbsGenerator do
   # what a provider that streams nothing would leave us with. A run where both
   # are empty is an empty answer, which is reported as one.
   defp answer(%{answer: %{} = message, deltas: deltas}) do
-    case text_of(message) do
-      "" -> deltas |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
+    case Events.text_of(message) do
+      "" -> streamed(deltas)
       text -> String.trim(text)
     end
   end
 
-  defp answer(%{deltas: deltas}) do
-    deltas |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
-  end
+  defp answer(%{deltas: deltas}), do: streamed(deltas)
 
-  # A message's text parts, in order. Thinking is a part of its own and is not
-  # one of them: what the model worked out on the way is not the breakdown.
-  defp text_of(%{"content" => content}) when is_list(content) do
-    Enum.map_join(content, fn
-      %{"type" => "text", "text" => text} when is_binary(text) -> text
-      _not_text -> ""
-    end)
-  end
+  defp streamed(deltas), do: deltas |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
 
-  defp text_of(_message_without_content), do: ""
-
-  # Whether a finished turn is a refusal, and in the provider's words. Anything
-  # other than a stated error is not one -- a turn with no `stopReason` at all
-  # is an older or newer pi, and guessing "that means it failed" would turn
-  # every answer into a failure the day the field is renamed.
-  defp refusal(%{"stopReason" => "error", "errorMessage" => message}) when is_binary(message),
-    do: message
-
-  defp refusal(%{"stopReason" => "error"}), do: "the provider refused without saying why"
-  defp refusal(_not_a_refusal), do: nil
+  defp refusal(nil), do: nil
+  defp refusal(message), do: Events.refusal(message)
 
   # What a provider refuses with arrives as `429: {"type":…,"message":"…"}` --
   # a status, then the response body whole. Only the `message` is kept: it

@@ -40,9 +40,10 @@ defmodule RintoPMO.Agent.PiSession do
       {:pi_session, session_id, {:exit, exit_status}}
 
   `:event` carries conversation frames only -- `message_start`,
-  `message_update`, `message_end`, `turn_start`, `turn_end`. Everything else pi
-  emits (status bars, widgets, unknown future frame types) is dropped, so new pi
-  releases and newly installed extensions cannot break a consumer.
+  `message_update`, `message_end`, `turn_start`, `turn_end`, named in
+  `RintoPMO.Agent.Events`. Everything else pi emits (status bars, widgets,
+  unknown future frame types) is dropped, so new pi releases and newly
+  installed extensions cannot break a consumer.
 
   ## Lifecycle
 
@@ -54,11 +55,11 @@ defmodule RintoPMO.Agent.PiSession do
 
   use GenServer
 
+  alias RintoPMO.Agent.Events
   alias RintoPMO.OSProcess
 
   @registry __MODULE__.Registry
 
-  @conversation_events ~w(message_start message_update message_end turn_start turn_end)
   @blocking_ui_methods ~w(select confirm input editor)
 
   @default_command_timeout 30_000
@@ -331,8 +332,8 @@ defmodule RintoPMO.Agent.PiSession do
     put_in(state.pending_ui[ui_id], frame)
   end
 
-  defp handle_frame({:ok, %{"type" => type} = frame}, state) when type in @conversation_events do
-    broadcast(state, {:event, frame})
+  defp handle_frame({:ok, frame}, state) do
+    if Events.conversation?(frame), do: broadcast(state, {:event, frame})
     state
   end
 
