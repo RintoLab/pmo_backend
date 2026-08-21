@@ -50,6 +50,18 @@ defmodule RintoPMOWeb.Router do
     # no counterpart in the agent CLI.
     post "/documents/:id/formalize", DocumentController, :formalize
 
+    # Turning a plan into the work it implies. Answers with the attempt rather
+    # than the breakdown -- the model call runs in a job, and what a client
+    # does next is watch `document:{id}` on the socket. The `GET` is for one
+    # that would rather ask than listen.
+    post "/documents/:id/decompose", DocumentController, :decompose
+    get "/documents/:id/decomposition", DocumentController, :decomposition
+
+    # And the other end of it: the breakdown somebody adopted becomes the work.
+    # An action on the document because that is what it consumes -- the
+    # document comes out `applied` and cannot be filed a second time.
+    post "/documents/:id/file_breakdown", DocumentController, :file_breakdown
+
     resources "/documents", DocumentController, only: [:index, :show, :create, :delete] do
       resources "/revisions", DocumentRevisionController,
         only: [:index, :show, :create],

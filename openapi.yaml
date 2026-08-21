@@ -222,8 +222,10 @@ paths:
         Replaces whoever was in the role; send `"actor_id": null` to empty it.
         The actor must be an enabled AI actor -- a human has no model to ask.
         Disabling or deleting the actor later is not an error: the role reads
-        as empty and its reader falls back (for `title_actor`, to the topic's
-        own assistant actor).
+        as empty, and what that means is the reader's to decide. `title_actor`
+        falls back to the topic's own assistant; `decomposition_actor` has no
+        conversation to inherit from, so decomposition is refused until the
+        role is filled again.
 
 
         Roles are defined by the system, so an unknown `key` is a 404 rather
@@ -584,16 +586,16 @@ paths:
                 format: uuid
               - type: string
                 enum: [none]
-        - name: fleeting
+        - name: status
           in: query
           required: false
           description: >-
-            Filter by adoption: `true` for fleeting documents only, `false` for the
-            adopted ones only. Omit to list both -- every document is created
-            fleeting, so filtering them out by default would hide nearly the whole
-            corpus. Combines with `project_id`.
+            Filter by how far along the document is. Omit to list every state --
+            every document is created `draft`, so filtering those out by default
+            would hide nearly the whole corpus. Combines with `project_id`.
           schema:
-            type: boolean
+            type: string
+            enum: [draft, formal, applied]
       responses:
         "200":
           description: Document summaries with their latest revision
@@ -602,7 +604,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/DocumentListResponse"
         "400":
-          description: Invalid project or fleeting filter
+          description: Invalid project or status filter
           content:
             application/json:
               schema:
@@ -616,9 +618,9 @@ paths:
         See `DocumentCreateInput.markdown` for where it cuts.
 
 
-        The document is always created with `fleeting: true` and there is no way to
+        The document is always created with `status: "draft"` and there is no way to
         ask for anything else -- writing something down is not the same as vouching
-        for it. Only a person clears the flag, with
+        for it. Only a person moves it on, with
         `POST /documents/{document_id}/formalize`.
       requestBody:
         $ref: "#/components/requestBodies/DocumentCreate"
@@ -693,13 +695,13 @@ paths:
     post:
       tags: [Documents]
       operationId: formalizeDocument
-      summary: Adopt a fleeting document as a formal one
+      summary: Adopt a draft document as a formal one
       description: >
-        Clears `fleeting`, idempotently. The only way out of the state every document
-        is created in, and a person's action alone: the flag records that somebody
-        looked at the document and decided it counts, which is not a judgement its
-        author can make on its own behalf -- so this has no counterpart in the agent
-        CLI.
+        Moves `status` from `draft` to `formal`, idempotently. The only way out of
+        the state every document is created in, and a person's action alone: it
+        records that somebody looked at the document and decided it counts, which is
+        not a judgement its author can make on its own behalf -- so this has no
+        counterpart in the agent CLI.
 
 
         Nothing about the content moves. No revision is created and no proposal is
@@ -709,7 +711,10 @@ paths:
 
         There is no route back. A document other work already leans on must not
         quietly become a scratch note again, so one that turns out not to be worth
-        keeping is archived with `DELETE /documents/{document_id}` instead.
+        keeping is archived with `DELETE /documents/{document_id}` instead. An
+        `applied` document -- one already consumed downstream -- is refused outright
+        with `422` rather than answered idempotently, because reporting success would
+        say it is available to be consumed again.
       responses:
         "200":
           description: Document with its latest revision and blocks, now formal
@@ -717,6 +722,138 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DocumentResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/decompose:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Documents]
+      operationId: decomposeDocument
+      summary: Break a formal document down into a task document
+      description: >
+        Answers `202` with the *attempt*, not the breakdown. The model call
+        takes as long as it takes, so it runs in a background job and what a
+        client does next is watch.
+
+
+        **Watching is the socket**, not this endpoint: join `document:{id}` on
+        `/socket` (see `RintoPMOWeb.DocumentChannel`). It carries the model's
+        output as it is produced -- `decomposition_output` frames whose `chunk`
+        values you append in order -- and a `decomposition` frame every time the
+        attempt changes state. `GET /documents/{document_id}/decomposition`
+        answers the same row for a client that would rather ask than listen,
+        but it cannot show the output: nothing is stored.
+
+
+        The breakdown is an ordinary document. When the attempt succeeds,
+        `result_document_id` names it, and it starts `draft` like anything else
+        -- somebody still has to read it and adopt it.
+
+
+        Refused, all of them here rather than inside the job so that a person
+        clicking a button hears no while they are still looking at it:
+        `document_not_formal` (only an adopted plan is worth turning into
+        work), `decomposition_exists` (one breakdown at a time -- archive the
+        standing one to make another), `no_decomposition_actor` (nobody holds
+        the role, and unlike naming there is no fallback), and
+        `decomposition_in_flight` (`409`, somebody clicked twice).
+      responses:
+        "202":
+          description: The queued attempt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecompositionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: An attempt is already running for this document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/decomposition:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [Documents]
+      operationId: getDocumentDecomposition
+      summary: The most recent attempt to break this document down
+      description: >
+        `data` is `null` when the document has never been broken down. Most
+        recent rather than in-flight: an attempt that failed a minute ago is
+        exactly what somebody opening the page needs to see.
+
+
+        This answers the row only. The model's output is broadcast as it is
+        produced and kept nowhere, so a client that was not listening cannot
+        get it back -- what survives is the document named by
+        `result_document_id`.
+      responses:
+        "200":
+          description: The attempt, or null
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecompositionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/file_breakdown:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Documents, Tasks]
+      operationId: fileDocumentBreakdown
+      summary: File an adopted task document as the project's work breakdown
+      description: >
+        The other end of `POST /documents/{document_id}/decompose`. That turned
+        a plan into a document somebody could argue with; this turns the
+        document they settled on into the work itself. Between them sits the
+        only gate that matters -- somebody adopted it, with
+        `POST /documents/{document_id}/formalize`.
+
+
+        **What it reads.** A `##` with `###` under it becomes a summary node
+        covering them; a `##` with none becomes one piece of work. Everything
+        written under either heading becomes that task's `description`,
+        acceptance criteria included -- there is no separate field for them and
+        no marker inside the text. Descriptions are Markdown and have to be
+        rendered as such: they contain lists, and a literal underscore in them
+        is written `\_`.
+
+
+        **What it does not read.** No estimates -- how long work takes is
+        decided by whoever is going to do it. No ordering beyond the order
+        things were written, which is the order they come back in.
+
+
+        Every task's `document_id` points at the document that was *broken
+        down*, not at this one: the spec somebody implements against is the
+        design, not the list of work. A breakdown written by hand rather than
+        generated has no source, and its tasks carry `null`.
+
+
+        **Once.** The document comes out `applied` and a second call is
+        refused. Tasks and that transition are one transaction, so a breakdown
+        never half-lands: a task the domain rejects leaves nothing filed and
+        the document still `formal`, there to be fixed and filed. Editing the
+        document afterwards changes nothing about the tasks -- work that turned
+        out wrong is cancelled, work that is missing comes from breaking down
+        another document.
+      responses:
+        "201":
+          description: >-
+            Every task created, flat and in document order with `parent_id` on
+            each -- the same shape `GET /projects/{slug}/tasks` answers with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskListResponse"
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
@@ -2159,10 +2296,10 @@ components:
       name: key
       in: path
       required: true
-      description: The system-wide role. Only `title_actor` exists today.
+      description: The system-wide role being filled.
       schema:
         type: string
-        enum: [title_actor]
+        enum: [title_actor, decomposition_actor]
     ActorId:
       name: id
       in: path
@@ -2937,7 +3074,7 @@ components:
       additionalProperties: false
     DocumentSummary:
       type: object
-      required: [id, project_id, archived_at, fleeting, latest_revision, inserted_at, updated_at]
+      required: [id, project_id, archived_at, status, latest_revision, inserted_at, updated_at]
       properties:
         id:
           type: string
@@ -2950,12 +3087,17 @@ components:
           type: string
           format: date-time
           nullable: true
-        fleeting:
-          type: boolean
+        status:
+          type: string
+          enum: [draft, formal, applied]
           description: >-
-            True while nobody has vouched for this document, which is how every
-            document starts. Cleared for good by
-            `POST /documents/{document_id}/formalize`, and never set again.
+            How far along the document is, and therefore whether anything
+            downstream may still consume it. `draft` is where every document
+            starts and means nobody has vouched for it. `formal` is set for good
+            by `POST /documents/{document_id}/formalize` and is a finished state,
+            not a waiting room -- most documents stop here. `applied` means the
+            document has already been consumed downstream, and once is all there
+            is. Every step is one-way.
         latest_revision:
           $ref: "#/components/schemas/DocumentRevisionSummary"
         inserted_at:
@@ -2967,7 +3109,7 @@ components:
       additionalProperties: false
     Document:
       type: object
-      required: [id, project_id, archived_at, fleeting, latest_revision, inserted_at, updated_at]
+      required: [id, project_id, archived_at, status, latest_revision, inserted_at, updated_at]
       properties:
         id:
           type: string
@@ -2980,12 +3122,17 @@ components:
           type: string
           format: date-time
           nullable: true
-        fleeting:
-          type: boolean
+        status:
+          type: string
+          enum: [draft, formal, applied]
           description: >-
-            True while nobody has vouched for this document, which is how every
-            document starts. Cleared for good by
-            `POST /documents/{document_id}/formalize`, and never set again.
+            How far along the document is, and therefore whether anything
+            downstream may still consume it. `draft` is where every document
+            starts and means nobody has vouched for it. `formal` is set for good
+            by `POST /documents/{document_id}/formalize` and is a finished state,
+            not a waiting room -- most documents stop here. `applied` means the
+            document has already been consumed downstream, and once is all there
+            is. Every step is one-way.
         latest_revision:
           $ref: "#/components/schemas/DocumentRevision"
         inserted_at:
@@ -4011,9 +4158,66 @@ components:
           type: string
           format: date-time
       additionalProperties: false
+    Decomposition:
+      type: object
+      required:
+        [
+          id,
+          source_document_id,
+          result_document_id,
+          status,
+          error,
+          inserted_at,
+          updated_at,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        source_document_id:
+          type: string
+          format: uuid
+          description: The formal document being broken down.
+        result_document_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            The task document this attempt produced. Null until it succeeds,
+            and null forever if it does not.
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed]
+          description: >-
+            `pending` and `running` are in flight; `succeeded` and `failed` are
+            over. Nothing moves out of a finished state -- asking again makes a
+            new attempt, which is what "try again" means once the first answer
+            is recorded.
+        error:
+          type: string
+          nullable: true
+          description: >-
+            Filled only by `failed`, and relayed as it came. There is nothing
+            to classify it into: the reasons a provider refuses are its own.
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    DecompositionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          allOf:
+            - $ref: "#/components/schemas/Decomposition"
+          nullable: true
+      additionalProperties: false
     Settings:
       type: object
-      required: [title_actor]
+      required: [title_actor, decomposition_actor]
       properties:
         title_actor:
           allOf:
@@ -4024,6 +4228,17 @@ components:
             Null means nobody has been chosen, or the chosen one has since been
             disabled or deleted -- in which case each topic is named by its own
             `assistant_actor_id` instead.
+        decomposition_actor:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: >
+            The actor that breaks a formal document down into a task document.
+            Null means nobody has been chosen, or the chosen one has since been
+            disabled or deleted -- and unlike naming there is no fallback:
+            decomposition belongs to no conversation, so there is no assistant
+            to inherit from and the attempt is refused until somebody fills the
+            role.
       additionalProperties: false
     SettingsResponse:
       type: object
@@ -4417,6 +4632,12 @@ components:
         - default_project_missing
         - invalid_estimate
         - task_not_splittable
+        - document_not_formal
+        - decomposition_exists
+        - no_decomposition_actor
+        - decomposition_in_flight
+        - no_chunks
+        - task_before_chunk
         - corrupt_image
         - internal_server_error
         - attachment_unwritable

@@ -37,10 +37,14 @@ defmodule RintoPMO.Documents do
   alias RintoPMO.Documents.BlockMerge
   alias RintoPMO.Documents.BlockOps
   alias RintoPMO.Documents.BlockProposal
+  alias RintoPMO.Documents.Decomposition
+  alias RintoPMO.Documents.DecompositionWorker
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Markdown
+  alias RintoPMO.Documents.Notifier
+  alias RintoPMO.Settings
   alias RintoPMO.Utils
 
   @behaviour RintoPMO.Documents.Behaviour
@@ -49,8 +53,8 @@ defmodule RintoPMO.Documents do
   Lists non-archived documents with their latest revision, newest first.
 
   `filter` accepts `:project` -- a project id, or `:unassigned` for documents
-  belonging to none -- and `:fleeting`. An absent key filters nothing, which is
-  the only sane default here: every document is created fleeting, so a list that
+  belonging to none -- and `:status`. An absent key filters nothing, which is
+  the only sane default here: every document is created `:draft`, so a list that
   quietly dropped them would hide nearly everything, starting with whatever was
   written most recently.
   """
@@ -98,7 +102,7 @@ defmodule RintoPMO.Documents do
   A missing or blank body is allowed: an empty document is a legitimate
   starting point, and there is nothing to credit to an actor either.
 
-  Every document is created fleeting, and `attrs` has no say in it -- see
+  Every document is created `:draft`, and `attrs` has no say in it -- see
   `RintoPMO.Documents.Document`. Only `formalize_document/1` clears the flag.
 
   ## No `project_id` means the default project
@@ -153,22 +157,215 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
-  Idempotently adopts a fleeting document as a formal one.
+  Idempotently adopts a `:draft` document as a `:formal` one.
 
   The one way out of the state every document is created in, and a person's
-  action alone: the flag records that somebody looked at a document and decided
-  it counts, which is not a judgement its author can make on its own behalf.
+  action alone: it records that somebody looked at a document and decided it
+  counts, which is not a judgement its author can make on its own behalf.
   Nothing about the content moves -- no revision, no proposal -- because adoption
   is about standing, not text.
 
   There is no way back. A document that turns out not to be worth keeping is
-  archived, not returned to fleeting; see `RintoPMO.Documents.Document`.
+  archived, not returned to `:draft`; and one already consumed downstream is
+  refused outright. See `RintoPMO.Documents.Document`.
   """
   @impl true
   def formalize_document(%Document{} = document) do
     document
     |> Document.formalize_changeset()
     |> Repo.update()
+  end
+
+  # Breaks a formal document down into a new document holding the work it
+  # implies. Private, and reachable only through `run_decomposition/1`: the
+  # edge from a source to its breakdown lives on the attempt row, so a
+  # breakdown made outside one would be a document nothing could find its way
+  # back from.
+  #
+  # Two documents, and the second one is ordinary: it has a revision history,
+  # it can be annotated and proposed against, and it starts `:draft` like
+  # everything else. Nothing here files any tasks.
+  #
+  # What the model is and is not trusted with: it is given the document and
+  # asked for Markdown. The title is not its to choose -- it is built from the
+  # source's, the same rule that keeps a title out of a document's body -- and
+  # neither is the author nor the project. The shape of the Markdown is not
+  # checked; what the notation means belongs to whatever reads the breakdown,
+  # and that does not exist yet.
+  defp decompose_document(%Document{} = document, opts) do
+    with :ok <- decomposable(document),
+         {:ok, actor} <- decomposition_actor(),
+         {:ok, markdown} <- breakdown(document, actor, opts) do
+      create_document(%{
+        title: breakdown_title(document),
+        project_id: document.project_id,
+        actor_id: actor.id,
+        markdown: markdown
+      })
+    end
+  end
+
+  @doc """
+  Asks for a document to be broken down, and answers before it has been.
+
+  The model call takes as long as it takes, so it does not happen on this call
+  path -- what comes back is the attempt, `:pending`, with an
+  `RintoPMO.Documents.DecompositionWorker` job behind it.
+
+  ## The refusals
+
+    * the source must be `:formal`. Breaking down something nobody has vouched
+      for would be work built on a draft, and adoption is exactly the moment
+      somebody decided the plan is worth acting on
+    * the source must not already have a breakdown standing. One at a time, the
+      way a topic holds one live proposal per block: a second one is not a
+      second opinion, it is two answers with nothing to choose between them.
+      Archiving the first frees the slot, which is how a bad one is redone
+    * somebody must hold the `decomposition_actor` role. Naming can fall back
+      to the topic's own assistant; this belongs to no topic, so there is
+      nothing to fall back to and picking one off the list would be inventing
+      an answer nobody gave
+    * no attempt may already be in flight. The standing-breakdown check cannot
+      see one -- a run that has not finished has produced no document to find
+      -- so without this a second click would start a second model call. The
+      database decides it, via a partial unique index, because two clicks
+      landing together both pass a `SELECT`
+
+  They are all made here rather than inside the job, so a person clicking a
+  button is told no while they are still looking at it rather than thirty
+  seconds later in something they have to go and read. The first three are
+  checked again when the job runs, because the world moves in between.
+
+  Whether the source is archived is deliberately **not** checked. Archiving is
+  a terminal state that needs no special handling here, and a check would only
+  catch breaking down an already-archived document -- not the ordinary case of
+  archiving one that has already been broken down.
+  """
+  @impl true
+  def request_decomposition(%Document{} = document) do
+    with :ok <- decomposable(document),
+         {:ok, _actor} <- decomposition_actor() do
+      %Decomposition{}
+      |> Decomposition.creation_changeset(document.id)
+      |> Repo.insert()
+      |> case do
+        {:ok, decomposition} ->
+          {:ok, _job} = enqueue_decomposition(decomposition)
+          {:ok, decomposition}
+
+        {:error, %Changeset{} = changeset} ->
+          in_flight_or_invalid(changeset, document)
+      end
+    end
+  end
+
+  @doc """
+  Runs an attempt: the model call, the document, and the record of both.
+
+  Called by the worker and not by a request. Everything a person sees while
+  waiting is broadcast from here -- `:running` as it starts, the model's output
+  as it arrives, and the finished row either way -- on the document's topic,
+  because the person watching is looking at the document and may not be the
+  one who asked.
+
+  Answers `:ok` in every case, including failure. A failed attempt is a
+  finished attempt: it is written down, everyone watching is told, and there is
+  nothing for a queue to retry that would not ask the same question again.
+  """
+  @impl true
+  def run_decomposition(%Decomposition{} = decomposition) do
+    decomposition = mark_running(decomposition)
+    document = get_document!(decomposition.source_document_id)
+
+    case decompose_document(document, on_chunk: broadcaster(decomposition)) do
+      {:ok, breakdown} -> finish_decomposition(decomposition, breakdown)
+      {:error, %Changeset{} = changeset} -> fail_decomposition(decomposition, changeset)
+      {:error, code, details} -> fail_decomposition(decomposition, code, details)
+    end
+  end
+
+  @doc """
+  Marks a document as consumed by whatever downstream took it.
+
+  The end of the axis: nothing moves out of `:applied`, and asking twice is
+  refused rather than answered idempotently -- filing one document as two work
+  breakdowns is exactly what the state exists to prevent.
+
+  Composes inside a caller's transaction, which is the point. Filing a
+  breakdown creates tasks and consumes the document, and either both happen or
+  the document is still there to be filed.
+  """
+  @impl true
+  def apply_document(%Document{} = document) do
+    document
+    |> Document.apply_changeset()
+    |> Repo.update()
+  end
+
+  @doc """
+  The document a breakdown was derived from, or `nil`.
+
+  Read through the attempt, which is where the edge lives. `nil` for a document
+  nobody generated -- somebody may write a breakdown by hand, and it is no less
+  fileable for having no source.
+
+  What this answers is "which document do the tasks point at as their spec":
+  the plan somebody implements against is the design that was broken down, not
+  the list of work it produced.
+  """
+  @impl true
+  def source_of(%Document{} = breakdown) do
+    Decomposition
+    |> where([attempt], attempt.result_document_id == ^breakdown.id)
+    |> join(:inner, [attempt], source in Document, on: source.id == attempt.source_document_id)
+    |> order_by([attempt], desc: attempt.id)
+    |> select([_attempt, source], source)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  @doc """
+  The most recent attempt to break a document down, or `nil`.
+
+  What a client reads on arriving, and what it falls back to when it has missed
+  the broadcasts. Most recent rather than in-flight: an attempt that failed a
+  minute ago is exactly what somebody opening the page needs to see.
+  """
+  @impl true
+  def latest_decomposition(%Document{} = document) do
+    Decomposition
+    |> where([attempt], attempt.source_document_id == ^document.id)
+    |> order_by([attempt], desc: attempt.id)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  @doc """
+  The breakdown standing against a document, or `nil`.
+
+  Read through the attempts rather than off the document, because that is where
+  the edge lives: a decomposition row holds both ends -- which document was
+  read and which was written -- and being a record of a run is exactly what it
+  is. A column on `documents` could say only "derived from one document", which
+  is both the wrong shape and a claim sitting on the wrong row.
+
+  Archived ones do not count: archiving a breakdown is how somebody says that
+  one was wrong, and it has to leave room for the next. So this asks for a
+  succeeded attempt whose result is still standing, not merely the last one.
+  """
+  @impl true
+  def breakdown_of(%Document{} = document) do
+    Decomposition
+    |> where([attempt], attempt.source_document_id == ^document.id)
+    |> where([attempt], attempt.status == :succeeded)
+    |> join(:inner, [attempt], breakdown in Document,
+      on: breakdown.id == attempt.result_document_id
+    )
+    |> where([_attempt, breakdown], is_nil(breakdown.archived_at))
+    |> order_by([attempt], desc: attempt.id)
+    |> select([_attempt, breakdown], breakdown)
+    |> limit(1)
+    |> Repo.one()
   end
 
   @doc """
@@ -877,8 +1074,8 @@ defmodule RintoPMO.Documents do
       {:project, project_id}, query ->
         where(query, [document], document.project_id == ^project_id)
 
-      {:fleeting, fleeting}, query ->
-        where(query, [document], document.fleeting == ^fleeting)
+      {:status, status}, query ->
+        where(query, [document], document.status == ^status)
 
       {_other, _value}, query ->
         query
@@ -1355,6 +1552,135 @@ defmodule RintoPMO.Documents do
       {:error, {:annotation_not_found, %{annotation_id: annotation_id}}}
   end
 
+  defp enqueue_decomposition(%Decomposition{} = decomposition) do
+    %{decomposition_id: decomposition.id}
+    |> DecompositionWorker.new()
+    |> Oban.insert()
+  end
+
+  # The partial unique index is the only thing that can tell "somebody clicked
+  # twice" from "this row is malformed", and it reports it the way every unique
+  # constraint does. Translated here so the caller gets the same shape as the
+  # refusals that were checked before the insert.
+  defp in_flight_or_invalid(%Changeset{} = changeset, %Document{} = document) do
+    if Keyword.has_key?(changeset.errors, :source_document_id) do
+      {:error, :decomposition_in_flight, %{document_id: document.id}}
+    else
+      {:error, changeset}
+    end
+  end
+
+  defp mark_running(%Decomposition{} = decomposition) do
+    {:ok, running} =
+      decomposition
+      |> Decomposition.running_changeset()
+      |> Repo.update()
+
+    :ok = Notifier.broadcast_decomposition(running)
+    running
+  end
+
+  defp finish_decomposition(%Decomposition{} = decomposition, %Document{} = breakdown) do
+    {:ok, succeeded} =
+      decomposition
+      |> Decomposition.succeeded_changeset(breakdown)
+      |> Repo.update()
+
+    Notifier.broadcast_decomposition(succeeded)
+  end
+
+  defp fail_decomposition(%Decomposition{} = decomposition, %Changeset{} = changeset) do
+    fail_decomposition(decomposition, :invalid_breakdown, %{
+      errors: inspect(changeset.errors)
+    })
+  end
+
+  # A reason that was already put into words travels as it is. Anything else
+  # gets the code in front of it, which is better than nothing but is a sign
+  # the case is worth wording too.
+  defp fail_decomposition(%Decomposition{} = decomposition, code, details) do
+    reason = Map.get(details, :reason) || "#{code}: #{inspect(details)}"
+
+    {:ok, failed} =
+      decomposition
+      |> Decomposition.failed_changeset(reason)
+      |> Repo.update()
+
+    Notifier.broadcast_decomposition(failed)
+  end
+
+  # Every piece of output, straight out to whoever is watching the document.
+  # Nothing is kept: see `RintoPMO.Documents.Notifier` for why a late joiner
+  # gets the row rather than a replay.
+  defp broadcaster(%Decomposition{} = decomposition) do
+    fn chunk -> Notifier.broadcast_output(decomposition, chunk) end
+  end
+
+  defp decomposable(%Document{status: :formal} = document) do
+    case breakdown_of(document) do
+      nil -> :ok
+      standing -> {:error, :decomposition_exists, %{document_id: standing.id}}
+    end
+  end
+
+  defp decomposable(%Document{status: status}) do
+    {:error, :document_not_formal, %{status: status}}
+  end
+
+  defp decomposition_actor do
+    case Settings.get_actor("decomposition_actor") do
+      nil -> {:error, :no_decomposition_actor, %{}}
+      actor -> {:ok, actor}
+    end
+  end
+
+  defp breakdown(%Document{} = document, actor, opts) do
+    revision = latest_revision!(document, preload_blocks?: true)
+
+    input = %{
+      title: revision.title,
+      blocks: Enum.map(revision.blocks, & &1.content)
+    }
+
+    opts =
+      Keyword.merge(opts,
+        provider: actor.provider,
+        model: actor.model,
+        thinking: actor.thinking_level
+      )
+
+    case wbs_generator().generate(input, opts) do
+      {:ok, markdown} ->
+        {:ok, markdown}
+
+      # Relayed rather than classified. Whatever went wrong -- the document did
+      # not fit, a key is missing, the provider stopped answering -- is the
+      # provider's word, and this layer has nothing to add to it that would not
+      # be a guess.
+      {:error, reason} ->
+        {:error, :decomposition_failed, %{reason: failure_reason(reason)}}
+    end
+  end
+
+  # Turned into a sentence here rather than left as a term, because the far end
+  # of this is a person reading why nothing happened. `inspect/1` on the tuple
+  # was what shipped first, and what it produced -- `{:pi_exit, 1}` -- named the
+  # exit code of a process the reader has never heard of and dropped the one
+  # sentence that mattered.
+  defp failure_reason({:pi_exit, code, ""}), do: "the model call exited #{code}, saying nothing"
+  defp failure_reason({:pi_exit, _code, complaint}), do: complaint
+  defp failure_reason(:stalled), do: "the model stopped responding"
+  defp failure_reason(:empty_output), do: "the model answered with nothing"
+  defp failure_reason(:pi_not_found), do: "the agent runtime is not installed on the server"
+  defp failure_reason(other), do: inspect(other)
+
+  # Built here, never asked of the model. A title is a field of its own and is
+  # never read out of a body -- the same rule `POST /documents` follows -- and
+  # a breakdown that could name itself could name itself anything.
+  defp breakdown_title(%Document{} = document) do
+    "#{latest_revision!(document, preload_blocks?: false).title} · 任务分解"
+  end
+
   defp unwrap_error({:ok, value}), do: {:ok, value}
   defp unwrap_error({:error, %Changeset{} = changeset}), do: {:error, changeset}
   defp unwrap_error({:error, {code, details}}), do: {:error, code, details}
@@ -1367,4 +1693,8 @@ defmodule RintoPMO.Documents do
 
   # And which project a document with none of its own belongs to.
   defp projects, do: Utils.module(:projects)
+
+  # The one model call this context makes, behind the seam so that every
+  # refusal around it is testable without one.
+  defp wbs_generator, do: Utils.module(:wbs_generator)
 end

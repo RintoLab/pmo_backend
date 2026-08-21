@@ -1,13 +1,18 @@
 defmodule RintoPMO.DocumentsTest do
   use RintoPMO.DataCase, async: true
+  use Oban.Testing, repo: RintoPMO.Repo
 
+  alias RintoPMO.Agent.WbsGeneratorMock
   alias RintoPMO.Conversations
   alias RintoPMO.ConversationsMock
   alias RintoPMO.Documents
+  alias RintoPMO.Documents.DecompositionWorker
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Documents.Notifier
   alias RintoPMO.Projects
   alias RintoPMO.ProjectsMock
+  alias RintoPMO.Settings
 
   setup do
     # Creating a document inside a topic reads that topic to learn who wrote it.
@@ -238,25 +243,25 @@ defmodule RintoPMO.DocumentsTest do
     end
   end
 
-  # Writing something down is not vouching for it, so a document is fleeting
-  # until a person says otherwise. That makes fleeting the common case, which is
+  # Writing something down is not vouching for it, so a document is `:draft`
+  # until a person says otherwise. That makes draft the common case, which is
   # the whole reason such documents have to stay visible: filtering them out by
   # default would hide nearly the entire corpus.
-  describe "fleeting documents" do
-    test "every document is created fleeting" do
+  describe "document status" do
+    test "every document is created draft" do
       assert {:ok, document} = Documents.create_document(%{title: "Written down"})
-      assert document.fleeting
-      assert Documents.get_document!(document.id).fleeting
+      assert document.status == :draft
+      assert Documents.get_document!(document.id).status == :draft
     end
 
     # The same rule as block attribution: a caller that could declare its own
     # work adopted would be declaring that the review never needed to happen.
     test "ignores a caller trying to create a document already adopted" do
       assert {:ok, document} =
-               Documents.create_document(%{title: "Claims to count", fleeting: false})
+               Documents.create_document(%{title: "Claims to count", status: :formal})
 
-      assert document.fleeting
-      assert Documents.get_document!(document.id).fleeting
+      assert document.status == :draft
+      assert Documents.get_document!(document.id).status == :draft
     end
 
     test "lists both kinds together, or either one alone" do
@@ -269,35 +274,49 @@ defmodule RintoPMO.DocumentsTest do
       assert document_ids(Documents.list_documents(%{project: project.id})) ==
                MapSet.new([scratch.id, adopted.id])
 
-      assert document_ids(Documents.list_documents(%{fleeting: true})) ==
+      assert document_ids(Documents.list_documents(%{status: :draft})) ==
                MapSet.new([scratch.id])
 
-      assert document_ids(Documents.list_documents(%{fleeting: false})) ==
+      assert document_ids(Documents.list_documents(%{status: :formal})) ==
                MapSet.new([adopted.id])
 
-      assert document_ids(Documents.list_documents(%{project: project.id, fleeting: false})) ==
+      assert document_ids(Documents.list_documents(%{project: project.id, status: :formal})) ==
                MapSet.new([adopted.id])
     end
 
-    test "formalizes a fleeting document idempotently, touching nothing else" do
+    test "formalizes a draft document idempotently, touching nothing else" do
       project = insert(:project)
       {:ok, document} = create_document(project, %{title: "Scratch"})
 
       assert {:ok, formal} = Documents.formalize_document(document)
-      refute formal.fleeting
+      assert formal.status == :formal
       assert formal.id == document.id
 
       assert {:ok, formal_again} = Documents.formalize_document(formal)
-      refute formal_again.fleeting
+      assert formal_again.status == :formal
 
       revisions = Documents.list_revisions(document)
       assert length(revisions) == 1
       assert Documents.get_document!(document.id).latest_revision.title == "Scratch"
     end
 
+    # Idempotent is not the same as permissive. An applied document has already
+    # been consumed downstream, and reporting success would tell the caller it
+    # is available to be consumed again.
+    test "refuses to walk an applied document back to formal" do
+      project = insert(:project)
+      {:ok, document} = create_document(project, %{title: "Consumed"})
+      {:ok, document} = Documents.formalize_document(document)
+
+      applied = %{document | status: :applied}
+
+      assert {:error, changeset} = Documents.formalize_document(applied)
+      assert "an applied document cannot go back to formal" in errors_on(changeset).status
+    end
+
     # Adoption is about standing, so it survives everything the content does.
-    # Nothing in the write path can put a document back to fleeting.
-    test "a new revision does not return an adopted document to fleeting" do
+    # Nothing in the write path can put a document back to `:draft`.
+    test "a new revision does not return an adopted document to draft" do
       project = insert(:project)
       actor = insert(:actor)
 
@@ -326,7 +345,7 @@ defmodule RintoPMO.DocumentsTest do
                  ]
                })
 
-      refute Documents.get_document!(document.id).fleeting
+      assert Documents.get_document!(document.id).status == :formal
     end
   end
 
@@ -441,6 +460,223 @@ defmodule RintoPMO.DocumentsTest do
         Documents.get_revision!(document, other_revision.id)
       end
     end
+  end
+
+  # Breaking a plan down produces a second document, and an ordinary one: it
+  # starts `:draft` like everything else and has to be adopted in its own right
+  # before anything downstream may act on it. The gate sits on the *source* --
+  # only a plan somebody vouched for is worth turning into work.
+  describe "requesting and running a decomposition" do
+    setup do
+      actor = insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
+      {:ok, _settings} = Settings.put_actor("decomposition_actor", actor.id)
+      {:ok, actor: actor}
+    end
+
+    test "answers with a pending attempt and leaves the work to a job" do
+      source = formal_document()
+
+      assert {:ok, decomposition} = Documents.request_decomposition(source)
+      assert decomposition.status == :pending
+      assert decomposition.source_document_id == source.id
+      assert decomposition.result_document_id == nil
+
+      assert_enqueued(worker: DecompositionWorker, args: %{decomposition_id: decomposition.id})
+    end
+
+    # The standing-breakdown check cannot see this one: a run that has not
+    # finished has produced no document to find.
+    test "refuses a second attempt while one is in flight" do
+      source = formal_document()
+      assert {:ok, _first} = Documents.request_decomposition(source)
+
+      assert {:error, :decomposition_in_flight, %{document_id: document_id}} =
+               Documents.request_decomposition(source)
+
+      assert document_id == source.id
+    end
+
+    # Told no while they are still looking at the button, rather than thirty
+    # seconds later in a job they have to go and read.
+    test "makes the same refusals before queueing anything" do
+      project = insert(:project)
+      {:ok, draft} = create_document(project, %{title: "Half an idea"})
+
+      assert {:error, :document_not_formal, %{status: :draft}} =
+               Documents.request_decomposition(draft)
+
+      refute_enqueued(worker: DecompositionWorker)
+    end
+
+    test "runs the attempt, streaming the output and recording the result", %{actor: actor} do
+      project = insert(:project)
+
+      {:ok, source} =
+        create_document(project, %{
+          title: "Rollout plan",
+          actor_id: actor.id,
+          markdown: "## Canary\n\nTen percent first.\n\n## Rollback\n\nOne switch."
+        })
+
+      {:ok, source} = Documents.formalize_document(source)
+      {:ok, decomposition} = Documents.request_decomposition(source)
+      :ok = Notifier.subscribe(source.id)
+
+      expect(WbsGeneratorMock, :generate, fn input, opts ->
+        # The whole document, which is the entire input to deciding what the
+        # work is -- and the reason this call is not shaped like naming's.
+        assert input.title == "Rollout plan"
+        assert input.blocks == ["## Canary\n\nTen percent first.", "## Rollback\n\nOne switch."]
+        assert opts[:provider] == "google"
+        assert opts[:model] == "flash"
+        assert opts[:thinking] == "off"
+
+        # What a person watching sees, as the model produces it.
+        opts[:on_chunk].("## Canary\n")
+        opts[:on_chunk].("- Wire the split")
+        {:ok, "## Canary\n\n- Wire the split"}
+      end)
+
+      assert :ok = Documents.run_decomposition(decomposition)
+
+      assert_received {:decomposition_updated, %{status: :running}}
+      assert_received {:decomposition_output, id, "## Canary\n"}
+      assert id == decomposition.id
+      assert_received {:decomposition_output, ^id, "- Wire the split"}
+      assert_received {:decomposition_updated, %{status: :succeeded} = finished}
+
+      breakdown = Documents.breakdown_of(source)
+      assert finished.result_document_id == breakdown.id
+      assert finished.error == nil
+
+      # An ordinary document: nobody has vouched for it yet, it is filed with
+      # its source, and its title is built rather than asked for.
+      assert breakdown.status == :draft
+      assert breakdown.project_id == project.id
+
+      breakdown = Documents.get_document!(breakdown.id)
+      assert breakdown.latest_revision.title == "Rollout plan · 任务分解"
+
+      [block] = breakdown.latest_revision.blocks
+      assert block.content == "## Canary\n\n- Wire the split"
+      assert block.actor_id == actor.id
+    end
+
+    # One breakdown at a time, the way a topic holds one live proposal per
+    # block. Two would be two answers with nothing to choose between them.
+    test "refuses while a breakdown already stands" do
+      source = formal_document()
+      run_decomposition(source, "- Something")
+
+      assert {:error, :decomposition_exists, %{document_id: standing}} =
+               Documents.request_decomposition(source)
+
+      assert standing == Documents.breakdown_of(source).id
+    end
+
+    # Which is how a bad breakdown is redone: throw it away, ask again.
+    test "frees the slot when the standing breakdown is archived" do
+      source = formal_document()
+      first = run_decomposition(source, "- Something")
+      assert {:ok, _archived} = Documents.archive_document(first)
+
+      assert Documents.breakdown_of(source) == nil
+      assert {:ok, _second} = Documents.request_decomposition(source)
+    end
+
+    # Naming falls back to the topic's own assistant. This belongs to no topic,
+    # so there is nothing to fall back to and nothing to pick instead.
+    test "refuses when nobody holds the role" do
+      {:ok, _settings} = Settings.put_actor("decomposition_actor", nil)
+      source = formal_document()
+
+      assert {:error, :no_decomposition_actor, %{}} = Documents.request_decomposition(source)
+      refute_enqueued(worker: DecompositionWorker)
+    end
+
+    # A recorded failure is not also a queue failure: there is nothing to retry
+    # that would not ask the same question again.
+    test "writes a failure down and tells everyone watching" do
+      source = formal_document()
+      {:ok, decomposition} = Documents.request_decomposition(source)
+      :ok = Notifier.subscribe(source.id)
+
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, :stalled} end)
+
+      assert :ok = Documents.run_decomposition(decomposition)
+
+      assert_received {:decomposition_updated, %{status: :running}}
+      assert_received {:decomposition_updated, %{status: :failed} = failed}
+      assert failed.error == "the model stopped responding"
+      assert failed.result_document_id == nil
+      assert Documents.breakdown_of(source) == nil
+    end
+
+    # The whole reason the field exists. What shipped first stored
+    # `{:pi_exit, 1}` -- an exit code of a process the reader has never heard
+    # of -- while the sentence that explained it went only to the log.
+    test "records the provider's own words when the model call fails" do
+      source = formal_document()
+      {:ok, decomposition} = Documents.request_decomposition(source)
+
+      expect(WbsGeneratorMock, :generate, fn _input, _opts ->
+        {:error, {:pi_exit, 1, "google: API key not valid. Please pass a valid API key."}}
+      end)
+
+      assert :ok = Documents.run_decomposition(decomposition)
+
+      assert Documents.latest_decomposition(source).error ==
+               "google: API key not valid. Please pass a valid API key."
+    end
+
+    test "says so plainly when the model call fails without explaining itself" do
+      source = formal_document()
+      {:ok, decomposition} = Documents.request_decomposition(source)
+
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, {:pi_exit, 1, ""}} end)
+
+      assert :ok = Documents.run_decomposition(decomposition)
+      assert Documents.latest_decomposition(source).error =~ "exited 1"
+    end
+
+    # An attempt that failed a minute ago is exactly what somebody opening the
+    # page needs to see, so this is not "in flight".
+    test "latest_decomposition/1 answers the most recent attempt, finished or not" do
+      source = formal_document()
+      assert Documents.latest_decomposition(source) == nil
+
+      {:ok, first} = Documents.request_decomposition(source)
+      expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:error, :stalled} end)
+      :ok = Documents.run_decomposition(first)
+
+      assert Documents.latest_decomposition(source).id == first.id
+      assert Documents.latest_decomposition(source).status == :failed
+
+      # A failed attempt holds nothing, so asking again is allowed.
+      assert {:ok, second} = Documents.request_decomposition(source)
+      assert Documents.latest_decomposition(source).id == second.id
+    end
+  end
+
+  # Request and run in one go, for the tests that care about what a finished
+  # decomposition leaves behind rather than about the running of it.
+  defp run_decomposition(source, markdown) do
+    {:ok, attempt} = Documents.request_decomposition(source)
+    expect(WbsGeneratorMock, :generate, fn _input, _opts -> {:ok, markdown} end)
+    :ok = Documents.run_decomposition(attempt)
+    Documents.breakdown_of(source)
+  end
+
+  defp formal_document do
+    {:ok, document} =
+      Documents.create_document(%{
+        title: "Rollout plan",
+        actor_id: insert(:actor).id,
+        markdown: "## Canary\n\nText"
+      })
+
+    {:ok, formal} = Documents.formalize_document(document)
+    formal
   end
 
   defp create_document(project, attrs) do

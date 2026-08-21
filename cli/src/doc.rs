@@ -91,9 +91,9 @@ pub struct ListArgs {
     #[arg(long, value_name = "UUID|none")]
     project_id: Option<String>,
 
-    /// true for scratch documents, false for adopted ones; omit for both
-    #[arg(long, value_name = "BOOL")]
-    fleeting: Option<bool>,
+    /// Only documents in this state; omit for every state
+    #[arg(long, value_name = "draft|formal|applied")]
+    status: Option<String>,
 }
 
 pub fn run(command: DocCommand) -> Result<()> {
@@ -134,7 +134,7 @@ fn create(client: &Client, config: &Config, args: CreateArgs) -> Result<()> {
     // Said every time, because the caller is usually a model about to report
     // what it just did, and "created a document" overstates it: nobody has
     // adopted this yet, and only a person can.
-    println!("created fleeting document {id}");
+    println!("created draft document {id}");
     Ok(())
 }
 
@@ -334,8 +334,11 @@ fn list_query(args: &ListArgs) -> Vec<(&str, &str)> {
         query.push(("project_id", project_id));
     }
 
-    if let Some(fleeting) = args.fleeting {
-        query.push(("fleeting", if fleeting { "true" } else { "false" }));
+    // Passed through as written. Which states exist is the server's to say, so
+    // a value this binary does not recognise earns a 400 rather than a guess
+    // from a copy of the list that would drift.
+    if let Some(status) = args.status.as_deref() {
+        query.push(("status", status));
     }
 
     query
@@ -359,12 +362,11 @@ fn list(client: &Client, args: ListArgs) -> Result<()> {
             .and_then(Value::as_str)
             .unwrap_or("(untitled)");
 
-        // The adopted ones carry the mark. Everything is created fleeting, so
-        // marking those would mark almost every row and say nothing.
-        if document.get("fleeting").and_then(Value::as_bool) == Some(false) {
-            println!("{id}  {title}  (formal)");
-        } else {
-            println!("{id}  {title}");
+        // Anything past draft carries its state. Everything is created draft,
+        // so marking those would mark almost every row and say nothing.
+        match document.get("status").and_then(Value::as_str) {
+            Some("draft") | None => println!("{id}  {title}"),
+            Some(status) => println!("{id}  {title}  ({status})"),
         }
     }
 
@@ -396,30 +398,40 @@ mod tests {
     use super::{list_query, scope, ListArgs, ProposeArgs};
     use std::path::PathBuf;
 
-    fn list_args(project_id: Option<&str>, fleeting: Option<bool>) -> ListArgs {
+    fn list_args(project_id: Option<&str>, status: Option<&str>) -> ListArgs {
         ListArgs {
             project_id: project_id.map(str::to_string),
-            fleeting,
+            status: status.map(str::to_string),
         }
     }
 
-    // Absent means "both kinds", not "the adopted ones" -- a scratch document
-    // somebody is looking for has to be findable without knowing to ask.
+    // Absent means "every state", not "the adopted ones" -- a draft somebody is
+    // looking for has to be findable without knowing to ask.
     #[test]
     fn an_omitted_filter_is_not_sent_at_all() {
         assert_eq!(list_query(&list_args(None, None)), vec![]);
     }
 
     #[test]
-    fn list_passes_the_project_and_fleeting_filters_using_the_api_names() {
+    fn list_passes_the_project_and_status_filters_using_the_api_names() {
         assert_eq!(
-            list_query(&list_args(Some("project-1"), Some(true))),
-            vec![("project_id", "project-1"), ("fleeting", "true")]
+            list_query(&list_args(Some("project-1"), Some("draft"))),
+            vec![("project_id", "project-1"), ("status", "draft")]
         );
 
         assert_eq!(
-            list_query(&list_args(None, Some(false))),
-            vec![("fleeting", "false")]
+            list_query(&list_args(None, Some("applied"))),
+            vec![("status", "applied")]
+        );
+    }
+
+    // The server owns the set of states, so an unknown one travels and comes
+    // back as a 400 rather than being second-guessed here.
+    #[test]
+    fn an_unrecognised_status_is_still_sent() {
+        assert_eq!(
+            list_query(&list_args(None, Some("maybe"))),
+            vec![("status", "maybe")]
         );
     }
 

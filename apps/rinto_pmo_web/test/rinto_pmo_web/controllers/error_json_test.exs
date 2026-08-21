@@ -74,6 +74,20 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {422, "The task estimate is invalid.", %{field: "likely", reason: "must be ordered"}},
     task_not_splittable:
       {422, "The task cannot be split in its current state.", %{current_status: "done"}},
+    document_not_formal:
+      {422, "The document has to be adopted, and not already used, for this.", %{status: "draft"}},
+    decomposition_exists:
+      {422, "The document already has a breakdown. Archive it to make another.",
+       %{document_id: "019f-breakdown"}},
+    no_decomposition_actor:
+      {422,
+       "No actor holds the decomposition role. Set one with `PUT /settings/decomposition_actor`.",
+       %{}},
+    decomposition_in_flight:
+      {409, "The document is already being broken down.", %{document_id: "019f-source"}},
+    no_chunks: {422, "The document has no headings, so there is no work in it to file.", %{}},
+    task_before_chunk:
+      {422, "A task heading stands above the first chunk heading, so it belongs to nothing.", %{}},
     corrupt_image: {422, "The image header could not be read.", %{}},
     internal_server_error: {500, "An internal server error occurred.", %{}},
     agent_unavailable:

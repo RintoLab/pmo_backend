@@ -26,10 +26,11 @@ config :rinto_pmo,
     # Each layer of pi model discovery, so a test of one mocks the next.
     rpc: RintoPMO.Agent.Rpc,
     os_process: RintoPMO.OSProcess,
-    # Naming a topic is the one place a model is called outside a conversation,
-    # so it is swappable on its own: everything around it -- eligibility, the
-    # fallback, the conditional write -- is testable without a model.
-    title_generator: RintoPMO.Agent.TitleGenerator
+    # The model calls made outside a conversation, each swappable on its own so
+    # that everything around them -- eligibility, fallbacks, conditional writes
+    # -- is testable without a model.
+    title_generator: RintoPMO.Agent.TitleGenerator,
+    wbs_generator: RintoPMO.Agent.WbsGenerator
   ]
 
 config :rinto_pmo, RintoPMO.Attachments,
@@ -74,6 +75,23 @@ config :rinto_pmo, RintoPMO.Agent.TitleGenerator,
   # Wall clock for the whole call. Nothing waits on it, but a naming job should
   # not hold a queue slot for a provider that has stopped answering.
   timeout: 20_000
+
+config :rinto_pmo, RintoPMO.Agent.WbsGenerator,
+  # Which model breaks documents down is *not* configured here either: it is
+  # whichever actor holds the `decomposition_actor` role -- see
+  # `RintoPMO.Settings` and `PUT /settings/decomposition_actor`.
+  #
+  # How long the call may produce **nothing** before it is treated as dead.
+  # There is no budget for the call as a whole, deliberately: what decides how
+  # long a breakdown takes is how much work the document implies, and cutting a
+  # model off mid-answer throws away everything it has done. A model still
+  # producing output is still working. See `RintoPMO.Agent.WbsGenerator`.
+  #
+  # The number has to clear the longest silence in a *healthy* call, which is
+  # the wait before the first token. Three real design documents ran 98s to
+  # 120s end to end when this was measured, so three minutes of complete
+  # silence is well past anything a working call does.
+  idle_timeout: 180_000
 
 config :rinto_pmo, RintoPMO.Agent.PromptBuilder,
   # Characters of block content inlined per referenced document before the rest

@@ -668,11 +668,15 @@ defmodule RintoPMO.Agent.PromptBuilder do
     end
   end
 
-  # The adopted ones are what get marked, not the fleeting ones. Every document
-  # starts fleeting, so a mark on those would sit on nearly every row and stop
-  # carrying information; what is worth the characters is that somebody has since
-  # signed off on this one.
-  defp document_row(%Document{fleeting: false} = document) do
+  # The adopted ones are what get marked, not the drafts. Every document starts
+  # `:draft`, so a mark on those would sit on nearly every row and stop carrying
+  # information; what is worth the characters is that somebody has since signed
+  # off on this one.
+  #
+  # `:applied` is marked too. It is past formal rather than short of it -- a
+  # document consumed downstream is one somebody signed off on and then built
+  # on, and the mark answers "may I lean on this", which is still yes.
+  defp document_row(%Document{status: status} = document) when status in [:formal, :applied] do
     "- #{document.id} #{document_title(document)} (formal)"
   end
 

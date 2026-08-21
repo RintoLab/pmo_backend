@@ -2,6 +2,7 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
   use RintoPMOWeb.ConnCase, async: true
 
   alias RintoPMO.DocumentsMock
+  alias RintoPMO.TasksMock
 
   test "GET /api/v1/documents lists all document summaries", %{conn: conn} do
     document = document_with_revision()
@@ -15,7 +16,7 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
 
     assert [data] = json_response(conn, 200)["data"]
     assert data["id"] == document.id
-    assert data["fleeting"] == true
+    assert data["status"] == "draft"
     assert data["latest_revision"]["title"] == "Plan"
     refute Map.has_key?(data["latest_revision"], "blocks")
   end
@@ -39,32 +40,32 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
     assert json_response(conn, 200)["data"] == []
   end
 
-  test "GET /api/v1/documents filters on fleeting, alongside the project", %{conn: conn} do
+  test "GET /api/v1/documents filters on status, alongside the project", %{conn: conn} do
     project = insert(:project)
 
     expect(DocumentsMock, :list_documents, fn filter ->
-      assert filter == %{project: project.id, fleeting: true}
+      assert filter == %{project: project.id, status: :draft}
       []
     end)
 
-    conn = get(conn, ~p"/api/v1/documents?project_id=#{project.id}&fleeting=true")
+    conn = get(conn, ~p"/api/v1/documents?project_id=#{project.id}&status=draft")
     assert json_response(conn, 200)["data"] == []
 
     expect(DocumentsMock, :list_documents, fn filter ->
-      assert filter == %{fleeting: false}
+      assert filter == %{status: :applied}
       []
     end)
 
-    conn = get(conn, ~p"/api/v1/documents?fleeting=false")
+    conn = get(conn, ~p"/api/v1/documents?status=applied")
     assert json_response(conn, 200)["data"] == []
   end
 
-  test "GET /api/v1/documents rejects a fleeting filter that is not a boolean", %{conn: conn} do
-    conn = get(conn, ~p"/api/v1/documents?fleeting=maybe")
+  test "GET /api/v1/documents rejects a status outside the set", %{conn: conn} do
+    conn = get(conn, ~p"/api/v1/documents?status=maybe")
 
     assert %{
              "error" => "bad_request",
-             "details" => %{"fleeting" => ["is invalid"]}
+             "details" => %{"status" => ["is invalid"]}
            } = json_response(conn, 400)
   end
 
@@ -152,21 +153,21 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
              json_response(conn, 400)
   end
 
-  test "POST /api/v1/documents/:id/formalize adopts a fleeting document", %{conn: conn} do
+  test "POST /api/v1/documents/:id/formalize adopts a draft document", %{conn: conn} do
     document = document_with_revision()
-    fleeting = %{document | fleeting: true}
-    formal = %{document | fleeting: false}
+    draft = %{document | status: :draft}
+    formal = %{document | status: :formal}
 
     expect(DocumentsMock, :get_document!, fn id ->
       assert id == document.id
-      fleeting
+      draft
     end)
 
-    expect(DocumentsMock, :formalize_document, fn ^fleeting -> {:ok, formal} end)
+    expect(DocumentsMock, :formalize_document, fn ^draft -> {:ok, formal} end)
 
     conn = post(conn, ~p"/api/v1/documents/#{document.id}/formalize")
 
-    assert json_response(conn, 200)["data"]["fleeting"] == false
+    assert json_response(conn, 200)["data"]["status"] == "formal"
   end
 
   test "DELETE /api/v1/documents/:id archives idempotently", %{conn: conn} do
@@ -183,6 +184,94 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
     conn = delete(conn, ~p"/api/v1/documents/#{document.id}")
 
     assert response(conn, 204) == ""
+  end
+
+  # 202 and the attempt, not 200 and the breakdown: the model call runs in a
+  # job, and what a client does next is watch `document:{id}` on the socket.
+  test "POST /api/v1/documents/:id/decompose answers with the queued attempt", %{conn: conn} do
+    document = document_with_revision()
+    attempt = decomposition(document)
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+    expect(DocumentsMock, :request_decomposition, fn ^document -> {:ok, attempt} end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/decompose")
+
+    assert %{"id" => id, "status" => "pending", "result_document_id" => nil} =
+             json_response(conn, 202)["data"]
+
+    assert id == attempt.id
+  end
+
+  # Told no while they are still looking at the button.
+  test "POST /api/v1/documents/:id/decompose relays a refusal", %{conn: conn} do
+    document = document_with_revision()
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+    expect(DocumentsMock, :request_decomposition, fn ^document ->
+      {:error, :document_not_formal, %{status: :draft}}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/decompose")
+
+    assert %{"error" => "document_not_formal"} = json_response(conn, 422)
+  end
+
+  test "GET /api/v1/documents/:id/decomposition answers null when there was none", %{conn: conn} do
+    document = document_with_revision()
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+    expect(DocumentsMock, :latest_decomposition, fn ^document -> nil end)
+
+    conn = get(conn, ~p"/api/v1/documents/#{document.id}/decomposition")
+
+    assert json_response(conn, 200)["data"] == nil
+  end
+
+  test "GET /api/v1/documents/:id/decomposition carries the failure reason", %{conn: conn} do
+    document = document_with_revision()
+    attempt = %{decomposition(document) | status: :failed, error: "decomposition_failed: timeout"}
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+    expect(DocumentsMock, :latest_decomposition, fn ^document -> attempt end)
+
+    conn = get(conn, ~p"/api/v1/documents/#{document.id}/decomposition")
+
+    assert %{"status" => "failed", "error" => "decomposition_failed: timeout"} =
+             json_response(conn, 200)["data"]
+  end
+
+  # 201 and every task created, flat with `parent_id` on each -- the same shape
+  # the project's task list gives, so a client builds the tree the way it does.
+  test "POST /api/v1/documents/:id/file_breakdown answers with what it made", %{conn: conn} do
+    document = document_with_revision()
+    summary = insert(:task, kind: :summary, title: "灰度发布")
+    child = insert(:task, title: "接入十分之一流量", parent_id: summary.id)
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+    expect(TasksMock, :file_breakdown, fn ^document -> {:ok, [summary, child]} end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/file_breakdown")
+
+    assert [first, second] = json_response(conn, 201)["data"]
+    assert first["title"] == "灰度发布"
+    assert first["kind"] == "summary"
+    assert second["parent_id"] == summary.id
+  end
+
+  test "POST /api/v1/documents/:id/file_breakdown relays a refusal", %{conn: conn} do
+    document = document_with_revision()
+
+    expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+    expect(TasksMock, :file_breakdown, fn ^document ->
+      {:error, :document_not_formal, %{status: :applied}}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/file_breakdown")
+
+    assert %{"error" => "document_not_formal"} = json_response(conn, 422)
   end
 
   # The rest of this file mocks the context to test the controller alone. These
@@ -249,5 +338,17 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
     document = insert(:document)
     revision = insert(:document_revision, document: document, title: "Plan")
     %{document | latest_revision: %{revision | blocks: []}}
+  end
+
+  # Built rather than inserted: these tests are about what the controller does
+  # with what the context hands it.
+  defp decomposition(document) do
+    build(:document_decomposition,
+      id: UUIDv7.generate(),
+      source_document: nil,
+      source_document_id: document.id,
+      inserted_at: DateTime.utc_now(),
+      updated_at: DateTime.utc_now()
+    )
   end
 end

@@ -1,6 +1,7 @@
 defmodule RintoPMOWeb.PiSocket do
   @moduledoc """
-  WebSocket carrying `RintoPMOWeb.ConversationChannel`.
+  WebSocket carrying `RintoPMOWeb.ConversationChannel` and
+  `RintoPMOWeb.DocumentChannel`.
 
   ## Authentication
 
@@ -30,6 +31,7 @@ defmodule RintoPMOWeb.PiSocket do
   alias RintoPMO.Actors
 
   channel "conversation:*", RintoPMOWeb.ConversationChannel
+  channel "document:*", RintoPMOWeb.DocumentChannel
 
   @impl true
   def connect(params, socket, _connect_info) do

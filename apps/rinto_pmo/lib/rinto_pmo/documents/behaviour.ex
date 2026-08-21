@@ -2,12 +2,13 @@ defmodule RintoPMO.Documents.Behaviour do
   @moduledoc false
 
   alias RintoPMO.Documents.BlockProposal
+  alias RintoPMO.Documents.Decomposition
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
 
   @type filter :: %{
           optional(:project) => :unassigned | UUIDv7.t(),
-          optional(:fleeting) => boolean()
+          optional(:status) => Document.status()
         }
 
   @type proposal_filter :: %{
@@ -99,4 +100,14 @@ defmodule RintoPMO.Documents.Behaviour do
               {:ok, DocumentRevision.t()}
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
+  @callback breakdown_of(Document.t()) :: Document.t() | nil
+  @callback apply_document(Document.t()) ::
+              {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
+  @callback source_of(Document.t()) :: Document.t() | nil
+  @callback request_decomposition(Document.t()) ::
+              {:ok, Decomposition.t()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
+  @callback run_decomposition(Decomposition.t()) :: :ok | {:error, term()}
+  @callback latest_decomposition(Document.t()) :: Decomposition.t() | nil
 end

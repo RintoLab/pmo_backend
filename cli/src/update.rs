@@ -69,14 +69,41 @@ pub fn run(args: UpdateArgs) -> Result<()> {
     let url = package_file_url(&latest.to_string(), &asset.name);
     let binary = download(&url, asset.size)?;
     verify_sha256(&binary, &asset.sha256)?;
-    install(&binary)?;
+    let executable = install(&binary)?;
 
     if refresh {
         println!("refreshed rinto-pmo {current}");
     } else {
         println!("updated rinto-pmo from {current} to {latest}");
     }
+
+    sync_skills(&executable);
     Ok(())
+}
+
+/// Re-install the skills this machine already had, from the binary just written.
+///
+/// Has to be a child process rather than a call into `skill::sync`: the skills
+/// are compiled in, so this process is still carrying the *old* ones -- writing
+/// them out here would leave a fresh binary paired with its predecessor's
+/// skills, which is the drift `include_str!` exists to prevent.
+///
+/// Never fails the update. The new CLI is installed and working by this point,
+/// and a machine with a current binary and a stale skill is a worse thing to
+/// report as a failed update than to report as what it is.
+fn sync_skills(executable: &Path) {
+    let outcome = std::process::Command::new(executable)
+        .args(["skill", "sync"])
+        .status();
+
+    let complaint = match outcome {
+        Ok(status) if status.success() => return,
+        Ok(status) => format!("`skill sync` exited with {status}"),
+        Err(err) => format!("could not run `skill sync`: {err}"),
+    };
+
+    eprintln!("the CLI updated, but its skills did not: {complaint}");
+    eprintln!("re-run: {} skill sync", executable.display());
 }
 
 fn package_file_url(version: &str, name: &str) -> String {
@@ -237,7 +264,7 @@ fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
 
 // Kept local so the updater's integrity check does not add a dependency to the
 // binary whose dependency graph it is protecting.
-fn sha256_hex(bytes: &[u8]) -> String {
+pub fn sha256_hex(bytes: &[u8]) -> String {
     const INITIAL: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
@@ -311,10 +338,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hash.iter().map(|word| format!("{word:08x}")).collect()
 }
 
-fn install(binary: &[u8]) -> Result<()> {
+fn install(binary: &[u8]) -> Result<PathBuf> {
     let executable = std::env::current_exe()
         .map_err(|err| Error::Io(format!("could not locate the running executable: {err}")))?;
-    install_at(&executable, binary)
+    install_at(&executable, binary)?;
+    Ok(executable)
 }
 
 fn install_at(executable: &Path, binary: &[u8]) -> Result<()> {

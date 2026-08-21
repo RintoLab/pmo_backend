@@ -240,15 +240,19 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
     end
 
     # The index is where the agent picks what to read and cite, so it is the one
-    # place the distinction has to survive. Fleeting is the unremarkable state
+    # place the distinction has to survive. Draft is the unremarkable state
     # and stays unmarked; having been adopted is the part worth saying.
-    test "marks an adopted document in the index, leaving fleeting ones plain" do
+    #
+    # An applied document is marked too: it is past formal rather than short of
+    # it, and the mark answers "may I lean on this", which is still yes.
+    test "marks adopted documents in the index, leaving drafts plain" do
       project = insert(:project)
-      scratch = %{document_with_blocks(["Content"], "Notes") | fleeting: true}
-      adopted = %{document_with_blocks(["Content"], "Charter") | fleeting: false}
+      scratch = %{document_with_blocks(["Content"], "Notes") | status: :draft}
+      adopted = %{document_with_blocks(["Content"], "Charter") | status: :formal}
+      consumed = %{document_with_blocks(["Content"], "Breakdown") | status: :applied}
 
       expect(ProjectsMock, :get_project_by_slug!, fn _slug -> project end)
-      expect(DocumentsMock, :list_documents, fn _filter -> [scratch, adopted] end)
+      expect(DocumentsMock, :list_documents, fn _filter -> [scratch, adopted, consumed] end)
 
       assert {:ok, %{message: message}} =
                PromptBuilder.build("what is this?", [
@@ -257,6 +261,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
 
       assert message =~ "- #{scratch.id} Notes\n"
       assert message =~ "- #{adopted.id} Charter (formal)"
+      assert message =~ "- #{consumed.id} Breakdown (formal)"
     end
 
     test "says so plainly when a project has no documents" do

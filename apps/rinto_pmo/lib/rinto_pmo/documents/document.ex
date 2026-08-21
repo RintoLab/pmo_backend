@@ -3,27 +3,49 @@ defmodule RintoPMO.Documents.Document do
   The stable identity of a document.
 
   Mutable document content and titles live in immutable revisions. Documents
-  only carry optional project ownership, their archive lifecycle, and whether
-  they are still fleeting.
+  only carry optional project ownership, their archive lifecycle, and how far
+  along their status is.
 
-  ## Fleeting
+  ## Status
 
-  Every document starts fleeting. Writing something down is not the same as
-  vouching for it, and the flag records only that nobody has vouched yet -- the
-  document itself is ordinary, with a real revision history from its first
+  The question `status` answers is **whether anything downstream may still
+  consume this document**:
+
+    * `:draft` -- nobody has vouched for it yet, so nothing may
+    * `:formal` -- somebody has, so the things that consume documents may
+    * `:applied` -- already consumed once, and once is all there is
+
+  Every document starts `:draft`. Writing something down is not the same as
+  vouching for it, and the state records only that nobody has vouched yet --
+  the document itself is ordinary, with a real revision history from its first
   revision on.
 
-  `creation_changeset/2` cannot set the flag, deliberately: it is not cast, so a
-  caller that supplies it is simply not heard, the same way an author cannot name
-  who a block is credited to. Adoption is a person looking at a document and
+  `:formal` is a **finished state, not a waiting room.** Most documents never go
+  further, because most documents are not there to be turned into anything else.
+  Nothing should count formal documents as outstanding work or nag about them.
+
+  `creation_changeset/2` cannot set the status, deliberately: it is not cast, so
+  a caller that supplies it is simply not heard, the same way an author cannot
+  name who a block is credited to. Adoption is a person looking at a document and
   deciding it counts, and a caller able to declare its own work adopted would be
   declaring the review never needed to happen.
 
-  `formalize_changeset/1` is the only thing that clears it, and nothing sets it
-  back. Once a document is adopted, other work starts leaning on it; letting it
+  Every step is one-way, and each has exactly one changeset that walks it.
+  Once a document is adopted, other work starts leaning on it; letting it
   quietly become a scratch note again would pull the ground out from under that.
   Something not worth keeping gets archived instead, which is what archiving is
   for.
+
+  Nothing here reaches `:applied` yet. Filing a task document as a work
+  breakdown is what will move it, and that is not built; the value exists now so
+  that the states are whole and the migration happens once.
+
+  ## Archiving is a different question
+
+  `archived_at` is not a status. A document in any of these states can be
+  archived, and an archived `:formal` document is still one somebody vouched
+  for -- it is just not in use. Folding the two together would lose that
+  distinction and the time it happened.
   """
 
   use RintoPMO, :schema
@@ -34,10 +56,13 @@ defmodule RintoPMO.Documents.Document do
   alias RintoPMO.Projects.Project
 
   @type t :: %__MODULE__{}
+  @type status :: :draft | :formal | :applied
+
+  @statuses [:draft, :formal, :applied]
 
   schema "documents" do
     field :archived_at, :utc_datetime_usec
-    field :fleeting, :boolean, default: true
+    field :status, Ecto.Enum, values: @statuses, default: :draft
     field :latest_revision, :any, virtual: true
 
     belongs_to :project, Project
@@ -47,6 +72,12 @@ defmodule RintoPMO.Documents.Document do
 
     timestamps()
   end
+
+  @doc """
+  The statuses a document can hold.
+  """
+  @spec statuses() :: [status()]
+  def statuses, do: @statuses
 
   @doc false
   def creation_changeset(%__MODULE__{} = document, attrs) do
@@ -64,7 +95,35 @@ defmodule RintoPMO.Documents.Document do
   def archive_changeset(%__MODULE__{} = document), do: change(document)
 
   @doc false
-  def formalize_changeset(%__MODULE__{} = document), do: change(document, fleeting: false)
+  def formalize_changeset(%__MODULE__{status: :draft} = document),
+    do: change(document, status: :formal)
+
+  # Already adopted is not an error: the caller asked for a state the document
+  # is in, and saying so twice changes nothing. This is the same answer
+  # `archive_changeset/1` gives.
+  def formalize_changeset(%__MODULE__{status: :formal} = document), do: change(document)
+
+  # Already consumed is a different matter. There is no way back along this
+  # axis, and quietly reporting success would tell the caller a document is
+  # available to be consumed again when it is not.
+  def formalize_changeset(%__MODULE__{status: :applied} = document) do
+    document
+    |> change()
+    |> add_error(:status, "an applied document cannot go back to formal")
+  end
+
+  @doc false
+  def apply_changeset(%__MODULE__{status: :formal} = document),
+    do: change(document, status: :applied)
+
+  # Not idempotent, unlike adopting. Filing a breakdown twice is two work
+  # breakdowns from one document, and answering the second call with success
+  # would say the second one did not happen when it is exactly what did.
+  def apply_changeset(%__MODULE__{status: status} = document) do
+    document
+    |> change()
+    |> add_error(:status, "a #{status} document cannot be filed as a work breakdown")
+  end
 
   defp nest_initial_revision(attrs) when is_map(attrs) do
     attrs = stringify_keys(attrs)

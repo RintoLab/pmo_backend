@@ -55,8 +55,15 @@ defmodule RintoPMO.Tasks do
 
   alias Ecto.Changeset
   alias RintoPMO.Actors.Actor
+  alias RintoPMO.Documents.Document
   alias RintoPMO.Projects.Project
+  alias RintoPMO.Tasks.Breakdown
   alias RintoPMO.Tasks.Task
+  alias RintoPMO.Utils
+
+  # The one context this one reads: filing a breakdown consumes a document and
+  # asks it which design it came from.
+  defp documents, do: Utils.module(:documents)
 
   # A parent chain deeper than this is a corrupt tree, not a breakdown. The
   # bound exists so a cycle written by some future path fails loudly here
@@ -127,6 +134,9 @@ defmodule RintoPMO.Tasks do
 
     @callback split_task(Task.t(), [map()]) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
+
+    @callback file_breakdown(RintoPMO.Documents.Document.t()) ::
+                {:ok, [Task.t()]} | {:error, Ecto.Changeset.t()} | refusal()
 
     @callback delete_task(Task.t()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
@@ -338,6 +348,139 @@ defmodule RintoPMO.Tasks do
       |> Task.transition_changeset(event)
       |> Repo.update()
     end
+  end
+
+  @doc """
+  Files a task document as this project's work breakdown.
+
+  The other end of `RintoPMO.Documents.decompose_document/1`: that turned a
+  plan into a document somebody could read and argue with, and this turns the
+  document they settled on into the work itself. Between the two sits the only
+  gate that matters -- somebody adopted it.
+
+  ## What it makes
+
+  A chunk with tasks under it becomes a summary covering them; a chunk with
+  none becomes one piece of work. Nothing else is read out of the document:
+  no estimates, because how long something takes is decided by whoever is
+  going to do it, and no ordering beyond the order they were written in, which
+  is the order they come back in.
+
+  Every task points at the **source** document rather than at the breakdown --
+  `document_id` is the spec somebody implements against, and that is the design
+  that was broken down, not the list of work it produced. A breakdown written
+  by hand has no source, and its tasks point at nothing, which is allowed.
+
+  ## Once, and all of it
+
+  The document has to be `:formal` and comes out `:applied`, so a second call
+  is refused rather than filing the same breakdown twice. Tasks and that
+  transition are one transaction: either the work exists and the document is
+  spent, or neither happened and the document is still there to fix and file.
+
+  Changing what got filed is not this function's business and never becomes
+  it. Editing the document afterwards changes nothing here, deliberately --
+  see `docs/implementation-plan-task-decomposition.md`. Work that turns out to
+  be wrong is cancelled; work that is missing comes from breaking down another
+  document.
+  """
+  @impl true
+  def file_breakdown(%Document{} = breakdown) do
+    with {:ok, chunks} <- read_breakdown(breakdown) do
+      chunks
+      |> file(breakdown, documents().source_of(breakdown))
+      |> unwrap_refusal()
+    end
+  end
+
+  # The work and the document's last state move together or not at all.
+  defp file(chunks, %Document{} = breakdown, spec) do
+    Repo.transact(fn repo ->
+      with {:ok, filed} <- insert_chunks(chunks, breakdown, spec, repo),
+           {:ok, _applied} <- documents().apply_document(breakdown) do
+        {:ok, filed}
+      end
+    end)
+  end
+
+  # Refused here as well as by `apply_document/1` inside the transaction. The
+  # one inside is the guarantee; this one is so that a person who clicked the
+  # wrong button is told which document and what state, rather than getting a
+  # changeset error about a field they never sent.
+  defp read_breakdown(%Document{status: :formal} = breakdown) do
+    breakdown.id
+    |> documents().get_document!()
+    |> Map.fetch!(:latest_revision)
+    |> Map.fetch!(:blocks)
+    |> Breakdown.parse()
+  end
+
+  defp read_breakdown(%Document{status: status}) do
+    {:error, :document_not_formal, %{status: status}}
+  end
+
+  # Answered flat, in the order things were written, with `parent_id` on every
+  # row -- the same shape `list_tasks/2` gives and for the same reason: a
+  # caller that wants the tree builds it once, and one that wants a queue is
+  # not made to unpick a tree first.
+  defp insert_chunks(chunks, %Document{} = breakdown, spec, repo) do
+    chunks
+    |> Enum.reduce_while({:ok, []}, fn chunk, {:ok, filed} ->
+      case insert_chunk(chunk, breakdown, spec, repo) do
+        {:ok, created} -> {:cont, {:ok, Enum.reverse(created) ++ filed}}
+        {:error, chset} -> {:halt, {:error, {:validation_error, chunk_errors(chunk, chset)}}}
+        {:error, code, details} -> {:halt, {:error, {code, details}}}
+      end
+    end)
+    |> case do
+      {:ok, filed} -> {:ok, Enum.reverse(filed)}
+      error -> error
+    end
+  end
+
+  # A chunk nobody broke down further is one job, not a cover over one job.
+  # Writing it as a `##` with no `###` is how the document says so.
+  defp insert_chunk(%{tasks: []} = chunk, breakdown, spec, repo) do
+    with {:ok, task} <- insert_node(chunk, :work, breakdown, spec, repo), do: {:ok, [task]}
+  end
+
+  defp insert_chunk(chunk, breakdown, spec, repo) do
+    with {:ok, summary} <- insert_node(chunk, :summary, breakdown, spec, repo) do
+      insert_tasks(chunk.tasks, summary, breakdown, spec, repo)
+    end
+  end
+
+  # The summary leads the list it covers, so what comes back reads in document
+  # order whether or not a chunk had tasks under it.
+  defp insert_tasks(tasks, summary, breakdown, spec, repo) do
+    tasks
+    |> Enum.reduce_while({:ok, [summary]}, fn task, {:ok, created} ->
+      case insert_node(task, :work, breakdown, spec, repo, summary) do
+        {:ok, child} -> {:cont, {:ok, [child | created]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, created} -> {:ok, Enum.reverse(created)}
+      error -> error
+    end
+  end
+
+  defp insert_node(node, kind, %Document{} = breakdown, spec, repo, parent \\ nil) do
+    %Task{project_id: breakdown.project_id, parent_id: parent && parent.id}
+    |> Task.creation_changeset(%{
+      kind: kind,
+      title: node.title,
+      description: node.description,
+      document_id: spec && spec.id
+    })
+    |> repo.insert()
+  end
+
+  # Which heading failed, said the way the document says it. An index into a
+  # list nobody wrote as a list would send somebody counting blocks.
+  defp chunk_errors(chunk, chset) do
+    %{"chunk" => chunk.title, "errors" => Changeset.traverse_errors(chset, &elem(&1, 0))}
   end
 
   @doc """
