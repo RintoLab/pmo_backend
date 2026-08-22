@@ -46,6 +46,11 @@ defmodule RintoPMOWeb.Router do
     # The split happens here, so this is where an author checks it.
     post "/documents/preview_blocks", DocumentController, :preview_blocks
 
+    # What the `rinto://` links in a body point at: titles to preview, and
+    # whether the target is still there. A POST for the same reason
+    # `preview_blocks` is one -- a read whose input does not fit in a URL.
+    post "/references/resolve", ReferenceController, :resolve
+
     # Adopting a scratch document as a formal one. A person's action, so it has
     # no counterpart in the agent CLI.
     post "/documents/:id/formalize", DocumentController, :formalize

@@ -74,6 +74,13 @@ tags:
       settable field.
   - name: Repo Credentials
     description: Reusable HTTPS username and token credentials.
+  - name: References
+    description: >
+      The `rinto://` addressing scheme: how a body of text points at anything
+      else in this system. A reference is written into the text as an ordinary
+      Markdown link whose destination is `rinto://{type}/{key}`, so it survives
+      a model rewriting the block that carries it -- there is no sidecar array
+      the way a chat message has one.
   - name: Attachments
     description: >
       Uploaded images, referenced from AI chat messages. Validated once at
@@ -640,6 +647,58 @@ paths:
                 $ref: "#/components/schemas/DocumentResponse"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /references/resolve:
+    post:
+      tags: [References]
+      operationId: resolveReferences
+      summary: Resolve rinto:// URIs into what they point at
+      description: >-
+        Answers what each `rinto://` URI in a body points at: a title to preview,
+        and whether the target is still there. A client holds the body, so it can
+        find its own outbound references without asking -- what it cannot do is
+        say what is at them.
+
+
+        A POST because the input is a list of URIs containing slashes: a body with
+        thirty references would need every one escaped into a query string long
+        enough to be refused. Nothing is stored, the same as
+        `POST /documents/preview_blocks`.
+
+
+        Results come back in the order asked, and a URI repeated in the request is
+        repeated in the response -- a client lines these up against the occurrences
+        in the text, and a collapsed list would misalign them.
+
+
+        No URLs are returned, deliberately. A result names a type and identifiers;
+        where those live in a client is the client's decision. Returning paths would
+        bind bodies stored in the database to a web application's routing, which is
+        the coupling `rinto://` exists to avoid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveReferencesInput"
+      responses:
+        "200":
+          description: One result per URI asked about, in order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveReferencesResponse"
+        "400":
+          description: "`uris` is missing or is not a list of strings"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          description: More references than one request carries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /documents/preview_blocks:
     post:
       tags: [Documents]
@@ -3077,6 +3136,99 @@ components:
             document, so formatting is normalised. Use
             `POST /documents/preview_blocks` to see the split before creating anything.
       additionalProperties: false
+    ResolveReferencesInput:
+      type: object
+      required: [uris]
+      properties:
+        uris:
+          type: array
+          description: >
+            The `rinto://` URIs to resolve. Anything that is not one still gets a
+            result, with `state: invalid` -- one mistyped reference in a long body
+            must not take the other links down with it.
+          items:
+            type: string
+            example: "rinto://task/01936f2a-1c4e-7c3a-9f1b-2d4e6a8b0c1d"
+    ResolveReferencesResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResolvedReference"
+    ResolvedReference:
+      type: object
+      required: [uri, type, state, archived]
+      properties:
+        uri:
+          type: string
+          description: The URI asked about, echoed back so results need no positional bookkeeping.
+        type:
+          type: string
+          nullable: true
+          description: >
+            The addressed type, or `null` when the URI did not parse. One of
+            `project`, `document`, `block`, `annotation`, `proposal`, `task`,
+            `conversation`, `attachment` -- or a type this build does not know,
+            which is reported rather than refused.
+          example: task
+        state:
+          type: string
+          enum: [ok, broken, unknown_type, invalid]
+          description: >
+            `ok` -- resolved and present.
+
+
+            `broken` -- a known type, correctly addressed, that is not there any
+            more. Render the link degraded. This is the only state that should say
+            something was deleted.
+
+
+            `unknown_type` -- well-formed, naming a type this build has no notion
+            of. Render as plain text and say nothing: the address may well be good,
+            and text mentioning a kind of thing that does not exist yet still saves.
+
+
+            `invalid` -- not a well-formed `rinto://` URI at all. Render as plain
+            text; the address was never good, which is a different thing to fix.
+        title:
+          type: string
+          nullable: true
+          description: The target's name. For a block, its heading.
+        subtitle:
+          type: string
+          nullable: true
+          description: >
+            A one-line qualifier for a preview -- a status, a document title, a
+            mime type. Absent for a conversation, which gives up only its title.
+        excerpt:
+          type: string
+          nullable: true
+          description: >
+            The opening of the target's body, truncated. Enough to tell two similar
+            things apart in a hover card, never a substitute for opening the thing.
+            Always absent for a conversation: a topic is a transcript, and half of
+            one shown as a preview reads as a conclusion.
+        document_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The document a block, annotation, or proposal sits in. Present because
+            following one of those means opening that document -- a fact about the
+            resources, not a route -- and a client should not need a second call to
+            learn which document it is.
+        document_title:
+          type: string
+          nullable: true
+          description: The title of that document.
+        archived:
+          type: boolean
+          description: >
+            Whether the target, or the document carrying it, has been archived.
+            Archiving is not deleting: the body is still there, so this stays
+            `state: ok`. Render it muted rather than broken.
     DocumentPreviewBlocksInput:
       type: object
       required: [markdown]

@@ -31,8 +31,22 @@ config :rinto_pmo,
     # -- is testable without a model.
     title_generator: RintoPMO.Agent.TitleGenerator,
     wbs_generator: RintoPMO.Agent.WbsGenerator,
-    task_estimator: RintoPMO.Agent.TaskEstimator
+    task_estimator: RintoPMO.Agent.TaskEstimator,
+    # Reading what a `rinto://` reference points at. Only the read side is
+    # injected: parsing a reference is pure and belongs to every write path,
+    # and mocking it would let a document test lie about what it stored.
+    reference_resolver: RintoPMO.References.Resolver
   ]
+
+config :rinto_pmo, RintoPMO.References.Resolver,
+  # References resolved in one request. A body carries as many as its author
+  # wrote, so the ceiling is on the request rather than on the document -- a
+  # client rendering a long page is expected to ask in batches.
+  max_references: 200,
+  # Characters of a target's body carried back for a preview. Enough to tell
+  # two similar things apart in a hover card, never enough to be a substitute
+  # for opening the thing.
+  max_excerpt_chars: 200
 
 config :rinto_pmo, RintoPMO.Attachments,
   # Where uploaded image bytes live. Override per environment; a release should

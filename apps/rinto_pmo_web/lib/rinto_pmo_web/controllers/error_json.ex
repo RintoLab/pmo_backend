@@ -77,6 +77,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     task_before_chunk:
       {422, "A task heading stands above the first chunk heading, so it belongs to nothing."},
     corrupt_image: {422, "The image header could not be read."},
+    # Asked to resolve more references than one request carries. Refused rather
+    # than truncated: a caller handed back half its links would render the rest
+    # as broken, which reads as data loss instead of a limit.
+    too_many_references: {422, "Too many references in one request. Ask in smaller batches."},
     internal_server_error: {500, "An internal server error occurred."},
     agent_unavailable: {503, "The agent runtime could not be started."},
     attachment_unwritable: {500, "The attachment could not be stored."},

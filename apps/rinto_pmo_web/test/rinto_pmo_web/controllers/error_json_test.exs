@@ -101,6 +101,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     task_before_chunk:
       {422, "A task heading stands above the first chunk heading, so it belongs to nothing.", %{}},
     corrupt_image: {422, "The image header could not be read.", %{}},
+    too_many_references:
+      {422, "Too many references in one request. Ask in smaller batches.",
+       %{max: 200, given: 201}},
     internal_server_error: {500, "An internal server error occurred.", %{}},
     agent_unavailable:
       {503, "The agent runtime could not be started.", %{reason: ":pi_not_found"}},
