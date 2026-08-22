@@ -44,6 +44,8 @@ defmodule RintoPMO.Documents.Markdown do
 
   alias MDEx.Document
   alias MDEx.Heading
+  alias MDEx.Link
+  alias MDEx.Text
 
   # Both directions share these: an extension that is off while parsing turns a
   # table into an escaped paragraph, and one that is off while rendering turns
@@ -92,6 +94,78 @@ defmodule RintoPMO.Documents.Markdown do
       |> render_all(document)
     end
   end
+
+  @typedoc """
+  One markdown link, as `links/1` reports it.
+
+  `position` is the link's index among the links of the body it was read from,
+  counting from zero.
+  """
+  @type link :: %{url: String.t(), label: String.t(), position: non_neg_integer()}
+
+  @doc """
+  Lists the links in `markdown`, in document order.
+
+  Every link, whatever its destination -- this module knows Markdown, not what
+  a URL means. `RintoPMO.References` is what decides which of these point at
+  something in this system.
+
+  ## Why this and not a parsed tree
+
+  Reference extraction needs the same extensions `split/1` parses with, and
+  handing out either the option list or the tree would leave getting that right
+  to the caller. Neither failure is loud: a caller that parses without `table`
+  sees a table as an escaped paragraph, and a caller that walks the tree itself
+  has to know that a heading inside a list item is not top level.
+
+  Returning the links themselves keeps the whole MDEx dependency inside this
+  module, which is where it already was.
+
+  ## Why the AST, not a regular expression
+
+  Same reason `split/1` cuts on parsed headings: a link written inside a fenced
+  or indented code block is content, and MDEx does not produce a link node
+  there, so it is skipped without anything having to recognise a fence. Links
+  inside block quotes and list items *are* reported -- they are ordinary prose
+  that happens to be nested.
+
+  Note that `autolink` is on, so a bare URL in the text is a link too, and its
+  label is the URL itself.
+
+  ## Examples
+
+      iex> RintoPMO.Documents.Markdown.links("see [one](https://example.com)")
+      {:ok, [%{url: "https://example.com", label: "one", position: 0}]}
+
+      iex> RintoPMO.Documents.Markdown.links("```\\n[one](https://example.com)\\n```")
+      {:ok, []}
+  """
+  @spec links(String.t()) :: {:ok, [link()]} | {:error, term()}
+  def links(markdown) when is_binary(markdown) do
+    with {:ok, document} <- MDEx.parse_document(markdown, @options) do
+      links =
+        document
+        |> Enum.filter(&match?(%Link{}, &1))
+        |> Enum.with_index()
+        |> Enum.map(fn {link, position} ->
+          %{url: link.url, label: label_of(link), position: position}
+        end)
+
+      {:ok, links}
+    end
+  end
+
+  # A label is inline markdown -- `[**bold**](url)` is a link node holding a
+  # strong node holding text -- so the literals are gathered from wherever they
+  # sit rather than read off the first child.
+  defp label_of(%Link{nodes: nodes}), do: literals(nodes)
+
+  defp literals(nodes) when is_list(nodes), do: Enum.map_join(nodes, &literal/1)
+
+  defp literal(%Text{literal: literal}), do: literal
+  defp literal(%MDEx.Code{literal: literal}), do: literal
+  defp literal(%{nodes: nodes}) when is_list(nodes), do: literals(nodes)
+  defp literal(_node), do: ""
 
   # Top-level nodes only: a heading nested inside a list item or a block quote
   # belongs to that structure and cutting there would leave both halves invalid.
