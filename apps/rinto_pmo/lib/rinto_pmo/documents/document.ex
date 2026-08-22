@@ -36,9 +36,10 @@ defmodule RintoPMO.Documents.Document do
   Something not worth keeping gets archived instead, which is what archiving is
   for.
 
-  Nothing here reaches `:applied` yet. Filing a task document as a work
-  breakdown is what will move it, and that is not built; the value exists now so
-  that the states are whole and the migration happens once.
+  `RintoPMO.Tasks.file_breakdown/1` is what moves a document to `:applied`, and
+  it is the only thing that does: filing a task document as a work breakdown is
+  the one act that consumes a document, and `:applied` is the lock that keeps it
+  from happening twice.
 
   ## Archiving is a different question
 

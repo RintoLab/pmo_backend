@@ -225,12 +225,10 @@ defmodule RintoPMO.Tasks do
 
     with {:ok, attrs} <- put_estimate(attrs, kind),
          {:ok, attrs} <- put_difficulty(attrs, kind),
-         {:ok, attrs} <- put_actual(attrs, kind) do
-      chset = Task.creation_changeset(%Task{project_id: project.id}, attrs)
-
-      with {:ok, chset} <- validate_parent(chset, project.id, nil) do
-        Repo.insert(chset)
-      end
+         {:ok, attrs} <- put_actual(attrs, kind),
+         chset = Task.creation_changeset(%Task{project_id: project.id}, attrs),
+         {:ok, chset} <- validate_parent(chset, project.id, nil) do
+      Repo.insert(chset)
     end
   end
 
@@ -244,12 +242,10 @@ defmodule RintoPMO.Tasks do
   def update_task(%Task{} = task, attrs) do
     with {:ok, attrs} <- put_estimate(attrs, task.kind),
          {:ok, attrs} <- put_difficulty(attrs, task.kind),
-         {:ok, attrs} <- put_actual(attrs, task.kind) do
-      chset = Task.changeset(task, attrs)
-
-      with {:ok, chset} <- validate_parent(chset, task.project_id, task.id) do
-        Repo.transact(&apply_move(&1, chset, task.parent_id))
-      end
+         {:ok, attrs} <- put_actual(attrs, task.kind),
+         chset = Task.changeset(task, attrs),
+         {:ok, chset} <- validate_parent(chset, task.project_id, task.id) do
+      Repo.transact(&apply_move(&1, chset, task.parent_id))
     end
   end
 
