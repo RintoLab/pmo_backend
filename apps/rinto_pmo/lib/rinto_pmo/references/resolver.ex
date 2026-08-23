@@ -111,6 +111,78 @@ defmodule RintoPMO.References.Resolver do
     end
   end
 
+  @doc """
+  Checks that every `rinto://` reference in `text` points at something.
+
+  Answers the offending URIs rather than a boolean, because the caller's job is
+  to tell a model which addresses to fix -- "one of your links is wrong" sends
+  it back to re-read a whole document.
+
+  ## What counts as wrong
+
+  A **known type with no such row**. That is a mistyped identifier, and there is
+  no legitimate reading of it: addresses are UUIDs handed out by search or by
+  the call that created the thing, so there is no equivalent of a wiki's link to
+  a page nobody has written yet.
+
+  An **unknown type is not wrong** -- see `RintoPMO.References`. Text mentioning
+  a kind of thing this build has not learned yet still saves, still renders, and
+  simply is not indexed.
+
+  Neither is a **malformed URI**: it is not a reference at all, just a link
+  whose destination happens to start with those characters, and refusing a body
+  over one would make this a validator of link syntax rather than of references.
+
+  ## Not through the injector
+
+  Called directly rather than through `Utils.module(:reference_resolver)`, for
+  the reason `RintoPMO.Links` is: this is part of writing correctly, and a mock
+  in its place would let a write test pass over references that were never
+  checked.
+  """
+  @spec validate(term()) :: :ok | {:error, [String.t()]}
+  def validate(""), do: :ok
+
+  # Anything that is not text has no references in it, and is refused further
+  # along by whatever was going to store it. Deciding here that a number is an
+  # invalid body would move a validation into the wrong module and answer with
+  # the wrong error.
+  def validate(text) when not is_binary(text), do: :ok
+
+  def validate(text) do
+    case References.extract(text) do
+      {:ok, found} -> refuse_absent(found)
+      # A body the Markdown parser cannot read has no references to check, and
+      # is refused further along by whatever was going to store it.
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp refuse_absent(found) do
+    found
+    |> Enum.map(& &1.reference)
+    |> Enum.filter(&References.linkable?/1)
+    |> Enum.uniq()
+    |> missing()
+    |> case do
+      [] -> :ok
+      absent -> {:error, Enum.map(absent, &References.to_uri/1)}
+    end
+  end
+
+  defp missing([]), do: []
+
+  defp missing(references) do
+    present =
+      references
+      |> Enum.group_by(& &1.type, & &1.key)
+      |> Map.new(fn {type, keys} -> {type, load(type, Enum.uniq(keys))} end)
+
+    Enum.reject(references, fn reference ->
+      present |> Map.fetch!(reference.type) |> Map.has_key?(reference.key)
+    end)
+  end
+
   # One query per type actually asked for, rather than one per reference.
   defp targets(parsed) do
     parsed

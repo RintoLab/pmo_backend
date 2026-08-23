@@ -58,6 +58,7 @@ defmodule RintoPMO.Tasks do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Links
   alias RintoPMO.Projects.Project
+  alias RintoPMO.References.Guard
   alias RintoPMO.Settings
   alias RintoPMO.Tasks.Breakdown
   alias RintoPMO.Tasks.EstimationWorker
@@ -224,7 +225,8 @@ defmodule RintoPMO.Tasks do
   def create_task(%Project{} = project, attrs) do
     kind = kind_of(attrs)
 
-    with {:ok, attrs} <- put_estimate(attrs, kind),
+    with :ok <- Guard.check(description_of(attrs)),
+         {:ok, attrs} <- put_estimate(attrs, kind),
          {:ok, attrs} <- put_difficulty(attrs, kind),
          {:ok, attrs} <- put_actual(attrs, kind),
          chset = Task.creation_changeset(%Task{project_id: project.id}, attrs),
@@ -241,7 +243,8 @@ defmodule RintoPMO.Tasks do
   """
   @impl true
   def update_task(%Task{} = task, attrs) do
-    with {:ok, attrs} <- put_estimate(attrs, task.kind),
+    with :ok <- Guard.check(description_of(attrs)),
+         {:ok, attrs} <- put_estimate(attrs, task.kind),
          {:ok, attrs} <- put_difficulty(attrs, task.kind),
          {:ok, attrs} <- put_actual(attrs, task.kind),
          chset = Task.changeset(task, attrs),
@@ -253,6 +256,8 @@ defmodule RintoPMO.Tasks do
   # The transaction exists so the index is written with the task rather than
   # after it -- see `RintoPMO.Links`. It is also where `create_task/2` and
   # `update_task/2` each keep the rest of their one-atomic-act work.
+  defp description_of(attrs), do: Map.get(attrs, :description) || Map.get(attrs, "description")
+
   defp insert_task(repo, chset) do
     with {:ok, task} <- repo.insert(chset) do
       index(repo, task)

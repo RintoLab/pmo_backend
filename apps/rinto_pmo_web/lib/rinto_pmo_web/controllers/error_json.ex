@@ -85,6 +85,11 @@ defmodule RintoPMOWeb.ErrorJSON do
     # answered with an empty list: the question could never have found anything,
     # which is a mistake in the request rather than a result.
     unsearchable_type: {422, "Nothing of that kind is indexed for search."},
+    # A body pointing at something that is not there. The offending addresses
+    # come back in `details.uris` so that whoever wrote them can fix those
+    # rather than re-read the whole document.
+    unresolvable_references:
+      {422, "The body points at things that do not exist. Check the rinto:// addresses."},
     internal_server_error: {500, "An internal server error occurred."},
     agent_unavailable: {503, "The agent runtime could not be started."},
     attachment_unwritable: {500, "The attachment could not be stored."},

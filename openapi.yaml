@@ -81,6 +81,27 @@ tags:
       Markdown link whose destination is `rinto://{type}/{key}`, so it survives
       a model rewriting the block that carries it -- there is no sidecar array
       the way a chat message has one.
+
+
+      **A body whose references point at nothing is refused.** Any endpoint
+      taking a document body, a proposal, an annotation, a reply or a task
+      description answers `422 unresolvable_references`, with the offending
+      addresses in `details.uris`. Addresses are bare UUIDs handed out by search
+      or by the call that created the thing, so one that resolves to nothing is
+      a typo rather than a link to something not yet written -- and a body that
+      saved with a dead link in it would fail silently, which is the case this
+      exists to prevent.
+
+
+      Two things are **not** refused. A type this build has never heard of is
+      stored and ignored, so that adding a resource type later does not
+      invalidate text already written. A malformed URI is not a reference at all
+      -- refusing over one would make this a validator of link syntax.
+
+
+      Messages are never refused. A conversation is somebody thinking out loud,
+      and losing a message over a mistyped link would trade the thing that
+      matters for the index.
   - name: Attachments
     description: >
       Uploaded images, referenced from AI chat messages. Validated once at
@@ -2805,7 +2826,15 @@ components:
           schema:
             $ref: "#/components/schemas/APIError"
     ValidationError:
-      description: Request validation failed
+      description: >
+        Request validation failed.
+
+
+        Any endpoint that accepts a body may also refuse it with
+        `unresolvable_references` at this status: the body contains a
+        `rinto://` address of a known type that points at nothing. The offending
+        addresses come back in `details.uris`, so whoever wrote them can fix
+        those rather than re-read the whole document. See the References tag.
       content:
         application/json:
           schema:

@@ -9,6 +9,7 @@ defmodule RintoPMO.Annotations do
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Documents.Document
   alias RintoPMO.Links
+  alias RintoPMO.References.Guard
 
   defmodule Behaviour do
     @moduledoc false
@@ -81,12 +82,14 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def create_annotation(%Document{} = document, attrs) do
-    Repo.transact(fn repo ->
-      %Annotation{document_id: document.id}
-      |> Annotation.changeset(attrs)
-      |> repo.insert()
-      |> index(repo)
-    end)
+    with :ok <- Guard.check(content_of(attrs)) do
+      Repo.transact(fn repo ->
+        %Annotation{document_id: document.id}
+        |> Annotation.changeset(attrs)
+        |> repo.insert()
+        |> index(repo)
+      end)
+    end
   end
 
   @doc """
@@ -94,12 +97,14 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def update_annotation(%Annotation{} = annotation, attrs) do
-    Repo.transact(fn repo ->
-      annotation
-      |> Annotation.update_changeset(attrs)
-      |> repo.update()
-      |> index(repo)
-    end)
+    with :ok <- Guard.check(content_of(attrs)) do
+      Repo.transact(fn repo ->
+        annotation
+        |> Annotation.update_changeset(attrs)
+        |> repo.update()
+        |> index(repo)
+      end)
+    end
   end
 
   @doc """
@@ -160,20 +165,22 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def create_reply(%Annotation{} = annotation, attrs) do
-    Repo.transact(fn repo ->
-      locked =
-        Annotation
-        |> where([candidate], candidate.id == ^annotation.id)
-        |> lock("FOR UPDATE")
-        |> repo.one!()
+    with :ok <- Guard.check(content_of(attrs)) do
+      Repo.transact(fn repo ->
+        locked =
+          Annotation
+          |> where([candidate], candidate.id == ^annotation.id)
+          |> lock("FOR UPDATE")
+          |> repo.one!()
 
-      position = next_reply_position(repo, locked.id)
+        position = next_reply_position(repo, locked.id)
 
-      %AnnotationReply{annotation_id: locked.id, position: position}
-      |> AnnotationReply.changeset(attrs)
-      |> repo.insert()
-      |> index_reply(repo)
-    end)
+        %AnnotationReply{annotation_id: locked.id, position: position}
+        |> AnnotationReply.changeset(attrs)
+        |> repo.insert()
+        |> index_reply(repo)
+      end)
+    end
   end
 
   @doc """
@@ -181,12 +188,14 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def update_reply(%AnnotationReply{} = reply, attrs) do
-    Repo.transact(fn repo ->
-      reply
-      |> AnnotationReply.update_changeset(attrs)
-      |> repo.update()
-      |> index_reply(repo)
-    end)
+    with :ok <- Guard.check(content_of(attrs)) do
+      Repo.transact(fn repo ->
+        reply
+        |> AnnotationReply.update_changeset(attrs)
+        |> repo.update()
+        |> index_reply(repo)
+      end)
+    end
   end
 
   @doc """
@@ -230,6 +239,8 @@ defmodule RintoPMO.Annotations do
   end
 
   defp index_reply(result, _repo), do: result
+
+  defp content_of(attrs), do: Map.get(attrs, :content) || Map.get(attrs, "content")
 
   defp filter_annotations(query, filter) do
     Enum.reduce(filter, query, fn

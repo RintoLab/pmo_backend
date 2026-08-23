@@ -45,6 +45,7 @@ defmodule RintoPMO.Documents do
   alias RintoPMO.Documents.Markdown
   alias RintoPMO.Documents.Notifier
   alias RintoPMO.Links
+  alias RintoPMO.References.Guard
   alias RintoPMO.Settings
   alias RintoPMO.Utils
 
@@ -119,7 +120,8 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def create_document(attrs) do
-    with {:ok, attrs} <- put_default_project(attrs),
+    with :ok <- Guard.check(attr(attrs, :markdown, nil)),
+         {:ok, attrs} <- put_default_project(attrs),
          {:ok, author_id} <- document_author(attrs),
          {:ok, attrs} <- split_markdown(attrs, author_id) do
       Repo.transact(&insert_document(&1, attrs))
@@ -413,6 +415,26 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def create_revision(%Document{} = document, attrs) do
+    with :ok <- Guard.check_all(block_op_contents(attrs)) do
+      insert_new_revision(document, attrs)
+    end
+    |> unwrap_error()
+  end
+
+  # Every body a revision carries, checked before any of it is written: a
+  # caller told about the first bad address would fix it and be refused again
+  # for the second.
+  defp block_op_contents(attrs) do
+    attrs
+    |> attr(:block_ops, [])
+    |> List.wrap()
+    |> Enum.map(fn
+      operation when is_map(operation) -> attr(operation, :content, nil)
+      _other -> nil
+    end)
+  end
+
+  defp insert_new_revision(%Document{} = document, attrs) do
     Repo.transact(fn repo ->
       locked_document =
         Document
@@ -423,7 +445,6 @@ defmodule RintoPMO.Documents do
       parent = latest_revision!(repo, locked_document, preload_blocks?: true)
       insert_revision(repo, locked_document, parent, attrs)
     end)
-    |> unwrap_error()
   end
 
   @doc """
@@ -482,6 +503,12 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def propose_block(%Document{} = document, attrs) do
+    with :ok <- Guard.check(attr(attrs, :content, nil)) do
+      do_propose_block(document, attrs)
+    end
+  end
+
+  defp do_propose_block(%Document{} = document, attrs) do
     Repo.transact(fn repo ->
       locked_document =
         Document
@@ -514,6 +541,12 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def propose_title(%Document{} = document, attrs) do
+    with :ok <- Guard.check(attr(attrs, :content, nil)) do
+      do_propose_title(document, attrs)
+    end
+  end
+
+  defp do_propose_title(%Document{} = document, attrs) do
     Repo.transact(fn repo ->
       locked_document =
         Document
@@ -553,6 +586,12 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def propose_document(%Document{} = document, attrs) do
+    with :ok <- Guard.check(attr(attrs, :markdown, nil)) do
+      do_propose_document(document, attrs)
+    end
+  end
+
+  defp do_propose_document(%Document{} = document, attrs) do
     Repo.transact(fn repo ->
       locked_document =
         Document
@@ -1751,6 +1790,11 @@ defmodule RintoPMO.Documents do
   defp unwrap_error({:ok, value}), do: {:ok, value}
   defp unwrap_error({:error, %Changeset{} = changeset}), do: {:error, changeset}
   defp unwrap_error({:error, {code, details}}), do: {:error, code, details}
+
+  # Already in the shape `RintoPMOWeb.FallbackController` renders -- a refusal
+  # raised before this context wrapped anything, such as a body pointing at
+  # something that is not there.
+  defp unwrap_error({:error, code, details}), do: {:error, code, details}
 
   defp annotations, do: Utils.module(:annotations)
 

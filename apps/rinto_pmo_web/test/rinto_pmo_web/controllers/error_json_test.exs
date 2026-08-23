@@ -107,6 +107,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     unsearchable_type:
       {422, "Nothing of that kind is indexed for search.",
        %{type: "proposal", searchable: ["block", "task"]}},
+    unresolvable_references:
+      {422, "The body points at things that do not exist. Check the rinto:// addresses.",
+       %{uris: ["rinto://task/01936f2a-1c4e-7c3a-9f1b-2d4e6a8b0c1d"]}},
     internal_server_error: {500, "An internal server error occurred.", %{}},
     agent_unavailable:
       {503, "The agent runtime could not be started.", %{reason: ":pi_not_found"}},
