@@ -111,8 +111,19 @@ defmodule RintoPMO.AI do
 
   # The instruction is on the query alone, and its wording is a tuning knob
   # rather than a contract, so it lives in configuration.
+  #
+  # The frame around the wording is the opposite: it is copied from
+  # Qwen3-Embedding's own `get_detailed_instruct`, down to there being **no
+  # space after `Query:`**. That is not a typo to tidy up. The model was trained
+  # on these exact characters, and a space is one more token of drift away from
+  # what it was trained on -- silently, since a stray token does not fail, it
+  # only makes the vector slightly worse.
+  #
+  # Changing any of this moves query vectors only. Stored document vectors are
+  # embedded without an instruction and are unaffected, so there is nothing to
+  # rebuild.
   defp instructed(query) do
-    "Instruct: #{config(:query_instruction)}\nQuery: #{query}"
+    "Instruct: #{config(:query_instruction)}\nQuery:#{query}"
   end
 
   # Answers arrive with an `index`, and nothing promises they arrive in it.

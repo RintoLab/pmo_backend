@@ -61,15 +61,34 @@ config :rinto_pmo, :ai,
   embedding_uri: "/embeddings",
   rerank_uri: "/rerank",
   score_uri: "/score",
-  # Qwen3-Embedding-0.6B, whose 1024 dimensions are what every `embedding`
-  # column is declared as. Changing the model means rewriting those columns, so
-  # this is not a setting to flip casually.
+  # `"qwen3"` is the name this deployment serves under, not the model. Two
+  # different models answer to it, one per endpoint:
+  #
+  #   * `/embeddings` -- Qwen3-Embedding-0.6B, whose 1024 dimensions are what
+  #     every `embedding` column is declared as. Changing it means rewriting
+  #     those columns, so it is not a setting to flip casually.
+  #   * `/rerank` -- Qwen3-Reranker-0.6B, a separate model in that family
+  #     rather than the embedding model scoring pairs.
+  #
+  # Three keys rather than one because they are free to diverge, and one day
+  # will: the two sit at 0.6B, and 4B is materially better on Chinese content
+  # (C-MTEB retrieval 71.0 -> 77.0, reranking 71.3 -> 75.9). Do not read the
+  # shared name as a shared model -- `GET /v1/models` reports one entry, which
+  # is the gateway answering for whichever instance it routed to.
   embedding_model: "qwen3",
   rerank_model: "qwen3",
   score_model: "qwen3",
   # On the query side only -- Qwen3-Embedding is trained with an instruction
   # there and none on the document side. Wording is a tuning knob, not a
-  # contract, which is why it is here rather than in the code.
+  # contract, which is why it is here rather than in the code. Qwen measure a
+  # 1-5% retrieval drop from leaving it out, and advise writing it in English
+  # even for other-language content, which is why this English sentence sits in
+  # front of Chinese queries.
+  #
+  # The reranker takes an instruction of its own and is currently given none,
+  # so it falls back to its default -- a *web search* task description, which
+  # is not what this is. Worth fixing when the reranker is worth tuning: at
+  # 0.6B it scores 5.41 on FollowIR, so it barely follows one.
   query_instruction:
     "Given a search query, retrieve relevant passages from a project's documents, tasks and discussions",
   # Wall clock for one call. These are single-shot transformations, not a model
@@ -200,6 +219,16 @@ config :rinto_pmo, RintoPMO.Search,
   # after reranking sat at cosine rank 27, 25 and 56 -- so twenty would have
   # missed all three. Reranking a hundred costs about 100ms more than twenty,
   # so depth is nearly free and shallowness is not.
+  #
+  # The number also happens to be the one Qwen publishes its own reranker
+  # figures on: every score in the Qwen3-Reranker table is measured over the
+  # top-100 candidates retrieved by Qwen3-Embedding-0.6B, which is this exact
+  # pairing. A local measurement and the model's published setup agreeing is
+  # worth more than either alone, and it means the published numbers describe
+  # a configuration we are actually running.
+  #
+  # Overridable per request -- see `RintoPMO.Search.search/2` on why the depth
+  # is the number worth varying.
   recall_limit: 100,
   # The ceiling on a caller's own `recall_limit`. A safety valve rather than a
   # measurement: every candidate is one forward pass through the reranker and
