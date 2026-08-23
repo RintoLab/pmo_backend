@@ -11,6 +11,10 @@ defmodule RintoPMO.ContentIndexTest do
   alias RintoPMO.Tasks
   alias RintoPMO.Tasks.Task
 
+  defp block_embedding_fields do
+    BlockEmbedding.__schema__(:fields) |> Map.new(&{&1, true})
+  end
+
   defp blocks do
     BlockEmbedding
     |> order_by([projection], asc: projection.title)
@@ -66,9 +70,14 @@ defmodule RintoPMO.ContentIndexTest do
 
       for block <- blocks() do
         assert block.document_id == document.id
-        assert block.project_id == project.id
         assert is_nil(block.embedding)
       end
+
+      # Neither the project nor the archived flag is copied here: both are the
+      # document's, and a search joins for them. A copy would be a second place
+      # the same fact lives, and somewhere for it to go stale.
+      refute Map.has_key?(block_embedding_fields(), :project_id)
+      refute Map.has_key?(block_embedding_fields(), :archived)
 
       assert Enum.any?(blocks(), &(&1.body =~ "systemd unit"))
     end
@@ -129,19 +138,6 @@ defmodule RintoPMO.ContentIndexTest do
 
       assert is_nil(by_title["改的那块"].embedding), "an edited block kept a stale vector"
       assert by_title["没改的那块"].embedding, "an untouched block was sent back for re-embedding"
-    end
-
-    # Archiving rewrites every block projection of a document in order to set
-    # one boolean. The text is untouched, so the vectors have to survive it --
-    # otherwise putting a document away would cost a re-embedding of all of it.
-    test "archiving a document does not re-embed it" do
-      document = document_with("## 一\n\n甲\n\n## 二\n\n乙")
-      for block <- blocks(), do: embed!(BlockEmbedding, block.id)
-
-      {:ok, _archived} = Documents.archive_document(document)
-
-      assert Enum.all?(blocks(), & &1.archived), "archiving did not reach the projections"
-      assert Enum.all?(blocks(), & &1.embedding), "archiving re-embedded the document"
     end
 
     test "rebuilding keeps every vector whose text is unchanged" do

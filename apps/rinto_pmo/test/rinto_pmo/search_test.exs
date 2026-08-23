@@ -152,9 +152,9 @@ defmodule RintoPMO.SearchTest do
       document = document_with("## 部署\n\n归档的")
       embed_everything()
 
-      # Archiving re-indexes on the spot. It used to wait for the next write to
-      # the document, which for something just put away is indefinitely -- so
-      # an archived document went on being findable.
+      # Nothing re-projects here, and nothing needs to: the flag is read from
+      # the document by a join, so archiving takes effect the moment the row is
+      # written. A copy of it on the projection is what used to need keeping up.
       {:ok, _archived} = Documents.archive_document(document)
 
       expect(AIMock, :embed_query, fn _query -> {:ok, vector()} end)

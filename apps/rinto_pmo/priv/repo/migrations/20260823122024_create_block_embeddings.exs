@@ -21,11 +21,22 @@ defmodule RintoPMO.Repo.Migrations.CreateBlockEmbeddings do
   # nineteen rows genuinely are new. The only way to keep a vector across a
   # revision is to key it by something that survives one, which is `block_id`.
   #
-  # ## What it holds
+  # ## What it holds, and what it deliberately does not
   #
-  # The text as embedded, so that "has this changed since it was embedded" is a
-  # comparison rather than a guess, plus the scope a query filters on and the
-  # document a hit ascends to.
+  # The text as embedded -- so that "has this changed since it was embedded" is
+  # a comparison rather than a guess -- the vector, and the document the block
+  # belongs to.
+  #
+  # **Nothing that can be read from the document instead.** A block's project
+  # and whether it is archived are properties of its document, and copying them
+  # here would make this a second place they are recorded: one that has to be
+  # rewritten every time the document is archived, or moved to another project,
+  # by someone who remembered to. A search joins to `documents` for both, which
+  # cannot go stale because there is nothing to keep in step.
+  #
+  # `document_id` stays because it is not a copy of anything mutable -- a block
+  # belongs to one document for its whole life, and reconstructing that from
+  # `document_blocks` would mean picking a revision first.
   def change do
     execute "CREATE EXTENSION IF NOT EXISTS vector", "DROP EXTENSION IF EXISTS vector"
 
@@ -39,18 +50,10 @@ defmodule RintoPMO.Repo.Migrations.CreateBlockEmbeddings do
       add :title, :text
       add :body, :text
 
-      # Scope, which is the filter that matters first: finding the right thing
-      # is usually a matter of looking in the right place.
-      add :project_id, :binary_id, null: true
-
       # How a hit ascends. A block reference is followed by opening its document
       # at that block, and this is what saves the client a second lookup -- the
       # same second level `links` and the reference resolver already hand back.
       add :document_id, :binary_id, null: false
-
-      # Carried rather than filtered out, so a caller decides whether archived
-      # things belong in its list. Archiving is not deleting.
-      add :archived, :boolean, null: false, default: false
 
       # 1024 because that is what Qwen3-Embedding-0.6B produces. A literal
       # because it has to be: changing it rewrites the column, so it is a
@@ -68,7 +71,6 @@ defmodule RintoPMO.Repo.Migrations.CreateBlockEmbeddings do
     # One row per block: re-projecting replaces rather than accumulates.
     create unique_index(:block_embeddings, [:block_id])
     create index(:block_embeddings, [:document_id])
-    create index(:block_embeddings, [:project_id])
 
     # No index on `embedding`, deliberately. pgvector's own guidance is to add
     # one when scans get slow, because HNSW and IVFFlat are approximate: they

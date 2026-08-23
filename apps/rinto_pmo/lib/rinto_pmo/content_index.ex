@@ -40,7 +40,6 @@ defmodule RintoPMO.ContentIndex do
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Conversations.Message
   alias RintoPMO.Documents.BlockEmbedding
-  alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Links
   alias RintoPMO.Links.Link
@@ -58,18 +57,16 @@ defmodule RintoPMO.ContentIndex do
   def sync_document(repo, %DocumentRevision{blocks: blocks} = revision) when is_list(blocks) do
     Links.sync_document(repo, revision)
 
-    document = repo.get!(Document, revision.document_id)
-    archived = not is_nil(document.archived_at)
-
-    Enum.each(blocks, fn block ->
-      project_block(repo, block, document, archived)
-    end)
+    # No lookup of the document: nothing here is copied from it. Its project and
+    # its archived flag are read by a join at search time, which is what keeps
+    # them from being a second place the same fact is recorded.
+    Enum.each(blocks, &project_block(repo, &1, revision.document_id))
 
     # After the rewrites, and naming what survives rather than clearing first:
     # a row deleted takes its vector with it, and a revision that touched one
     # block must not cost a re-embedding of every other.
     BlockEmbedding
-    |> where([projection], projection.document_id == ^document.id)
+    |> where([projection], projection.document_id == ^revision.document_id)
     |> where([projection], projection.block_id not in ^Enum.map(blocks, & &1.block_id))
     |> repo.delete_all()
   end
@@ -235,14 +232,12 @@ defmodule RintoPMO.ContentIndex do
     |> repo.one()
   end
 
-  defp project_block(repo, block, document, archived) do
+  defp project_block(repo, block, document_id) do
     attrs = %{
       block_id: block.block_id,
       title: heading(block.content),
       body: block.content,
-      project_id: document.project_id,
-      document_id: document.id,
-      archived: archived
+      document_id: document_id
     }
 
     %BlockEmbedding{}
@@ -261,9 +256,7 @@ defmodule RintoPMO.ContentIndex do
         set: [
           title: fragment("EXCLUDED.title"),
           body: fragment("EXCLUDED.body"),
-          project_id: fragment("EXCLUDED.project_id"),
           document_id: fragment("EXCLUDED.document_id"),
-          archived: fragment("EXCLUDED.archived"),
           updated_at: fragment("EXCLUDED.updated_at"),
           embedding:
             fragment(

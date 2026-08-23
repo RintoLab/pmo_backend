@@ -223,7 +223,7 @@ defmodule RintoPMO.Search do
 
   defp candidates("project", vector, opts) do
     Project
-    |> nearest(vector, opts)
+    |> nearest(vector, opts, :none)
     |> then(fn query ->
       if Keyword.get(opts, :include_archived, false) do
         query
@@ -244,7 +244,7 @@ defmodule RintoPMO.Search do
 
   defp candidates("conversation", vector, opts) do
     Conversation
-    |> nearest(vector, opts)
+    |> nearest(vector, opts, :none)
     |> select([row], %{
       key: row.id,
       text: row.title,
@@ -257,7 +257,7 @@ defmodule RintoPMO.Search do
 
   defp candidates("attachment", vector, opts) do
     Attachment
-    |> nearest(vector, opts)
+    |> nearest(vector, opts, :none)
     |> select([row], %{
       key: row.id,
       text: row.filename,
@@ -268,20 +268,28 @@ defmodule RintoPMO.Search do
     |> Enum.map(&candidate(&1, "attachment"))
   end
 
+  # Scope and the archived flag are read from the document by a join rather than
+  # from a copy on the projection. A copy is a second place the same fact lives,
+  # and every one of them has to be rewritten when the original changes --
+  # archiving a document, moving it to another project -- by somebody who
+  # remembered to. This cannot go stale because there is nothing to keep up.
   defp block_candidates(vector, opts, answering_as) do
     BlockEmbedding
-    |> nearest(vector, opts)
-    |> then(fn query ->
-      if Keyword.get(opts, :include_archived, false),
-        do: query,
-        else: where(query, [row], not row.archived)
-    end)
-    |> select([row], %{
+    |> where([row], not is_nil(row.embedding))
+    |> join(:inner, [row], document in Document,
+      as: :document,
+      on: document.id == row.document_id
+    )
+    |> scoped(opts, :document)
+    |> archived(opts)
+    |> order_by([row], asc: fragment("? <=> ?", row.embedding, ^vector))
+    |> limit(^recall_limit())
+    |> select([row, document], %{
       block_id: row.block_id,
       text: row.body,
       title: row.title,
       document_id: row.document_id,
-      archived: row.archived,
+      archived: not is_nil(document.archived_at),
       distance: fragment("? <=> ?", row.embedding, ^vector)
     })
     |> Repo.all()
@@ -298,9 +306,13 @@ defmodule RintoPMO.Search do
 
   defp annotation_candidates(vector, opts) do
     Annotation
-    |> nearest(vector, opts)
-    |> join(:inner, [row], document in Document, on: document.id == row.document_id)
+    |> nearest(vector, opts, :none)
+    |> join(:inner, [row], document in Document,
+      as: :document,
+      on: document.id == row.document_id
+    )
     |> scoped(opts, :document)
+    |> archived(opts)
     |> select([row, document], %{
       key: row.id,
       text: row.content,
@@ -316,12 +328,14 @@ defmodule RintoPMO.Search do
   # thread it belongs to, which is what its `annotation_id` becomes here.
   defp reply_candidates(vector, opts) do
     AnnotationReply
-    |> nearest(vector, opts)
+    |> nearest(vector, opts, :none)
     |> join(:inner, [row], annotation in Annotation, on: annotation.id == row.annotation_id)
     |> join(:inner, [_row, annotation], document in Document,
+      as: :document,
       on: document.id == annotation.document_id
     )
     |> scoped(opts, :document)
+    |> archived(opts)
     |> select([row, annotation, document], %{
       key: annotation.id,
       text: row.content,
@@ -368,26 +382,33 @@ defmodule RintoPMO.Search do
 
   # A row with no vector cannot be compared to anything, so it is not a
   # candidate rather than an infinitely distant one.
-  defp nearest(schema, vector, opts) do
+  defp nearest(schema, vector, opts, on \\ :row) do
     schema
     |> where([row], not is_nil(row.embedding))
-    |> scoped(opts, :row)
+    |> scoped(opts, on)
     |> order_by([row], asc: fragment("? <=> ?", row.embedding, ^vector))
     |> limit(^recall_limit())
+  end
+
+  # Whether an archived document's content counts. Written against the named
+  # `:document` binding rather than a position, because the three queries that
+  # use it join the document at three different depths.
+  defp archived(query, opts) do
+    if Keyword.get(opts, :include_archived, false) do
+      query
+    else
+      where(query, [document: document], is_nil(document.archived_at))
+    end
   end
 
   # Scope narrows before distance does, which is the filter that matters first:
   # finding the right thing is usually a matter of looking in the right place.
   defp scoped(query, opts, on) do
-    case Keyword.get(opts, :project_id) do
-      nil ->
-        query
-
-      project_id when on == :row ->
-        where(query, [row], row.project_id == ^project_id)
-
-      project_id ->
-        where(query, [_row, _annotation, document], document.project_id == ^project_id)
+    case {Keyword.get(opts, :project_id), on} do
+      {nil, _on} -> query
+      {_project_id, :none} -> query
+      {project_id, :row} -> where(query, [row], row.project_id == ^project_id)
+      {project_id, :document} -> where(query, [document: d], d.project_id == ^project_id)
     end
   end
 

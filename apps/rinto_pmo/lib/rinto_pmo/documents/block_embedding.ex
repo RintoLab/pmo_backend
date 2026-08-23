@@ -24,6 +24,19 @@ defmodule RintoPMO.Documents.BlockEmbedding do
   Documents have no embedding of their own. Their findable content is their
   blocks, and every block hit already carries the way back up.
 
+  ## Nothing here is a copy of something mutable
+
+  A block's project, and whether it is archived, are properties of its document.
+  They are **not** stored here, deliberately: a copy is a second place the same
+  fact is recorded, and every one of them has to be rewritten whenever the
+  original changes -- by somebody who remembered to. A search joins to
+  `documents` for both, which cannot go stale because there is nothing to keep
+  in step.
+
+  `document_id` is not that kind of copy. A block belongs to one document for
+  its whole life, and rebuilding the mapping from `document_blocks` would mean
+  choosing a revision first.
+
   ## `title` and `body` are stored, not just read
 
   They are what was embedded. Keeping them is what makes "has this changed
@@ -47,9 +60,7 @@ defmodule RintoPMO.Documents.BlockEmbedding do
     field :title, :string
     field :body, :string
 
-    field :project_id, UUIDv7
     field :document_id, UUIDv7
-    field :archived, :boolean, default: false
 
     # Null means "needs embedding", and that is the whole of the state.
     field :embedding, Pgvector.Ecto.Vector
@@ -57,7 +68,7 @@ defmodule RintoPMO.Documents.BlockEmbedding do
     timestamps()
   end
 
-  @fields [:block_id, :title, :body, :project_id, :document_id, :archived]
+  @fields [:block_id, :title, :body, :document_id]
 
   @doc false
   def changeset(%__MODULE__{} = block_embedding \\ %__MODULE__{}, attrs) do
