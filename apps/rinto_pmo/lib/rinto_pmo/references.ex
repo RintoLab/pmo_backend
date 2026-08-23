@@ -36,6 +36,15 @@ defmodule RintoPMO.References do
       rinto://block/{id}            rinto://attachment/{id}
       rinto://annotation/{id}       rinto://proposal/{id}
 
+  **A project is the one type named by something other than its id, and that
+  costs it a rename.** A body carries its addresses as written, so a renamed
+  slug would leave every `rinto://project/old-slug` already in a document
+  pointing at nothing -- and `mix rinto.index.rebuild` could not repair it,
+  because it reads the same stale string back out of the bodies it rebuilds
+  from. So `RintoPMO.Projects.Project` refuses to change a slug after creation.
+  The legible address is bought with that refusal, and it only stays paid for
+  as long as the refusal is there.
+
   **Nothing is nested under its parent.** A block's document is not in the URI
   even though a block always has one: `RintoPMO.Links` resolves the parent when
   it indexes the reference and stores it there, the same way

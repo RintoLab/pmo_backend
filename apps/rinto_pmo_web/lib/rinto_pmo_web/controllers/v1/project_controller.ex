@@ -27,7 +27,9 @@ defmodule RintoPMOWeb.V1.ProjectController do
     context = Utils.module(:projects)
     project = context.get_project_by_slug!(slug)
 
-    # Use body params so a path slug does not mask an updated slug in the body.
+    # Body params only: the path's slug identifies the project rather than
+    # being something to write back, and merging it in would look to
+    # `Project.update_changeset/2` like a client asking to keep its slug.
     with {:ok, project} <- context.update_project(project, conn.body_params) do
       render(conn, :show, project: project)
     end

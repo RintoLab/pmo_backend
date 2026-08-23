@@ -70,18 +70,19 @@ defmodule RintoPMOWeb.V1.ProjectControllerTest do
     assert %{"name" => "Updated"} = json_response(conn, 200)["data"]
   end
 
-  test "PATCH /api/v1/projects/:slug can rename the slug from the body", %{conn: conn} do
+  test "PATCH /api/v1/projects/:slug refuses a renamed slug", %{conn: conn} do
     project = insert(:project)
     project_slug = project.slug
     params = %{"slug" => "renamed-project"}
-    updated = %{project | slug: "renamed-project"}
+    changeset = Project.update_changeset(project, params)
 
     expect(ProjectsMock, :get_project_by_slug!, fn ^project_slug -> project end)
-    expect(ProjectsMock, :update_project, fn ^project, ^params -> {:ok, updated} end)
+    expect(ProjectsMock, :update_project, fn ^project, ^params -> {:error, changeset} end)
 
     conn = patch(conn, ~p"/api/v1/projects/#{project_slug}", params)
 
-    assert %{"slug" => "renamed-project"} = json_response(conn, 200)["data"]
+    assert %{"error" => "validation_error", "details" => %{"slug" => [_message]}} =
+             json_response(conn, 422)
   end
 
   test "PUT /api/v1/projects/:slug uses the same update action", %{conn: conn} do
@@ -113,7 +114,7 @@ defmodule RintoPMOWeb.V1.ProjectControllerTest do
 
   test "POST /api/v1/projects returns validation errors", %{conn: conn} do
     params = %{"name" => "Missing metadata"}
-    changeset = Project.changeset(params)
+    changeset = Project.create_changeset(params)
 
     expect(ProjectsMock, :create_project, fn ^params -> {:error, changeset} end)
 

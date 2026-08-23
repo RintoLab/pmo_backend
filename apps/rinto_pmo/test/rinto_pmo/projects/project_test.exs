@@ -3,9 +3,9 @@ defmodule RintoPMO.Projects.ProjectTest do
 
   alias RintoPMO.Projects.Project
 
-  describe "changeset/2" do
+  describe "create_changeset/1" do
     test "accepts required project metadata and defaults to active" do
-      changeset = Project.changeset(valid_attrs())
+      changeset = Project.create_changeset(valid_attrs())
 
       assert changeset.valid?
       assert Ecto.Changeset.get_field(changeset, :status) == :active
@@ -13,7 +13,7 @@ defmodule RintoPMO.Projects.ProjectTest do
 
     test "requires name, slug, and description" do
       for field <- [:name, :slug, :description] do
-        changeset = valid_attrs() |> Map.delete(field) |> Project.changeset()
+        changeset = valid_attrs() |> Map.delete(field) |> Project.create_changeset()
 
         refute changeset.valid?
         assert "can't be blank" in errors_on(changeset)[field]
@@ -21,27 +21,55 @@ defmodule RintoPMO.Projects.ProjectTest do
     end
 
     test "validates a URL-safe slug" do
-      changeset = Project.changeset(%{valid_attrs() | slug: "Not URL Safe"})
+      changeset = Project.create_changeset(%{valid_attrs() | slug: "Not URL Safe"})
 
       refute changeset.valid?
       assert [_message] = errors_on(changeset).slug
     end
 
     test "does not allow attrs to set status" do
-      changeset = Project.changeset(Map.put(valid_attrs(), :status, :archived))
+      changeset = Project.create_changeset(Map.put(valid_attrs(), :status, :archived))
 
       assert changeset.valid?
       assert Ecto.Changeset.get_field(changeset, :status) == :active
     end
+  end
 
+  describe "update_changeset/2" do
     test "updates metadata but does not cast status" do
       project = build(:project, status: :active)
 
-      changeset = Project.changeset(project, %{name: "Updated", status: :archived})
+      changeset = Project.update_changeset(project, %{name: "Updated", status: :archived})
 
       assert changeset.valid?
       assert Ecto.Changeset.get_field(changeset, :name) == "Updated"
       assert Ecto.Changeset.get_field(changeset, :status) == :active
+    end
+
+    # Bodies address a project by its slug, so a rename would break every
+    # `rinto://project/{slug}` already written. Refused rather than dropped, so
+    # a client that asked is told it did not happen.
+    test "refuses a slug different from the one the project has" do
+      project = build(:project, slug: "infra")
+
+      changeset = Project.update_changeset(project, %{name: "Updated", slug: "infrastructure"})
+
+      refute changeset.valid?
+      assert [_message] = errors_on(changeset).slug
+      assert Ecto.Changeset.get_field(changeset, :slug) == "infra"
+    end
+
+    test "accepts the slug the project already has, in either key form" do
+      project = build(:project, slug: "infra")
+
+      assert Project.update_changeset(project, %{slug: "infra"}).valid?
+      assert Project.update_changeset(project, %{"slug" => "infra"}).valid?
+    end
+
+    test "refuses a slug sent under a string key" do
+      project = build(:project, slug: "infra")
+
+      refute Project.update_changeset(project, %{"slug" => "other"}).valid?
     end
   end
 

@@ -121,9 +121,11 @@ defmodule RintoPMO.References.Resolver do
   ## What counts as wrong
 
   A **known type with no such row**. That is a mistyped identifier, and there is
-  no legitimate reading of it: addresses are UUIDs handed out by search or by
-  the call that created the thing, so there is no equivalent of a wiki's link to
-  a page nobody has written yet.
+  no legitimate reading of it: an address is a UUID handed out by search or by
+  the call that created the thing, and the one exception -- a project's slug --
+  cannot change once the project exists. So an address that was good when it was
+  written stays good, and there is no equivalent of a wiki's link to a page
+  nobody has written yet.
 
   An **unknown type is not wrong** -- see `RintoPMO.References`. Text mentioning
   a kind of thing this build has not learned yet still saves, still renders, and

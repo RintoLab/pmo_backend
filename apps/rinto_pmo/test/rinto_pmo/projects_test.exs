@@ -59,12 +59,22 @@ defmodule RintoPMO.ProjectsTest do
       assert updated.status == :active
     end
 
-    test "updates can rename the project slug" do
+    test "updates refuse to rename the project slug" do
       project = insert(:project, slug: "old-slug")
 
-      assert {:ok, updated} = Projects.update_project(project, %{slug: "new-slug"})
-      assert updated.slug == "new-slug"
-      assert Projects.get_project_by_slug!("new-slug").id == project.id
+      assert {:error, changeset} = Projects.update_project(project, %{slug: "new-slug"})
+      assert [_message] = errors_on(changeset).slug
+      assert Projects.get_project_by_slug!("old-slug").id == project.id
+    end
+
+    test "updates accept the slug the project already has" do
+      project = insert(:project, slug: "same-slug")
+
+      assert {:ok, updated} =
+               Projects.update_project(project, %{name: "Updated", slug: "same-slug"})
+
+      assert updated.name == "Updated"
+      assert updated.slug == "same-slug"
     end
 
     test "archives a project idempotently without deleting it" do

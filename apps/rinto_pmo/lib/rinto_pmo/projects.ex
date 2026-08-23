@@ -9,9 +9,10 @@ defmodule RintoPMO.Projects do
   a project lands in it (see `RintoPMO.Documents.create_document/1`).
 
   It is an ordinary project in every other way -- it can hold repositories, be
-  renamed, and be archived. Only its slug is load-bearing, which is also its one
-  sharp edge: change the slug and documents created without a project stop
-  having anywhere to go. That is reported rather than papered over.
+  renamed, and be archived. Only its slug is load-bearing, and no project's slug
+  can change after creation (`RintoPMO.Projects.Project` says why), so the way
+  to lose the default project is to archive or delete it rather than to rename
+  it out from under the documents that land in it.
   """
 
   use RintoPMO, :context
@@ -108,17 +109,21 @@ defmodule RintoPMO.Projects do
   @impl true
   def create_project(attrs) do
     attrs
-    |> Project.changeset()
+    |> Project.create_changeset()
     |> Repo.insert()
   end
 
   @doc """
-  Updates project metadata. Status is not accepted by the changeset.
+  Updates project metadata.
+
+  Neither status nor slug is accepted: status has `archive_project/1`, and the
+  slug is fixed at creation because bodies address projects by it. See
+  `RintoPMO.Projects.Project`.
   """
   @impl true
   def update_project(%Project{} = project, attrs) do
     project
-    |> Project.changeset(attrs)
+    |> Project.update_changeset(attrs)
     |> Repo.update()
   end
 

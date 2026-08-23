@@ -330,7 +330,7 @@ paths:
       tags: [Projects]
       operationId: updateProject
       summary: Update project metadata
-      description: Status cannot be changed through this endpoint.
+      description: Neither status nor slug can be changed through this endpoint.
       requestBody:
         $ref: "#/components/requestBodies/ProjectUpdate"
       responses:
@@ -348,7 +348,7 @@ paths:
       tags: [Projects]
       operationId: replaceProject
       summary: Update project metadata
-      description: Alias of PATCH. Status cannot be changed through this endpoint.
+      description: Alias of PATCH. Neither status nor slug can be changed through this endpoint.
       requestBody:
         $ref: "#/components/requestBodies/ProjectUpdate"
       responses:
@@ -3210,13 +3210,19 @@ components:
       additionalProperties: false
     ProjectUpdateInput:
       type: object
-      description: Project status is not writable. Use DELETE to archive.
+      description: >-
+        Project status is not writable. Use DELETE to archive.
+
+
+        Neither is `slug`, which is fixed when the project is created: document
+        and task bodies address a project as `rinto://project/{slug}`, carrying
+        the slug as written, so a rename would break every reference already
+        written and nothing could repair them. Sending the slug the project
+        already has is accepted and does nothing; sending a different one is a
+        422 rather than a silently ignored field.
       properties:
         name:
           type: string
-        slug:
-          type: string
-          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
         description:
           type: string
       additionalProperties: false
