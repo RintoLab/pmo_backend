@@ -4,13 +4,16 @@ defmodule RintoPMO.ContentIndex do
 
   Two things are derived from content rather than stored with it: the
   `rinto://` references a body makes (`RintoPMO.Links`) and the findable
-  projection of a block (`RintoPMO.Documents.BlockEmbedding`). Both have to be
-  written with the resource, and each wants something different out of it.
+  Two things are derived from content rather than stored with it, and only one
+  of them passes through here: the `rinto://` references a body makes
+  (`RintoPMO.Links`).
 
-  Every other resource's embedding is a column on its own row, voided by the
-  changeset that rewrites the text -- see `RintoPMO.Embeddings`. Nothing about
-  those passes through here, which is why this module is smaller than the
-  number of findable types would suggest.
+  Embeddings do not. Every vector lives as a column on the row whose text it
+  describes, voided by whatever rewrites that text -- a changeset for most
+  resources (`RintoPMO.Embeddings`), and the write path that snapshots a
+  revision for a block. Nothing about them needs a second place to be
+  maintained, which is why this module is much smaller than the number of
+  findable types would suggest.
 
   ## Why this exists now and did not before
 
@@ -39,36 +42,21 @@ defmodule RintoPMO.ContentIndex do
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Conversations.Message
-  alias RintoPMO.Documents.BlockEmbedding
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Links
   alias RintoPMO.Links.Link
   alias RintoPMO.Tasks.Task
 
   @doc """
-  Indexes a document's newest revision: the document itself, and every block.
+  Indexes the references a document's newest revision makes.
 
-  A block is its own projection rather than part of its document's, so a hit
-  lands on the section that says the thing. Blocks that a revision dropped are
-  removed after the survivors are rewritten -- clearing first would delete
-  embeddings that are still good.
+  Nothing about search happens here. A block's vector lives on the block, put
+  there by the write path that creates the row -- see
+  `RintoPMO.Documents.put_block_snapshots/3`.
   """
   @spec sync_document(Ecto.Repo.t(), DocumentRevision.t()) :: :ok
   def sync_document(repo, %DocumentRevision{blocks: blocks} = revision) when is_list(blocks) do
     Links.sync_document(repo, revision)
-
-    # No lookup of the document: nothing here is copied from it. Its project and
-    # its archived flag are read by a join at search time, which is what keeps
-    # them from being a second place the same fact is recorded.
-    Enum.each(blocks, &project_block(repo, &1, revision.document_id))
-
-    # After the rewrites, and naming what survives rather than clearing first:
-    # a row deleted takes its vector with it, and a revision that touched one
-    # block must not cost a re-embedding of every other.
-    BlockEmbedding
-    |> where([projection], projection.document_id == ^revision.document_id)
-    |> where([projection], projection.block_id not in ^Enum.map(blocks, & &1.block_id))
-    |> repo.delete_all()
   end
 
   @doc """
@@ -140,20 +128,14 @@ defmodule RintoPMO.ContentIndex do
   half of new ones. That means a long transaction on a large corpus, which is
   accepted: this is a tool a person runs, not something on a request path.
 
-  ## Why the block projections are not emptied first, and the references are
+  ## Nothing here touches an embedding
 
-  `links` is truncated and rewritten, because a link row costs nothing to
+  Every vector lives on the row it describes, so there is nothing to rebuild:
+  a vector is missing only because the text changed and nothing has recomputed
+  it yet, which is the embedding worker's business rather than this one's.
+
+  `links` is truncated and rewritten because a link row costs nothing to
   produce -- it is read straight out of text already in hand.
-
-  A block projection carries an embedding, which cost a model call. Deleting
-  the rows would throw every vector away and turn a repair into a re-embedding
-  of every block in the system. They are written over the top instead, and
-  anything the sweep did not touch -- a row whose block is gone -- is removed
-  afterwards by the timestamp it failed to get.
-
-  Nothing here rebuilds the embeddings that live on their own tables. There is
-  nothing to rebuild: those rows *are* the resource, so a vector is only ever
-  missing because the text changed and nothing has recomputed it yet.
 
   Returns a tally per kind of source read.
   """
@@ -161,7 +143,6 @@ defmodule RintoPMO.ContentIndex do
   def rebuild(repo \\ Repo) do
     repo.transact(fn repo ->
       repo.delete_all(Link)
-      swept_from = DateTime.utc_now()
 
       tally = %{
         "document" => rebuild_documents(repo),
@@ -169,12 +150,6 @@ defmodule RintoPMO.ContentIndex do
         "task" => rebuild_tasks(repo),
         "message" => rebuild_messages(repo)
       }
-
-      # Every block projection just rewritten carries a fresh `updated_at`.
-      # Whatever still has an older one has no block behind it any more.
-      BlockEmbedding
-      |> where([projection], projection.updated_at < ^swept_from)
-      |> repo.delete_all()
 
       {:ok, tally}
     end)
@@ -230,40 +205,5 @@ defmodule RintoPMO.ContentIndex do
     |> where([annotation], annotation.id == ^annotation_id)
     |> select([annotation], annotation.document_id)
     |> repo.one()
-  end
-
-  defp project_block(repo, block, document_id) do
-    attrs = %{block_id: block.block_id, body: block.content, document_id: document_id}
-
-    %BlockEmbedding{}
-    |> BlockEmbedding.changeset(attrs)
-    |> repo.insert!(on_conflict: block_replacements(), conflict_target: [:block_id])
-  end
-
-  # `:replace` cannot express "clear this column only when those two changed",
-  # so the condition is written as the update itself. Rewriting a block that a
-  # revision left alone -- which is every block but one, on a typical commit --
-  # must keep its vector. See `RintoPMO.Embeddings` for the same rule as it
-  # applies to every other resource.
-  defp block_replacements do
-    from projection in BlockEmbedding,
-      update: [
-        set: [
-          body: fragment("EXCLUDED.body"),
-          document_id: fragment("EXCLUDED.document_id"),
-          updated_at: fragment("EXCLUDED.updated_at"),
-          embedding:
-            fragment(
-              """
-              CASE
-                WHEN ? IS DISTINCT FROM EXCLUDED.body THEN NULL
-                ELSE ?
-              END
-              """,
-              projection.body,
-              projection.embedding
-            )
-        ]
-      ]
   end
 end

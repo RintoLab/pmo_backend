@@ -1119,9 +1119,9 @@ defmodule RintoPMO.Documents do
         case BlockOps.apply(parent.blocks, attr(attrs, :block_ops, [])) do
           {:ok, block_entries} ->
             changeset
-            |> put_block_snapshots(block_entries)
+            |> put_block_snapshots(block_entries, parent.blocks)
             |> repo.insert()
-            |> index_revision(repo)
+            |> index_revision(repo, parent)
 
           {:error, code, details} ->
             {:error, {code, details}}
@@ -1132,24 +1132,62 @@ defmodule RintoPMO.Documents do
   # In the same transaction as the revision, because an index written afterwards
   # has a window where the body says one thing and "who points at this?" says
   # another. See `RintoPMO.Links`.
-  defp index_revision({:ok, %DocumentRevision{} = revision}, repo) do
+  defp index_revision({:ok, %DocumentRevision{} = revision}, repo, parent) do
     ContentIndex.sync_document(repo, revision)
+    retire_embeddings(repo, parent)
     {:ok, revision}
   end
 
-  defp index_revision(result, _repo), do: result
+  defp index_revision(result, _repo, _parent), do: result
 
-  defp put_block_snapshots(changeset, block_entries) do
+  # Whatever the new revision needed has been carried onto its own rows, so the
+  # superseded ones are holding four kilobytes apiece to answer a question
+  # nobody asks: history is not searched. Clearing them also leaves exactly one
+  # snapshot of each block carrying a vector, which is what lets the embedding
+  # worker recognise its own backlog without qualifying every row.
+  defp retire_embeddings(repo, %DocumentRevision{id: id}) do
+    DocumentBlock
+    |> where([block], block.revision_id == ^id)
+    |> where([block], not is_nil(block.embedding))
+    |> repo.update_all(set: [embedding: nil])
+  end
+
+  @doc false
+  # Every block of a revision is written as a new row, including the ones nobody
+  # touched -- so a vector would be lost on all of them each time one changed,
+  # and nineteen blocks out of twenty would be re-embedded for nothing.
+  #
+  # They are not lost, because the previous revision's blocks are already in
+  # hand here: `BlockOps.apply/2` was just run against them. A block whose
+  # content is byte-for-byte what it was carries its vector forward; one that
+  # changed, or that did not exist before, starts null and the embedding worker
+  # picks it up.
+  #
+  # **The invalidation is structural.** Nothing compares anything at read time
+  # and nothing has to remember to clear a column, because a new row simply has
+  # no vector unless the text it holds is the text the vector was made from.
+  defp put_block_snapshots(changeset, block_entries, previous_blocks) do
+    previous = Map.new(previous_blocks, &{&1.block_id, &1})
+
     block_changesets =
       block_entries
       |> Enum.with_index()
       |> Enum.map(fn {entry, position} ->
-        %DocumentBlock{block_id: entry.block_id, position: position}
+        %DocumentBlock{
+          block_id: entry.block_id,
+          position: position,
+          embedding: carried_forward(previous[entry.block_id], entry.content)
+        }
         |> DocumentBlock.changeset(%{actor_id: entry.actor_id, content: entry.content})
       end)
 
     Changeset.put_assoc(changeset, :blocks, block_changesets)
   end
+
+  defp carried_forward(%DocumentBlock{content: content, embedding: embedding}, content),
+    do: embedding
+
+  defp carried_forward(_absent_or_changed, _content), do: nil
 
   defp latest_revision!(%Document{} = document, options) do
     latest_revision!(Repo, document, options)

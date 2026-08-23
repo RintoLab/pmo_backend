@@ -53,7 +53,8 @@ defmodule RintoPMO.Embeddings.Worker do
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Attachments.Attachment
   alias RintoPMO.Conversations.Conversation
-  alias RintoPMO.Documents.BlockEmbedding
+  alias RintoPMO.Documents.DocumentBlock
+  alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Projects.Project
   alias RintoPMO.Repo
   alias RintoPMO.Tasks.Task
@@ -63,7 +64,7 @@ defmodule RintoPMO.Embeddings.Worker do
   # change voids the vector -- if these two lists ever disagree, a row is either
   # re-embedded for nothing or left stale, and neither shows up as a failure.
   @sources [
-    {BlockEmbedding, [:body]},
+    {DocumentBlock, [:content]},
     {Task, [:title, :description]},
     {Project, [:name, :description]},
     {Annotation, [:content]},
@@ -134,6 +135,7 @@ defmodule RintoPMO.Embeddings.Worker do
     schema
     |> where([row], is_nil(row.embedding))
     |> where(^has_text)
+    |> current_only(schema)
     |> order_by([row], asc: row.id)
     |> limit(^batch_size())
     |> select([row], map(row, ^[:id | fields]))
@@ -149,6 +151,22 @@ defmodule RintoPMO.Embeddings.Worker do
     |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.map_join("\n\n", &String.trim/1)
   end
+
+  # A block has one row per revision, and only the current one is searched. The
+  # superseded ones are cleared as each revision lands, so without this every
+  # historical snapshot would look like outstanding work and be embedded again
+  # on every pass, forever.
+  defp current_only(query, DocumentBlock) do
+    latest =
+      DocumentRevision
+      |> distinct([revision], revision.document_id)
+      |> order_by([revision], asc: revision.document_id, desc: revision.id)
+      |> select([revision], %{id: revision.id})
+
+    join(query, :inner, [row], revision in subquery(latest), on: revision.id == row.revision_id)
+  end
+
+  defp current_only(query, _schema), do: query
 
   defp write(schema, id, embedding) do
     schema

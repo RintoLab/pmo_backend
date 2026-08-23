@@ -4,22 +4,10 @@ defmodule RintoPMO.ContentIndexTest do
   alias RintoPMO.Annotations
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
-  alias RintoPMO.ContentIndex
   alias RintoPMO.Documents
-  alias RintoPMO.Documents.BlockEmbedding
   alias RintoPMO.Projects.Project
   alias RintoPMO.Tasks
   alias RintoPMO.Tasks.Task
-
-  defp block_embedding_fields do
-    BlockEmbedding.__schema__(:fields) |> Map.new(&{&1, true})
-  end
-
-  defp blocks do
-    BlockEmbedding
-    |> order_by([projection], asc: projection.body)
-    |> Repo.all()
-  end
 
   # Stands in for the worker that will compute these.
   defp embed!(schema, id) do
@@ -43,120 +31,6 @@ defmodule RintoPMO.ContentIndexTest do
       })
 
     document
-  end
-
-  describe "blocks are the one projected resource" do
-    # A block is independently addressable, so it is independently findable: a
-    # hit lands on the section that says the thing.
-    test "each block is projected, and carries the way back up" do
-      project = insert(:project)
-
-      document =
-        document_with(
-          """
-          ## 部署步骤
-
-          先确认 systemd unit
-
-          ## 回滚
-
-          按上一版重放
-          """,
-          project: project
-        )
-
-      assert length(blocks()) == 2
-      assert Enum.any?(blocks(), &(&1.body =~ "部署步骤"))
-      assert Enum.any?(blocks(), &(&1.body =~ "回滚"))
-
-      for block <- blocks() do
-        assert block.document_id == document.id
-        assert is_nil(block.embedding)
-      end
-
-      # Neither the project nor the archived flag is copied here: both are the
-      # document's, and a search joins for them. A copy would be a second place
-      # the same fact lives, and somewhere for it to go stale.
-      refute Map.has_key?(block_embedding_fields(), :project_id)
-      refute Map.has_key?(block_embedding_fields(), :archived)
-
-      # Nor the heading: it is the first line of `body`, computed where it is
-      # shown. A copy of a copy is one more thing to keep in step.
-      refute Map.has_key?(block_embedding_fields(), :title)
-
-      assert Enum.any?(blocks(), &(&1.body =~ "systemd unit"))
-    end
-
-    test "a block keeps the text its vector will be made from" do
-      document_with("就是一段没有标题的话\n\n后面还有内容")
-
-      assert [block] = blocks()
-      assert block.body =~ "就是一段没有标题的话"
-    end
-
-    test "a block dropped by a new revision stops being findable" do
-      actor = insert(:actor)
-      document = document_with("## 会被删掉的一节\n\n内容")
-
-      assert [block] = blocks()
-
-      {:ok, _revision} =
-        Documents.create_revision(document, %{
-          actor_id: actor.id,
-          base_revision_id: document.latest_revision.id,
-          block_ops: [%{op: "delete", block_id: block.block_id, actor_id: actor.id}]
-        })
-
-      assert blocks() == []
-    end
-  end
-
-  # `document_blocks` writes a new row for every block on every commit, so an
-  # embedding column there would be null on all of them whenever one changed.
-  # That is the entire reason blocks get a projection keyed by `block_id`, and
-  # this is the test that says so.
-  describe "a commit re-embeds only what it changed" do
-    test "an untouched block keeps its vector across a revision" do
-      actor = insert(:actor)
-      document = document_with("## 改的那块\n\n原内容\n\n## 没改的那块\n\n别动我")
-
-      for block <- blocks(), do: embed!(BlockEmbedding, block.id)
-      assert Enum.all?(blocks(), & &1.embedding)
-
-      edited = Enum.find(blocks(), &(&1.body =~ "改的那块"))
-
-      {:ok, _revision} =
-        Documents.create_revision(document, %{
-          actor_id: actor.id,
-          base_revision_id: document.latest_revision.id,
-          block_ops: [
-            %{
-              op: "update",
-              block_id: edited.block_id,
-              actor_id: actor.id,
-              content: "## 改的那块\n\n改过的内容"
-            }
-          ]
-        })
-
-      edited_now = Enum.find(blocks(), &(&1.body =~ "改的那块"))
-      untouched = Enum.find(blocks(), &(&1.body =~ "没改的那块"))
-
-      assert is_nil(edited_now.embedding), "an edited block kept a stale vector"
-      assert untouched.embedding, "an untouched block was sent back for re-embedding"
-    end
-
-    test "rebuilding keeps every vector whose text is unchanged" do
-      document_with("## 部署步骤\n\n先确认 systemd unit")
-      for block <- blocks(), do: embed!(BlockEmbedding, block.id)
-
-      ContentIndex.rebuild()
-
-      assert blocks() != []
-
-      assert Enum.all?(blocks(), & &1.embedding),
-             "a rebuild sent unchanged blocks back for re-embedding"
-    end
   end
 
   # Everything else keeps its vector on its own row, voided by the changeset

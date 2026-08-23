@@ -8,7 +8,7 @@ defmodule RintoPMO.Embeddings.WorkerTest do
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Attachments.Attachment
   alias RintoPMO.Conversations.Conversation
-  alias RintoPMO.Documents.BlockEmbedding
+  alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Embeddings.Worker
   alias RintoPMO.Projects.Project
   alias RintoPMO.Tasks.Task
@@ -38,7 +38,7 @@ defmodule RintoPMO.Embeddings.WorkerTest do
 
   defp settle_all_but(schema) do
     for {other, _fields} <- [
-          {BlockEmbedding, nil},
+          {DocumentBlock, nil},
           {Task, nil},
           {Project, nil},
           {Annotation, nil},
@@ -158,11 +158,10 @@ defmodule RintoPMO.Embeddings.WorkerTest do
       insert(:task, title: "任务")
       insert(:conversation, title: "话题")
 
-      Repo.insert!(%BlockEmbedding{
-        block_id: UUIDv7.generate(),
-        document_id: UUIDv7.generate(),
-        body: "## 一节\n\n内容"
-      })
+      insert(:document_block,
+        revision: insert(:document_revision),
+        content: "## 一节\n\n内容"
+      )
 
       # One call per source that had rows, not one per row: block, task, the
       # project the task brought with it, and the conversation.
@@ -172,7 +171,7 @@ defmodule RintoPMO.Embeddings.WorkerTest do
 
       assert :ok = run()
 
-      assert Repo.one!(from row in BlockEmbedding, select: count(row.embedding)) == 1
+      assert Repo.one!(from row in DocumentBlock, select: count(row.embedding)) == 1
       assert Repo.one!(from row in Task, select: count(row.embedding)) == 1
       assert Repo.one!(from row in Conversation, select: count(row.embedding)) == 1
     end

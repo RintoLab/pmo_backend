@@ -52,8 +52,8 @@ defmodule RintoPMO.Search do
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Attachments.Attachment
   alias RintoPMO.Conversations.Conversation
-  alias RintoPMO.Documents.BlockEmbedding
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Projects.Project
   alias RintoPMO.References
@@ -268,31 +268,37 @@ defmodule RintoPMO.Search do
     |> Enum.map(&candidate(&1, "attachment"))
   end
 
-  # Scope and the archived flag are read from the document by a join rather than
-  # from a copy on the projection. A copy is a second place the same fact lives,
-  # and every one of them has to be rewritten when the original changes --
-  # archiving a document, moving it to another project -- by somebody who
-  # remembered to. This cannot go stale because there is nothing to keep up.
+  # Only the current snapshot of a block is searchable, which is what the join
+  # to the latest revision says. Superseded rows carry no vector anyway -- they
+  # are cleared as the next revision lands -- but saying so in the query keeps
+  # this correct rather than merely true today.
+  #
+  # Scope and the archived flag come from the document by a join rather than
+  # from copies: a copy is a second place the same fact lives, and every one of
+  # them has to be rewritten when the original changes.
   defp block_candidates(vector, opts, answering_as) do
-    BlockEmbedding
+    DocumentBlock
     |> where([row], not is_nil(row.embedding))
-    |> join(:inner, [row], document in Document,
+    |> join(:inner, [row], revision in subquery(latest_revisions()),
+      on: revision.id == row.revision_id
+    )
+    |> join(:inner, [_row, revision], document in Document,
       as: :document,
-      on: document.id == row.document_id
+      on: document.id == revision.document_id
     )
     |> scoped(opts, :document)
     |> archived(opts)
     |> order_by([row], asc: fragment("? <=> ?", row.embedding, ^vector))
     |> limit(^recall_limit())
-    |> select([row, document], %{
+    |> select([row, revision, document], %{
       block_id: row.block_id,
-      text: row.body,
-      document_id: row.document_id,
+      text: row.content,
+      document_id: revision.document_id,
+      document_title: revision.title,
       archived: not is_nil(document.archived_at),
       distance: fragment("? <=> ?", row.embedding, ^vector)
     })
     |> Repo.all()
-    |> with_document_titles()
     |> Enum.map(fn row ->
       key = if answering_as == "block", do: row.block_id, else: row.document_id
       title = if answering_as == "block", do: heading(row.text), else: row.document_title
@@ -301,6 +307,18 @@ defmodule RintoPMO.Search do
       |> Map.merge(%{key: key, title: title})
       |> candidate(answering_as)
     end)
+  end
+
+  # The newest revision of each document, which is the only one anything reads.
+  defp latest_revisions do
+    DocumentRevision
+    |> distinct([revision], revision.document_id)
+    |> order_by([revision], asc: revision.document_id, desc: revision.id)
+    |> select([revision], %{
+      id: revision.id,
+      document_id: revision.document_id,
+      title: revision.title
+    })
   end
 
   defp annotation_candidates(vector, opts) do
@@ -360,13 +378,6 @@ defmodule RintoPMO.Search do
       |> Map.merge(%{title: title, document_title: title})
       |> candidate("annotation")
     end)
-  end
-
-  defp with_document_titles([]), do: []
-
-  defp with_document_titles(rows) do
-    titles = document_titles(Enum.map(rows, & &1.document_id))
-    Enum.map(rows, &Map.put(&1, :document_title, Map.get(titles, &1.document_id)))
   end
 
   defp document_titles(document_ids) do

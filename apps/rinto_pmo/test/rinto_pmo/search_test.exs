@@ -6,7 +6,7 @@ defmodule RintoPMO.SearchTest do
   alias RintoPMO.AIMock
   alias RintoPMO.Annotations
   alias RintoPMO.Documents
-  alias RintoPMO.Documents.BlockEmbedding
+  alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.References
   alias RintoPMO.Search
   alias RintoPMO.Tasks
@@ -31,7 +31,7 @@ defmodule RintoPMO.SearchTest do
   end
 
   defp embed_everything do
-    for schema <- [BlockEmbedding, Tasks.Task, RintoPMO.Projects.Project, Annotations.Annotation] do
+    for schema <- [DocumentBlock, Tasks.Task, RintoPMO.Projects.Project, Annotations.Annotation] do
       schema
       |> where([row], is_nil(row.embedding))
       |> Repo.update_all(set: [embedding: Pgvector.new(vector())])
