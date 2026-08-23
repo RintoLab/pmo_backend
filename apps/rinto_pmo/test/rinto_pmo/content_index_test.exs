@@ -131,6 +131,19 @@ defmodule RintoPMO.ContentIndexTest do
       assert by_title["没改的那块"].embedding, "an untouched block was sent back for re-embedding"
     end
 
+    # Archiving rewrites every block projection of a document in order to set
+    # one boolean. The text is untouched, so the vectors have to survive it --
+    # otherwise putting a document away would cost a re-embedding of all of it.
+    test "archiving a document does not re-embed it" do
+      document = document_with("## 一\n\n甲\n\n## 二\n\n乙")
+      for block <- blocks(), do: embed!(BlockEmbedding, block.id)
+
+      {:ok, _archived} = Documents.archive_document(document)
+
+      assert Enum.all?(blocks(), & &1.archived), "archiving did not reach the projections"
+      assert Enum.all?(blocks(), & &1.embedding), "archiving re-embedded the document"
+    end
+
     test "rebuilding keeps every vector whose text is unchanged" do
       document_with("## 部署步骤\n\n先确认 systemd unit")
       for block <- blocks(), do: embed!(BlockEmbedding, block.id)

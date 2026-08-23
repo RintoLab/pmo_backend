@@ -160,11 +160,15 @@ defmodule RintoPMO.Documents do
   @doc """
   Idempotently archives a document.
 
-  Re-indexes it, because `archived` is a column on every one of its block
-  projections and search leaves archived content out. Without this the flag
-  would only land the next time something else happened to write to the
-  document, so an archived document would go on being findable for as long as
-  nobody edited it -- which, for something just put away, is indefinitely.
+  Rewrites its block projections, because `archived` is a column on each of them
+  and search leaves archived content out. Without this the flag would only land
+  the next time something else happened to write to the document, so an archived
+  document would go on being findable for as long as nobody edited it -- which,
+  for something just put away, is indefinitely.
+
+  Rewriting is cheap here: the projections carry the text they were embedded
+  from, and this changes none of it, so every vector survives. Archiving a
+  twenty-block document costs no model calls at all. See `RintoPMO.Embeddings`.
   """
   @impl true
   def archive_document(%Document{} = document) do
