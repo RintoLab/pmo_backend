@@ -37,12 +37,25 @@ defmodule RintoPMO.Documents.BlockEmbedding do
   its whole life, and rebuilding the mapping from `document_blocks` would mean
   choosing a revision first.
 
-  ## `title` and `body` are stored, not just read
+  ## Why `body` is stored, when a document's own properties are not
 
-  They are what was embedded. Keeping them is what makes "has this changed
-  since it was embedded" a comparison rather than a guess, which is what lets a
-  rewrite keep a still-valid vector instead of clearing it on principle. See
-  `RintoPMO.Embeddings` for the rule and what it is protecting against.
+  It looks like the same denormalisation, and it is not. `archived` would have
+  been a copy of what the document *currently is*; `body` is a record of **what
+  this vector was made from**.
+
+  That record is what makes "has the text changed since it was embedded" a
+  comparison rather than a guess. Without it there is nothing to compare
+  against, so every rewrite would have to clear the vector on principle -- a
+  commit touching one block would re-embed all twenty, which is the cost this
+  whole table exists to avoid.
+
+  It earns its place twice more: reranking scores the query against this text,
+  and a result's excerpt is cut from it. Reading it from `document_blocks`
+  instead would mean picking the latest revision first, every time.
+
+  A block's heading is **not** stored. It is the first line of `body`, computed
+  where it is displayed -- storing it would be a copy of a copy, and one more
+  thing to keep in step for no gain.
 
   ## Still an index, not a truth
 
@@ -57,7 +70,6 @@ defmodule RintoPMO.Documents.BlockEmbedding do
   schema "block_embeddings" do
     field :block_id, UUIDv7
 
-    field :title, :string
     field :body, :string
 
     field :document_id, UUIDv7
@@ -68,7 +80,7 @@ defmodule RintoPMO.Documents.BlockEmbedding do
     timestamps()
   end
 
-  @fields [:block_id, :title, :body, :document_id]
+  @fields [:block_id, :body, :document_id]
 
   @doc false
   def changeset(%__MODULE__{} = block_embedding \\ %__MODULE__{}, attrs) do

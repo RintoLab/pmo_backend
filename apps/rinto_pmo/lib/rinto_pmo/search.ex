@@ -287,7 +287,6 @@ defmodule RintoPMO.Search do
     |> select([row, document], %{
       block_id: row.block_id,
       text: row.body,
-      title: row.title,
       document_id: row.document_id,
       archived: not is_nil(document.archived_at),
       distance: fragment("? <=> ?", row.embedding, ^vector)
@@ -296,7 +295,7 @@ defmodule RintoPMO.Search do
     |> with_document_titles()
     |> Enum.map(fn row ->
       key = if answering_as == "block", do: row.block_id, else: row.document_id
-      title = if answering_as == "block", do: row.title, else: row.document_title
+      title = if answering_as == "block", do: heading(row.text), else: row.document_title
 
       row
       |> Map.merge(%{key: key, title: title})
@@ -424,6 +423,25 @@ defmodule RintoPMO.Search do
       distance: Map.fetch!(row, :distance)
     }
   end
+
+  # A block has no title of its own, so its first heading stands in for one.
+  # Computed here rather than stored: it is the first line of text the row
+  # already carries, and a stored copy would be one more thing to keep in step
+  # for no gain. Falling back to the first line keeps a block that opens with
+  # prose from being nameless in a result list.
+  defp heading(content) when is_binary(content) do
+    content
+    |> String.split("\n", parts: 2)
+    |> List.first()
+    |> String.trim()
+    |> String.replace(~r/^#+\s*/, "")
+    |> case do
+      "" -> nil
+      heading -> heading
+    end
+  end
+
+  defp heading(_content), do: nil
 
   defp excerpt(nil), do: nil
   defp excerpt(""), do: nil

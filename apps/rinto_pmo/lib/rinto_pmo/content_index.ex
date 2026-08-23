@@ -233,12 +233,7 @@ defmodule RintoPMO.ContentIndex do
   end
 
   defp project_block(repo, block, document_id) do
-    attrs = %{
-      block_id: block.block_id,
-      title: heading(block.content),
-      body: block.content,
-      document_id: document_id
-    }
+    attrs = %{block_id: block.block_id, body: block.content, document_id: document_id}
 
     %BlockEmbedding{}
     |> BlockEmbedding.changeset(attrs)
@@ -254,7 +249,6 @@ defmodule RintoPMO.ContentIndex do
     from projection in BlockEmbedding,
       update: [
         set: [
-          title: fragment("EXCLUDED.title"),
           body: fragment("EXCLUDED.body"),
           document_id: fragment("EXCLUDED.document_id"),
           updated_at: fragment("EXCLUDED.updated_at"),
@@ -262,33 +256,14 @@ defmodule RintoPMO.ContentIndex do
             fragment(
               """
               CASE
-                WHEN ? IS DISTINCT FROM EXCLUDED.title OR ? IS DISTINCT FROM EXCLUDED.body
-                THEN NULL
+                WHEN ? IS DISTINCT FROM EXCLUDED.body THEN NULL
                 ELSE ?
               END
               """,
-              projection.title,
               projection.body,
               projection.embedding
             )
         ]
       ]
   end
-
-  # A block has no title field, so its first heading stands in for one. Falling
-  # back to the first line keeps a block that opens with prose from being
-  # nameless in a result list.
-  defp heading(content) when is_binary(content) do
-    content
-    |> String.split("\n", parts: 2)
-    |> List.first()
-    |> String.trim()
-    |> String.replace(~r/^#+\s*/, "")
-    |> case do
-      "" -> nil
-      heading -> heading
-    end
-  end
-
-  defp heading(_content), do: nil
 end

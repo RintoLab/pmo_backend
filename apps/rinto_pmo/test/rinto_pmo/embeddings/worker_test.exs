@@ -161,7 +161,6 @@ defmodule RintoPMO.Embeddings.WorkerTest do
       Repo.insert!(%BlockEmbedding{
         block_id: UUIDv7.generate(),
         document_id: UUIDv7.generate(),
-        title: "一节",
         body: "## 一节\n\n内容"
       })
 

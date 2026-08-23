@@ -17,7 +17,7 @@ defmodule RintoPMO.ContentIndexTest do
 
   defp blocks do
     BlockEmbedding
-    |> order_by([projection], asc: projection.title)
+    |> order_by([projection], asc: projection.body)
     |> Repo.all()
   end
 
@@ -66,7 +66,8 @@ defmodule RintoPMO.ContentIndexTest do
         )
 
       assert length(blocks()) == 2
-      assert Enum.map(blocks(), & &1.title) == ["回滚", "部署步骤"]
+      assert Enum.any?(blocks(), &(&1.body =~ "部署步骤"))
+      assert Enum.any?(blocks(), &(&1.body =~ "回滚"))
 
       for block <- blocks() do
         assert block.document_id == document.id
@@ -79,14 +80,18 @@ defmodule RintoPMO.ContentIndexTest do
       refute Map.has_key?(block_embedding_fields(), :project_id)
       refute Map.has_key?(block_embedding_fields(), :archived)
 
+      # Nor the heading: it is the first line of `body`, computed where it is
+      # shown. A copy of a copy is one more thing to keep in step.
+      refute Map.has_key?(block_embedding_fields(), :title)
+
       assert Enum.any?(blocks(), &(&1.body =~ "systemd unit"))
     end
 
-    test "a block with no heading falls back to its first line" do
+    test "a block keeps the text its vector will be made from" do
       document_with("就是一段没有标题的话\n\n后面还有内容")
 
       assert [block] = blocks()
-      assert block.title == "就是一段没有标题的话"
+      assert block.body =~ "就是一段没有标题的话"
     end
 
     test "a block dropped by a new revision stops being findable" do
@@ -118,7 +123,7 @@ defmodule RintoPMO.ContentIndexTest do
       for block <- blocks(), do: embed!(BlockEmbedding, block.id)
       assert Enum.all?(blocks(), & &1.embedding)
 
-      edited = Enum.find(blocks(), &(&1.title == "改的那块"))
+      edited = Enum.find(blocks(), &(&1.body =~ "改的那块"))
 
       {:ok, _revision} =
         Documents.create_revision(document, %{
@@ -134,10 +139,11 @@ defmodule RintoPMO.ContentIndexTest do
           ]
         })
 
-      by_title = Map.new(blocks(), &{&1.title, &1})
+      edited_now = Enum.find(blocks(), &(&1.body =~ "改的那块"))
+      untouched = Enum.find(blocks(), &(&1.body =~ "没改的那块"))
 
-      assert is_nil(by_title["改的那块"].embedding), "an edited block kept a stale vector"
-      assert by_title["没改的那块"].embedding, "an untouched block was sent back for re-embedding"
+      assert is_nil(edited_now.embedding), "an edited block kept a stale vector"
+      assert untouched.embedding, "an untouched block was sent back for re-embedding"
     end
 
     test "rebuilding keeps every vector whose text is unchanged" do

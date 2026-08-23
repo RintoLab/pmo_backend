@@ -46,8 +46,12 @@ defmodule RintoPMO.Repo.Migrations.CreateBlockEmbeddings do
       # The block's stable identity, the one thing a revision does not change.
       add :block_id, :binary_id, null: false
 
-      # A block has no title of its own; its first heading stands in for one.
-      add :title, :text
+      # What the vector was made from, which is what makes "has this changed
+      # since it was embedded" a comparison rather than a guess. Also what the
+      # reranker scores and what an excerpt is cut from.
+      #
+      # A heading is not stored beside it: that is the first line of this, and a
+      # copy of a copy is one more thing to keep in step for nothing.
       add :body, :text
 
       # How a hit ascends. A block reference is followed by opening its document
