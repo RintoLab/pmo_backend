@@ -56,6 +56,7 @@ defmodule RintoPMO.Tasks do
   alias Ecto.Changeset
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Links
   alias RintoPMO.Projects.Project
   alias RintoPMO.Settings
   alias RintoPMO.Tasks.Breakdown
@@ -228,7 +229,7 @@ defmodule RintoPMO.Tasks do
          {:ok, attrs} <- put_actual(attrs, kind),
          chset = Task.creation_changeset(%Task{project_id: project.id}, attrs),
          {:ok, chset} <- validate_parent(chset, project.id, nil) do
-      Repo.insert(chset)
+      Repo.transact(&insert_task(&1, chset))
     end
   end
 
@@ -249,11 +250,26 @@ defmodule RintoPMO.Tasks do
     end
   end
 
+  # The transaction exists so the index is written with the task rather than
+  # after it -- see `RintoPMO.Links`. It is also where `create_task/2` and
+  # `update_task/2` each keep the rest of their one-atomic-act work.
+  defp insert_task(repo, chset) do
+    with {:ok, task} <- repo.insert(chset) do
+      index(repo, task)
+      {:ok, task}
+    end
+  end
+
   defp apply_move(repo, chset, old_parent_id) do
     with {:ok, updated} <- repo.update(chset) do
       demote_if_emptied(repo, old_parent_id, updated.parent_id)
+      index(repo, updated)
       {:ok, updated}
     end
+  end
+
+  defp index(repo, %Task{} = task) do
+    Links.sync(repo, "task", task.id, task.description)
   end
 
   @doc """
@@ -285,6 +301,8 @@ defmodule RintoPMO.Tasks do
   end
 
   defp detach(repo, %Task{} = task) do
+    Links.purge(repo, "task", task.id)
+
     with {:ok, deleted} <- repo.delete(task) do
       demote_if_emptied(repo, task.parent_id, nil)
       {:ok, deleted}

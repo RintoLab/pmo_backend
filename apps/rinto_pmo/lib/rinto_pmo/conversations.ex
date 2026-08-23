@@ -33,6 +33,7 @@ defmodule RintoPMO.Conversations do
   alias RintoPMO.Conversations.Message
   alias RintoPMO.Conversations.MessageRef
   alias RintoPMO.Conversations.Titles
+  alias RintoPMO.Links
   alias RintoPMO.Utils
 
   @behaviour Behaviour
@@ -169,6 +170,11 @@ defmodule RintoPMO.Conversations do
 
       with {:ok, message} <- attrs |> Message.changeset() |> repo.insert(),
            {:ok, stored_refs} <- insert_refs(repo, message, refs) do
+        # The `reference#N` pointers a mention UI writes are not `rinto://`, so
+        # they are passed over here; what this picks up is a URI written into
+        # the prose itself, which is the only way a message can name something
+        # its client's mention UI had no entry for.
+        Links.sync(repo, "message", message.id, message.content)
         {:ok, %{message | refs: stored_refs}}
       end
     end)

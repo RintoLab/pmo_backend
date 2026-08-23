@@ -8,6 +8,7 @@ defmodule RintoPMO.Annotations do
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Links
 
   defmodule Behaviour do
     @moduledoc false
@@ -80,9 +81,12 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def create_annotation(%Document{} = document, attrs) do
-    %Annotation{document_id: document.id}
-    |> Annotation.changeset(attrs)
-    |> Repo.insert()
+    Repo.transact(fn repo ->
+      %Annotation{document_id: document.id}
+      |> Annotation.changeset(attrs)
+      |> repo.insert()
+      |> index(repo)
+    end)
   end
 
   @doc """
@@ -90,9 +94,12 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def update_annotation(%Annotation{} = annotation, attrs) do
-    annotation
-    |> Annotation.update_changeset(attrs)
-    |> Repo.update()
+    Repo.transact(fn repo ->
+      annotation
+      |> Annotation.update_changeset(attrs)
+      |> repo.update()
+      |> index(repo)
+    end)
   end
 
   @doc """
@@ -100,7 +107,10 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def delete_annotation(%Annotation{} = annotation) do
-    Repo.delete(annotation)
+    Repo.transact(fn repo ->
+      Links.purge(repo, "annotation", annotation.id)
+      repo.delete(annotation)
+    end)
   end
 
   @doc """
@@ -160,6 +170,7 @@ defmodule RintoPMO.Annotations do
       %AnnotationReply{annotation_id: locked.id, position: position}
       |> AnnotationReply.changeset(attrs)
       |> repo.insert()
+      |> index_reply(repo, locked.document_id)
     end)
   end
 
@@ -168,9 +179,12 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def update_reply(%AnnotationReply{} = reply, attrs) do
-    reply
-    |> AnnotationReply.update_changeset(attrs)
-    |> Repo.update()
+    Repo.transact(fn repo ->
+      reply
+      |> AnnotationReply.update_changeset(attrs)
+      |> repo.update()
+      |> index_reply(repo, document_id_of(repo, reply))
+    end)
   end
 
   @doc """
@@ -178,7 +192,10 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def delete_reply(%AnnotationReply{} = reply) do
-    Repo.delete(reply)
+    Repo.transact(fn repo ->
+      Links.purge(repo, "annotation_reply", reply.id)
+      repo.delete(reply)
+    end)
   end
 
   @doc """
@@ -190,6 +207,34 @@ defmodule RintoPMO.Annotations do
     |> Ecto.assoc(:replies)
     |> where([reply], reply.id == ^id)
     |> Repo.one!()
+  end
+
+  # In the same transaction as the write, so that the body and "who points at
+  # this?" never disagree, not even briefly. See `RintoPMO.Links`.
+  defp index({:ok, %Annotation{} = annotation}, repo) do
+    Links.sync(repo, "annotation", annotation.id, annotation.content,
+      document_id: annotation.document_id
+    )
+
+    {:ok, annotation}
+  end
+
+  defp index(result, _repo), do: result
+
+  defp index_reply({:ok, %AnnotationReply{} = reply}, repo, document_id) do
+    Links.sync(repo, "annotation_reply", reply.id, reply.content, document_id: document_id)
+    {:ok, reply}
+  end
+
+  defp index_reply(result, _repo, _document_id), do: result
+
+  # A reply knows its annotation but not its document, and the index wants the
+  # document so that everything written inside one is reachable together.
+  defp document_id_of(repo, %AnnotationReply{annotation_id: annotation_id}) do
+    Annotation
+    |> where([annotation], annotation.id == ^annotation_id)
+    |> select([annotation], annotation.document_id)
+    |> repo.one()
   end
 
   defp filter_annotations(query, filter) do

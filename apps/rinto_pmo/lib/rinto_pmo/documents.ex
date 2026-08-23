@@ -44,6 +44,7 @@ defmodule RintoPMO.Documents do
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Markdown
   alias RintoPMO.Documents.Notifier
+  alias RintoPMO.Links
   alias RintoPMO.Settings
   alias RintoPMO.Utils
 
@@ -121,18 +122,28 @@ defmodule RintoPMO.Documents do
     with {:ok, attrs} <- put_default_project(attrs),
          {:ok, author_id} <- document_author(attrs),
          {:ok, attrs} <- split_markdown(attrs, author_id) do
-      %Document{}
-      |> Document.creation_changeset(attrs)
-      |> Repo.insert()
-      |> case do
-        {:ok, %Document{revisions: [revision]} = document} ->
-          {:ok, %{document | latest_revision: revision}}
-
-        {:error, %Changeset{} = changeset} ->
-          {:error, changeset}
-      end
+      Repo.transact(&insert_document(&1, attrs))
     end
     |> unwrap_error()
+  end
+
+  # Creation does not go through `insert_revision/4` -- the first revision and
+  # its blocks are nested into the document's own changeset -- so it needs its
+  # own call into the index. Without this, a document created with references
+  # in its body would have none of them indexed until something else happened
+  # to save it.
+  defp insert_document(repo, attrs) do
+    %Document{}
+    |> Document.creation_changeset(attrs)
+    |> repo.insert()
+    |> case do
+      {:ok, %Document{revisions: [revision]} = document} ->
+        Links.sync_document(repo, revision)
+        {:ok, %{document | latest_revision: revision}}
+
+      {:error, %Changeset{} = changeset} ->
+        {:error, changeset}
+    end
   end
 
   @doc """
@@ -1105,12 +1116,23 @@ defmodule RintoPMO.Documents do
             changeset
             |> put_block_snapshots(block_entries)
             |> repo.insert()
+            |> index_revision(repo)
 
           {:error, code, details} ->
             {:error, {code, details}}
         end
     end
   end
+
+  # In the same transaction as the revision, because an index written afterwards
+  # has a window where the body says one thing and "who points at this?" says
+  # another. See `RintoPMO.Links`.
+  defp index_revision({:ok, %DocumentRevision{} = revision}, repo) do
+    Links.sync_document(repo, revision)
+    {:ok, revision}
+  end
+
+  defp index_revision(result, _repo), do: result
 
   defp put_block_snapshots(changeset, block_entries) do
     block_changesets =
