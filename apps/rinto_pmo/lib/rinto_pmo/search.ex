@@ -95,24 +95,27 @@ defmodule RintoPMO.Search do
 
   @behaviour Behaviour
 
-  @default_type "block"
-
   @doc """
   Searches one kind of thing, best first.
 
-  Options: `:type` (default `"block"`), `:project_id`, `:include_archived`,
-  `:limit`.
+  Options: `:type` (**required**), `:project_id`, `:include_archived`, `:limit`.
 
-  Answers `{:error, :unsearchable_type, _}` for a type nothing is indexed under
-  -- a proposal, or a kind of thing this build has never heard of. That is a
-  mistake in the request rather than an empty result, and saying so beats
+  **There is no default type.** A caller that has not said what it is looking
+  for has not decided yet, and picking for it would mean quietly searching
+  blocks while it believed it was searching everything -- a wrong answer that
+  looks like a right one. Being made to name the type is also what keeps a
+  caller correct when a new kind of thing becomes searchable.
+
+  Answers `{:error, :unsearchable_type, _}` for a missing type, for one nothing
+  is indexed under, and for one this build has never heard of. All three are
+  mistakes in the request rather than empty results, and saying so beats
   answering "nothing found" to a question that could never have found anything.
   """
   @impl true
   @spec search(String.t(), [option()]) ::
           {:ok, [result()]} | {:error, :unsearchable_type, map()} | {:error, term()}
   def search(query, opts \\ []) when is_binary(query) do
-    type = Keyword.get(opts, :type) || @default_type
+    type = Keyword.get(opts, :type)
 
     if searchable?(type) do
       run(query, type, opts)
@@ -132,6 +135,7 @@ defmodule RintoPMO.Search do
     |> Enum.sort()
   end
 
+  defp searchable?(nil), do: false
   defp searchable?(type), do: type in searchable_types()
 
   defp run(query, type, opts) do

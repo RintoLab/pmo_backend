@@ -23,11 +23,11 @@ defmodule RintoPMOWeb.V1.SearchControllerTest do
     document_id = UUIDv7.generate()
 
     expect(SearchMock, :search, fn "部署", opts ->
-      assert opts[:type] == nil
+      assert opts[:type] == "block"
       {:ok, [result(%{document_id: document_id, document_title: "上线流程"})]}
     end)
 
-    conn = get(conn, ~p"/api/v1/search?q=部署")
+    conn = get(conn, ~p"/api/v1/search?q=部署&type=block")
 
     assert [data] = json_response(conn, 200)["data"]
     assert String.starts_with?(data["uri"], "rinto://block/")
@@ -61,7 +61,7 @@ defmodule RintoPMOWeb.V1.SearchControllerTest do
       {:ok, []}
     end)
 
-    conn = get(conn, ~p"/api/v1/search?q=部署")
+    conn = get(conn, ~p"/api/v1/search?q=部署&type=block")
 
     assert json_response(conn, 200)["data"] == []
   end
@@ -72,21 +72,29 @@ defmodule RintoPMOWeb.V1.SearchControllerTest do
       {:ok, []}
     end)
 
-    conn = get(conn, ~p"/api/v1/search?q=部署&limit=5")
+    conn = get(conn, ~p"/api/v1/search?q=部署&type=block&limit=5")
 
     assert json_response(conn, 200)["data"] == []
   end
 
   test "GET search rejects a limit that is not a positive number", %{conn: conn} do
     for limit <- ["0", "-1", "abc", "5x"] do
-      conn = get(conn, ~p"/api/v1/search?q=部署&limit=#{limit}")
+      conn = get(conn, ~p"/api/v1/search?q=部署&type=block&limit=#{limit}")
       assert %{"error" => "bad_request"} = json_response(conn, 400)
     end
   end
 
   test "GET search rejects a missing query", %{conn: conn} do
     assert %{"error" => "bad_request"} =
-             conn |> get(~p"/api/v1/search") |> json_response(400)
+             conn |> get(~p"/api/v1/search?type=block") |> json_response(400)
+  end
+
+  # No default: a caller that has not said what it is looking for has not
+  # decided, and picking for it would search one kind of thing while the caller
+  # believed it was searching everything.
+  test "GET search rejects a missing type", %{conn: conn} do
+    assert %{"error" => "bad_request", "details" => %{"type" => _}} =
+             conn |> get(~p"/api/v1/search?q=部署") |> json_response(400)
   end
 
   # Said rather than answered with an empty list: the question could never have

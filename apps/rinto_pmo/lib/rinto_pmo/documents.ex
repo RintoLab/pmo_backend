@@ -159,12 +159,21 @@ defmodule RintoPMO.Documents do
 
   @doc """
   Idempotently archives a document.
+
+  Re-indexes it, because `archived` is a column on every one of its block
+  projections and search leaves archived content out. Without this the flag
+  would only land the next time something else happened to write to the
+  document, so an archived document would go on being findable for as long as
+  nobody edited it -- which, for something just put away, is indefinitely.
   """
   @impl true
   def archive_document(%Document{} = document) do
-    document
-    |> Document.archive_changeset()
-    |> Repo.update()
+    Repo.transact(fn repo ->
+      with {:ok, archived} <- document |> Document.archive_changeset() |> repo.update() do
+        ContentIndex.sync_document(repo, latest_revision!(repo, archived, preload_blocks?: true))
+        {:ok, archived}
+      end
+    end)
   end
 
   @doc """

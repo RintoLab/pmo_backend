@@ -751,16 +751,25 @@ paths:
             type: string
         - name: type
           in: query
-          required: false
+          required: true
           description: >
-            Which kind of thing to search. Defaults to `block`, which is where a
-            body's content lives -- a document is found through the section that
-            says the thing. A type that nothing is indexed under is refused
-            rather than answered with an empty list.
+            Which kind of thing to search. **Required, with no default.** A
+            caller that has not said what it is looking for has not decided yet,
+            and choosing for it would mean quietly searching one kind of thing
+            while the caller believed it was searching everything -- a wrong
+            answer that looks like a right one.
+
+
+            `block` is where a body's content lives: a document is found through
+            the section that says the thing. Ask for `document` to get the
+            document rather than the section.
+
+
+            A type nothing is indexed under is refused rather than answered with
+            an empty list.
           schema:
             type: string
             enum: [block, document, annotation, task, project, conversation, attachment]
-            default: block
         - name: project_id
           in: query
           required: false
@@ -772,10 +781,10 @@ paths:
           in: query
           required: false
           description: >
-            Archived things are left out by default. This differs from
+            Archived things are left out by default, and this is the client's
+            filter to set rather than a judgement made for it. It differs from
             `GET /backlinks`, which must answer completely -- that asks "who
-            pointed at this", while this asks "find me something to use", and
-            archived means "not in use".
+            pointed at this", where an omission would be wrong.
           schema:
             type: boolean
             default: false
@@ -794,7 +803,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SearchResponse"
         "400":
-          description: "`q` is missing, or `limit` is not a positive number"
+          description: "`q` or `type` is missing, or `limit` is not a positive number"
           content:
             application/json:
               schema:

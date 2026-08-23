@@ -58,7 +58,7 @@ defmodule RintoPMO.SearchTest do
       embed_everything()
       expect_pipeline()
 
-      assert {:ok, [result]} = Search.search("部署")
+      assert {:ok, [result]} = Search.search("部署", type: "block")
 
       assert {:ok, reference} = References.parse(result.uri)
       assert reference.type == "block"
@@ -77,7 +77,7 @@ defmodule RintoPMO.SearchTest do
     test "block answers with the section that matched", %{document: document} do
       expect_pipeline()
 
-      assert {:ok, results} = Search.search("部署")
+      assert {:ok, results} = Search.search("部署", type: "block")
       assert length(results) == 2
 
       for result <- results do
@@ -142,7 +142,7 @@ defmodule RintoPMO.SearchTest do
       embed_everything()
       expect_pipeline()
 
-      assert {:ok, [result]} = Search.search("部署", project_id: wanted.id)
+      assert {:ok, [result]} = Search.search("部署", type: "block", project_id: wanted.id)
       assert result.excerpt =~ "要找的"
     end
 
@@ -150,23 +150,18 @@ defmodule RintoPMO.SearchTest do
     # something to use", and archived means "not in use".
     test "archived content is left out unless asked for" do
       document = document_with("## 部署\n\n归档的")
-      {:ok, _archived} = Documents.archive_document(document)
-
-      # Archiving lands on the projection at the next write.
-      {:ok, _revision} =
-        Documents.create_revision(document, %{
-          actor_id: insert(:actor).id,
-          base_revision_id: document.latest_revision.id,
-          block_ops: []
-        })
-
       embed_everything()
 
+      # Archiving re-indexes on the spot. It used to wait for the next write to
+      # the document, which for something just put away is indefinitely -- so
+      # an archived document went on being findable.
+      {:ok, _archived} = Documents.archive_document(document)
+
       expect(AIMock, :embed_query, fn _query -> {:ok, vector()} end)
-      assert {:ok, []} = Search.search("部署")
+      assert {:ok, []} = Search.search("部署", type: "block")
 
       expect_pipeline()
-      assert {:ok, [result]} = Search.search("部署", include_archived: true)
+      assert {:ok, [result]} = Search.search("部署", type: "block", include_archived: true)
       assert result.archived
     end
   end
@@ -177,7 +172,7 @@ defmodule RintoPMO.SearchTest do
 
       expect(AIMock, :embed_query, fn _query -> {:ok, vector()} end)
 
-      assert {:ok, []} = Search.search("部署")
+      assert {:ok, []} = Search.search("部署", type: "block")
     end
   end
 
@@ -190,6 +185,13 @@ defmodule RintoPMO.SearchTest do
 
     test "refuses one this build has never heard of" do
       assert {:error, :unsearchable_type, _details} = Search.search("x", type: "intel")
+    end
+
+    # No default: a caller that has not said what it is looking for has not
+    # decided, and picking for it would search one kind of thing while it
+    # believed it was searching everything.
+    test "refuses a request that names no type at all" do
+      assert {:error, :unsearchable_type, %{type: nil}} = Search.search("部署")
     end
 
     test "lists what it will search" do
@@ -210,13 +212,13 @@ defmodule RintoPMO.SearchTest do
       expect(AIMock, :embed_query, fn _query -> {:ok, vector()} end)
       expect(AIMock, :rerank, fn _query, _documents -> {:error, :not_configured} end)
 
-      assert {:error, :not_configured} = Search.search("部署")
+      assert {:error, :not_configured} = Search.search("部署", type: "block")
     end
 
     test "a failed query embedding fails the search" do
       expect(AIMock, :embed_query, fn _query -> {:error, {:transport, :econnrefused}} end)
 
-      assert {:error, {:transport, :econnrefused}} = Search.search("部署")
+      assert {:error, {:transport, :econnrefused}} = Search.search("部署", type: "block")
     end
   end
 
@@ -226,7 +228,7 @@ defmodule RintoPMO.SearchTest do
       embed_everything()
       expect_pipeline()
 
-      assert {:ok, results} = Search.search("x", limit: 2)
+      assert {:ok, results} = Search.search("x", type: "block", limit: 2)
       assert length(results) == 2
     end
   end
