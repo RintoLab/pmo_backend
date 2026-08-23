@@ -55,8 +55,8 @@ defmodule RintoPMO.Tasks do
 
   alias Ecto.Changeset
   alias RintoPMO.Actors.Actor
-  alias RintoPMO.ContentIndex
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Links
   alias RintoPMO.Projects.Project
   alias RintoPMO.Settings
   alias RintoPMO.Tasks.Breakdown
@@ -269,7 +269,7 @@ defmodule RintoPMO.Tasks do
   end
 
   defp index(repo, %Task{} = task) do
-    ContentIndex.sync(repo, task)
+    Links.sync(repo, "task", task.id, task.description)
   end
 
   @doc """
@@ -301,7 +301,7 @@ defmodule RintoPMO.Tasks do
   end
 
   defp detach(repo, %Task{} = task) do
-    ContentIndex.purge(repo, task)
+    Links.purge(repo, "task", task.id)
 
     with {:ok, deleted} <- repo.delete(task) do
       demote_if_emptied(repo, task.parent_id, nil)

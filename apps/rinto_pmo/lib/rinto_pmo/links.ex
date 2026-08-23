@@ -31,14 +31,16 @@ defmodule RintoPMO.Links do
 
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
+  alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Conversations.Message
-  alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Links.Link
   alias RintoPMO.References
+  alias RintoPMO.Tasks.Task
   alias RintoPMO.Tasks.Task
 
   @typedoc """
@@ -143,6 +145,123 @@ defmodule RintoPMO.Links do
     |> repo.delete_all()
 
     :ok
+  end
+
+  @doc false
+  # An annotation and a reply each know their document only indirectly, which is
+  # the one thing worth a named helper rather than a call site remembering it.
+  def sync_annotation(repo, %Annotation{} = annotation) do
+    sync(repo, "annotation", annotation.id, annotation.content,
+      document_id: annotation.document_id
+    )
+  end
+
+  @doc false
+  def sync_reply(repo, %AnnotationReply{} = reply) do
+    document_id =
+      Annotation
+      |> where([annotation], annotation.id == ^reply.annotation_id)
+      |> select([annotation], annotation.document_id)
+      |> repo.one()
+
+    sync(repo, "annotation_reply", reply.id, reply.content, document_id: document_id)
+  end
+
+  @doc false
+  # Call **before** the annotation is deleted: the database cascades its replies
+  # away, which this does not see, so their rows have to be read out while the
+  # replies still exist.
+  def purge_annotation(repo, %Annotation{} = annotation) do
+    AnnotationReply
+    |> where([reply], reply.annotation_id == ^annotation.id)
+    |> select([reply], reply.id)
+    |> repo.all()
+    |> Enum.each(&purge(repo, "annotation_reply", &1))
+
+    purge(repo, "annotation", annotation.id)
+  end
+
+  @doc """
+  Empties the reference index and reads it back out of every body in the system.
+
+  This is what makes "these are indexes, not truths" checkable rather than
+  merely asserted. It is also the backfill for content written before an index
+  existed, and the repair for any sync a future write path forgets.
+
+  One transaction, so a run that dies leaves the previous indexes rather than
+  half of new ones. That means a long transaction on a large corpus, which is
+  accepted: this is a tool a person runs, not something on a request path.
+
+  ## Nothing here touches an embedding
+
+  Every vector lives on the row it describes, so there is nothing to rebuild:
+  a vector is missing only because the text changed and nothing has recomputed
+  it yet, which is the embedding worker's business rather than this one's.
+
+  `links` is truncated and rewritten because a link row costs nothing to
+  produce -- it is read straight out of text already in hand.
+
+  Returns a tally per kind of source read.
+  """
+  @spec rebuild(Ecto.Repo.t()) :: %{String.t() => non_neg_integer()}
+  def rebuild(repo \\ Repo) do
+    repo.transact(fn repo ->
+      repo.delete_all(Link)
+
+      tally = %{
+        "document" => rebuild_documents(repo),
+        "annotation" => rebuild_annotations(repo),
+        "task" => rebuild_tasks(repo),
+        "message" => rebuild_messages(repo)
+      }
+
+      {:ok, tally}
+    end)
+    |> case do
+      {:ok, tally} -> tally
+    end
+  end
+
+  # Only the newest revision of each document, matching what the write path
+  # indexes. Loaded a page at a time rather than streamed with a preload, which
+  # `Repo.stream/2` does not do.
+  defp rebuild_documents(repo) do
+    DocumentRevision
+    |> distinct([revision], revision.document_id)
+    |> order_by([revision], asc: revision.document_id, desc: revision.id)
+    |> repo.all()
+    |> Enum.chunk_every(100)
+    |> Enum.reduce(0, fn revisions, count ->
+      loaded = repo.preload(revisions, :blocks)
+      Enum.each(loaded, &sync_document(repo, &1))
+      count + length(loaded)
+    end)
+  end
+
+  # Replies re-project their annotation rather than carrying rows of their own,
+  # so reading every annotation covers both -- but each reply's own links still
+  # have to be read, since those are per-reply.
+  defp rebuild_annotations(repo) do
+    annotations = repo.all(Annotation)
+    Enum.each(annotations, &sync_annotation(repo, &1))
+
+    AnnotationReply
+    |> repo.all()
+    |> Enum.each(&sync_reply(repo, &1))
+
+    length(annotations)
+  end
+
+  defp rebuild_tasks(repo) do
+    tasks = repo.all(Task)
+    Enum.each(tasks, &sync(repo, "task", &1.id, &1.description))
+    length(tasks)
+  end
+
+  defp rebuild_messages(repo) do
+    messages = repo.all(Message)
+    Enum.each(messages, &sync(repo, "message", &1.id, &1.content))
+    length(messages)
   end
 
   # Describing sources
@@ -305,7 +424,7 @@ defmodule RintoPMO.Links do
       {:ok, found} ->
         found
         |> Enum.filter(&References.linkable?(&1.reference))
-        |> rows(repo, source_type, source_id, document_id)
+        |> rows(source_type, source_id, document_id)
         |> Enum.each(&repo.insert!/1)
 
         :ok
@@ -315,9 +434,7 @@ defmodule RintoPMO.Links do
     end
   end
 
-  defp rows(found, repo, source_type, source_id, document_id) do
-    documents = target_documents(repo, found)
-
+  defp rows(found, source_type, source_id, document_id) do
     Enum.map(found, fn %{reference: reference, label: label, position: position} ->
       Link.changeset(%{
         source_type: source_type,
@@ -326,54 +443,9 @@ defmodule RintoPMO.Links do
         target_type: reference.type,
         target_id: References.id(reference),
         target_slug: References.slug(reference),
-        target_document_id: Map.get(documents, {reference.type, reference.key}),
         label: label,
         position: position
       })
     end)
   end
-
-  # The document a block, annotation, or proposal belongs to. Resolved once per
-  # body rather than once per reference: a block citing six annotations of one
-  # document should not be six queries.
-  #
-  # A reference whose target is already gone simply has no entry, which is the
-  # honest answer -- the link is kept and reported broken, not repaired.
-  defp target_documents(repo, found) do
-    found
-    |> Enum.group_by(& &1.reference.type, & &1.reference.key)
-    |> Enum.flat_map(fn {type, keys} -> parents(repo, type, Enum.uniq(keys)) end)
-    |> Map.new()
-  end
-
-  defp parents(repo, "block", block_ids) do
-    DocumentBlock
-    |> join(:inner, [block], revision in DocumentRevision, on: revision.id == block.revision_id)
-    |> where([block], block.block_id in ^block_ids)
-    |> distinct([block], block.block_id)
-    |> order_by([block, revision], asc: block.block_id, desc: revision.id)
-    |> select([block, revision], {block.block_id, revision.document_id})
-    |> repo.all()
-    |> Enum.map(fn {block_id, document_id} -> {{"block", block_id}, document_id} end)
-  end
-
-  defp parents(repo, "annotation", ids) do
-    Annotation
-    |> where([annotation], annotation.id in ^ids)
-    |> select([annotation], {annotation.id, annotation.document_id})
-    |> repo.all()
-    |> Enum.map(fn {id, document_id} -> {{"annotation", id}, document_id} end)
-  end
-
-  defp parents(repo, "proposal", ids) do
-    BlockProposal
-    |> where([proposal], proposal.id in ^ids)
-    |> select([proposal], {proposal.id, proposal.document_id})
-    |> repo.all()
-    |> Enum.map(fn {id, document_id} -> {{"proposal", id}, document_id} end)
-  end
-
-  defp parents(_repo, "document", ids), do: Enum.map(ids, &{{"document", &1}, &1})
-
-  defp parents(_repo, _type, _keys), do: []
 end

@@ -28,13 +28,6 @@ defmodule RintoPMO.Repo.Migrations.CreateLinks do
       add :target_id, :binary_id, null: true
       add :target_slug, :string, null: true
 
-      # The target's document, resolved when the row is written -- the URI does
-      # not carry it. `rinto://block/{id}` addresses a block on its own, and
-      # this is how "who points into this document" stays one indexed query.
-      # Same move as `message_refs.ref_id` holding the id a project slug
-      # resolved to at write time.
-      add :target_document_id, :binary_id, null: true
-
       # The link text as written. What a reader is shown when the target is
       # gone -- the same way an annotation degrades to its `block_text`.
       add :label, :text, null: false
@@ -56,7 +49,6 @@ defmodule RintoPMO.Repo.Migrations.CreateLinks do
     create index(:links, [:target_type, :target_id])
     create index(:links, [:target_type, :target_slug])
     create index(:links, [:source_type, :source_id])
-    create index(:links, [:target_document_id])
     create index(:links, [:source_document_id])
   end
 end

@@ -33,7 +33,6 @@ defmodule RintoPMO.Documents do
   use RintoPMO, :context
 
   alias Ecto.Changeset
-  alias RintoPMO.ContentIndex
   alias RintoPMO.Documents.BlockDiff
   alias RintoPMO.Documents.BlockMerge
   alias RintoPMO.Documents.BlockOps
@@ -45,6 +44,7 @@ defmodule RintoPMO.Documents do
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Markdown
   alias RintoPMO.Documents.Notifier
+  alias RintoPMO.Links
   alias RintoPMO.Settings
   alias RintoPMO.Utils
 
@@ -138,7 +138,7 @@ defmodule RintoPMO.Documents do
     |> repo.insert()
     |> case do
       {:ok, %Document{revisions: [revision]} = document} ->
-        ContentIndex.sync_document(repo, revision)
+        Links.sync_document(repo, revision)
         {:ok, %{document | latest_revision: revision}}
 
       {:error, %Changeset{} = changeset} ->
@@ -1133,7 +1133,7 @@ defmodule RintoPMO.Documents do
   # has a window where the body says one thing and "who points at this?" says
   # another. See `RintoPMO.Links`.
   defp index_revision({:ok, %DocumentRevision{} = revision}, repo, parent) do
-    ContentIndex.sync_document(repo, revision)
+    Links.sync_document(repo, revision)
     retire_embeddings(repo, parent)
     {:ok, revision}
   end

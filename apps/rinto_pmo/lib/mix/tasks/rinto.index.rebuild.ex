@@ -33,13 +33,13 @@ defmodule Mix.Tasks.Rinto.Index.Rebuild do
 
   use Mix.Task
 
-  alias RintoPMO.ContentIndex
+  alias RintoPMO.Links
 
   @impl Mix.Task
   def run(_argv) do
     Mix.Task.run("app.start")
 
-    tally = ContentIndex.rebuild()
+    tally = Links.rebuild()
 
     Mix.shell().info("""
     documents:   #{tally["document"]}

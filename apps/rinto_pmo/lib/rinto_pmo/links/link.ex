@@ -41,13 +41,6 @@ defmodule RintoPMO.Links.Link do
   latest is here, "delete this document's block rows and reinsert" is the
   correct way to follow a body, rather than a blunt one.
 
-  ## `target_document_id` is resolved, not addressed
-
-  `rinto://block/{id}` carries no document, because a URI stays one shape for
-  every type. The document is looked up when the row is written and stored here,
-  which is what keeps "who points into this document" a single indexed query.
-  `RintoPMO.Conversations.MessageRef` does the same with a project slug: the
-  address stays as authored, the index stores what it resolved to.
   """
 
   use RintoPMO, :schema
@@ -65,7 +58,6 @@ defmodule RintoPMO.Links.Link do
     field :target_type, :string
     field :target_id, UUIDv7
     field :target_slug, :string
-    field :target_document_id, UUIDv7
 
     field :label, :string
     field :position, :integer
@@ -80,7 +72,6 @@ defmodule RintoPMO.Links.Link do
     :target_type,
     :target_id,
     :target_slug,
-    :target_document_id,
     :label,
     :position
   ]

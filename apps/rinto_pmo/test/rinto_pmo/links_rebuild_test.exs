@@ -1,10 +1,10 @@
-defmodule RintoPMO.ContentIndexRebuildTest do
+defmodule RintoPMO.LinksRebuildTest do
   use RintoPMO.DataCase, async: true
 
   alias RintoPMO.Annotations
-  alias RintoPMO.ContentIndex
   alias RintoPMO.Conversations
   alias RintoPMO.Documents
+  alias RintoPMO.Links
   alias RintoPMO.Links.Link
   alias RintoPMO.Tasks
 
@@ -17,7 +17,7 @@ defmodule RintoPMO.ContentIndexRebuildTest do
     |> Repo.all()
     |> Enum.map(
       &{&1.source_type, &1.source_id, &1.source_document_id, &1.target_type, &1.target_id,
-       &1.target_slug, &1.target_document_id, &1.label, &1.position}
+       &1.target_slug, &1.label, &1.position}
     )
     |> Enum.sort()
   end
@@ -83,7 +83,7 @@ defmodule RintoPMO.ContentIndexRebuildTest do
 
     refute written == []
 
-    ContentIndex.rebuild()
+    Links.rebuild()
 
     assert fingerprint() == written
   end
@@ -91,10 +91,10 @@ defmodule RintoPMO.ContentIndexRebuildTest do
   test "is idempotent" do
     populate()
 
-    ContentIndex.rebuild()
+    Links.rebuild()
     once = fingerprint()
 
-    ContentIndex.rebuild()
+    Links.rebuild()
 
     assert fingerprint() == once
   end
@@ -106,7 +106,7 @@ defmodule RintoPMO.ContentIndexRebuildTest do
     Repo.delete_all(Link)
     assert fingerprint() == []
 
-    ContentIndex.rebuild()
+    Links.rebuild()
 
     assert fingerprint() == written
   end
@@ -128,7 +128,7 @@ defmodule RintoPMO.ContentIndexRebuildTest do
 
     refute fingerprint() == written
 
-    ContentIndex.rebuild()
+    Links.rebuild()
 
     assert fingerprint() == written
   end
@@ -162,7 +162,7 @@ defmodule RintoPMO.ContentIndexRebuildTest do
         ]
       })
 
-    ContentIndex.rebuild()
+    Links.rebuild()
 
     assert [rebuilt] = Repo.all(Link)
     assert rebuilt.target_id == second.id
@@ -171,7 +171,7 @@ defmodule RintoPMO.ContentIndexRebuildTest do
   test "reports what it read" do
     populate()
 
-    tally = ContentIndex.rebuild()
+    tally = Links.rebuild()
 
     assert tally["document"] > 0
     assert tally["annotation"] == 1
@@ -180,7 +180,7 @@ defmodule RintoPMO.ContentIndexRebuildTest do
   end
 
   test "on an empty system produces an empty index" do
-    assert ContentIndex.rebuild()["annotation"] == 0
+    assert Links.rebuild()["annotation"] == 0
     assert fingerprint() == []
   end
 end

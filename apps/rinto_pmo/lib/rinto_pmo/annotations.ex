@@ -7,8 +7,8 @@ defmodule RintoPMO.Annotations do
 
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
-  alias RintoPMO.ContentIndex
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Links
 
   defmodule Behaviour do
     @moduledoc false
@@ -110,7 +110,7 @@ defmodule RintoPMO.Annotations do
     Repo.transact(fn repo ->
       # Before the delete, not after: the database cascades the replies away,
       # and their index rows have to be read out while they still exist.
-      ContentIndex.purge(repo, annotation)
+      Links.purge_annotation(repo, annotation)
       repo.delete(annotation)
     end)
   end
@@ -198,7 +198,7 @@ defmodule RintoPMO.Annotations do
       with {:ok, deleted} <- repo.delete(reply) do
         # After the delete, not before: the annotation is re-projected as its
         # own text plus its replies, and this one must already be gone from it.
-        ContentIndex.purge(repo, reply)
+        Links.purge(repo, "annotation_reply", reply.id)
         {:ok, deleted}
       end
     end)
@@ -218,14 +218,14 @@ defmodule RintoPMO.Annotations do
   # In the same transaction as the write, so that the body and "who points at
   # this?" never disagree, not even briefly. See `RintoPMO.Links`.
   defp index({:ok, %Annotation{} = annotation}, repo) do
-    ContentIndex.sync(repo, annotation)
+    Links.sync_annotation(repo, annotation)
     {:ok, annotation}
   end
 
   defp index(result, _repo), do: result
 
   defp index_reply({:ok, %AnnotationReply{} = reply}, repo) do
-    ContentIndex.sync(repo, reply)
+    Links.sync_reply(repo, reply)
     {:ok, reply}
   end
 

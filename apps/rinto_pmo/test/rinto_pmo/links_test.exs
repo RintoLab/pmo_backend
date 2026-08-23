@@ -335,67 +335,7 @@ defmodule RintoPMO.LinksTest do
     end
   end
 
-  describe "target_document_id" do
-    # The URI carries no parent -- `rinto://block/{id}` is one segment and a key
-    # -- so the index resolves it at write time. That is what keeps "who points
-    # into this document" one query.
-    test "is resolved for a block target" do
-      document = insert(:document)
-      revision = insert(:document_revision, document: document)
-      block = insert(:document_block, revision: revision)
-
-      {:ok, _task} =
-        Tasks.create_task(insert(:project), %{
-          title: "甲",
-          description: "见 [那一块](#{uri("block", block.block_id)})"
-        })
-
-      assert [link] = links("task")
-      assert link.target_type == "block"
-      assert link.target_id == block.block_id
-      assert link.target_document_id == document.id
-    end
-
-    test "is resolved for an annotation target" do
-      document = insert(:document)
-      insert(:document_revision, document: document)
-      annotation = insert(:annotation, document: document)
-
-      {:ok, _task} =
-        Tasks.create_task(insert(:project), %{
-          title: "甲",
-          description: "见 [那条批注](#{uri("annotation", annotation.id)})"
-        })
-
-      assert [link] = links("task")
-      assert link.target_document_id == document.id
-    end
-
-    test "is the document itself for a document target" do
-      document = insert(:document)
-      insert(:document_revision, document: document)
-
-      {:ok, _task} =
-        Tasks.create_task(insert(:project), %{
-          title: "甲",
-          description: "见 [那篇](#{uri("document", document.id)})"
-        })
-
-      assert [link] = links("task")
-      assert link.target_document_id == document.id
-    end
-
-    test "is left empty when the target is already gone" do
-      {:ok, _task} =
-        Tasks.create_task(insert(:project), %{
-          title: "甲",
-          description: "见 [没了的](#{uri("block", UUIDv7.generate())})"
-        })
-
-      assert [link] = links("task")
-      assert link.target_document_id == nil
-    end
-
+  describe "how a target is keyed" do
     test "a project target is keyed by slug rather than id" do
       project = insert(:project, slug: "infra")
 
