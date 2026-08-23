@@ -31,6 +31,18 @@ defmodule RintoPMO.Search.Searchable do
   proposed against, so offering it as an independent hit would be a destination
   nobody navigates to directly.
 
+  ## What retrieval over this looks like
+
+  Semantic: an embedding of the query against an embedding of each row. There
+  is no lexical index, because the one thing that would earn one is a person
+  half-typing a title and expecting a prefix match, and nobody in this system
+  does that -- bodies are written by a model, which gets a `rinto://` URI back
+  from its search tool and pastes it.
+
+  The embedding column is not here yet; the projection is, because "which text
+  represents this resource" is the same question either way and has to follow
+  edits regardless.
+
   ## Still an index, not a truth
 
   Every row is derived from a resource, and rebuilding is how that claim stays

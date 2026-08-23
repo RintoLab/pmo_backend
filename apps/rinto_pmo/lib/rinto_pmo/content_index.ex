@@ -27,12 +27,13 @@ defmodule RintoPMO.ContentIndex do
   in a second transaction has a window where the content says one thing and
   discovery says another, and every reader in that window is wrong.
 
-  ## Search projections are not settled yet
+  ## The projection precedes the query path
 
-  What a query does with these rows -- lexical, vector, or both -- is still
-  open. The projection is worth writing either way: "which text represents this
-  resource" is the same question whether that text is matched against or
-  embedded, and it has to follow edits regardless.
+  Retrieval over `RintoPMO.Search` will be semantic, and neither the embedding
+  column nor the query path is built. Writing the projection first is not
+  getting ahead: the text that represents a resource is the input to embedding
+  exactly as it would be to any other kind of matching, and it has to follow
+  edits from the moment content starts changing.
   """
 
   use RintoPMO, :context

@@ -2,9 +2,11 @@ defmodule RintoPMO.Search do
   @moduledoc """
   Maintains the projection everything findable is projected into.
 
-  Only the write side lives here for now. **How a query is answered is
-  deliberately not settled yet** -- see `RintoPMO.ContentIndex` on why the
-  projection is worth building before that is decided.
+  Only the write side lives here for now. Retrieval will be semantic -- query
+  embedding against row embedding -- and neither the embedding column nor the
+  query path exists yet. The projection does, because "which text represents
+  this resource" is the same question whichever way it is later matched, and it
+  has to follow edits regardless.
 
   Every function takes a `repo` and runs inside the transaction that wrote the
   resource, for the same reason `RintoPMO.Links` does: a projection written in a

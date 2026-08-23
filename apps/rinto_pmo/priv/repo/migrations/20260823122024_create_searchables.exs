@@ -8,28 +8,25 @@ defmodule RintoPMO.Repo.Migrations.CreateSearchables do
   # Like `links`, this is an index rather than a truth: every row is derived
   # from a resource, and `mix rinto.index.rebuild` puts it back.
   #
-  # ## Why trigrams and not `tsvector`
+  # ## No text-matching index here
   #
-  # Most of this system's content is Chinese, and Postgres' own tokenizers
-  # cannot segment it. Measured on this server:
+  # Retrieval over this table is semantic: an embedding of the query against an
+  # embedding of each row. The one thing that would make a lexical index earn
+  # its keep is somebody typing a fragment and expecting a prefix match, and
+  # nobody in this system does that -- bodies are written by a model, which gets
+  # a `rinto://` URI back from its search tool and pastes it. There is no
+  # autocomplete for a person half-typing a title, because there is no person
+  # writing the body.
   #
-  #     to_tsvector('simple', '先确认 systemd unit 再部署到生产环境')
-  #     -- 'systemd':2 'unit':3 '先确认':1 '再部署到生产环境':4
+  # (Postgres could not have helped much anyway. Its tokenizers cannot segment
+  # Chinese -- `to_tsvector('simple', '再部署到生产环境')` is a single token, and
+  # searching for 部署 matches nothing -- and `zhparser` is not available here.
+  # `pg_trgm` would have worked, but two GIN indexes maintained on every content
+  # write, for a query nobody is making, is a cost without a consumer.)
   #
-  # The whole clause is one token, because there are no spaces to split on, and
-  # searching for 部署 matches nothing. `zhparser` and `pg_jieba` would fix that
-  # and neither is available here. `pg_trgm` is, it is a core contrib module,
-  # and character trigrams need no notion of a word -- which is exactly why they
-  # work on a language that has no spaces.
-  #
-  # The cost is that `similarity()` is not a usable ranking signal for short CJK
-  # queries: 部署 scores 0.0 against a string it plainly occurs in, because two
-  # characters share too few trigrams with a long one. Ranking is therefore by
-  # where the hit landed and how recent the row is -- explainable, which is what
-  # this layer needs more than it needs cleverness.
+  # `ILIKE` still works unindexed if an exact-string lookup ever turns out to
+  # matter, and an index can come back when there is a measurement asking for it.
   def change do
-    execute "CREATE EXTENSION IF NOT EXISTS pg_trgm", "DROP EXTENSION IF EXISTS pg_trgm"
-
     create table(:searchables, primary_key: false) do
       add :id, :binary_id, primary_key: true
 
@@ -63,9 +60,5 @@ defmodule RintoPMO.Repo.Migrations.CreateSearchables do
     create index(:searchables, [:project_id])
     create index(:searchables, [:document_id])
     create index(:searchables, [:resource_type])
-
-    # `ILIKE '%...%'` is only usable at all because of these.
-    create index(:searchables, ["title gin_trgm_ops"], using: :gin)
-    create index(:searchables, ["body gin_trgm_ops"], using: :gin)
   end
 end
