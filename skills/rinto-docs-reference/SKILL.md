@@ -1,6 +1,6 @@
 ---
 name: rinto-docs-reference
-description: 领取并执行 Rinto 项目任务，按任务关联的方案、规范和设计决策完成开发，并把开始、完成或释放状态同步回 Rinto。当用户要求处理 Rinto 任务、任务描述点名 Rinto 文档、或需要确认项目既有约定时使用。
+description: 领取并执行 Rinto 项目任务，按任务关联的方案、规范和设计决策完成开发，并把开始、完成或释放状态同步回 Rinto。当用户要求处理 Rinto 任务、任务描述点名 Rinto 文档、需要按意思搜索项目里的内容、或需要确认项目既有约定时使用。
 ---
 
 # 执行 Rinto 任务与查阅项目文档
@@ -91,11 +91,48 @@ rinto-pmo doc show <document-id>
 Rinto 文档是项目的**决策记录**：方案、规范、已经拍板的设计。
 实现前先读，不要凭个人习惯覆盖已有约定。
 
-不确定还有没有相关文档时，可以用 `task show` 返回的 `project_id` 列出项目文档：
+不确定还有没有相关文档时，有两条路：
+
+**按意思找** —— 不知道叫什么、只知道要找什么内容时用这个：
+
+```sh
+rinto-pmo search "部署回滚怎么做" --type block --project-id <project-id>
+```
+
+它按语义召回，返回的每行**以完整地址开头**，命中的是**具体某一节**而不是整篇文档
+（`--type document` 则返回文档）。地址可以直接拿去 `doc show`（见下）。
+
+**按项目列** —— 想看全量、或者只是要个清单时用这个：
 
 ```sh
 rinto-pmo doc list --project-id <project-id>
 ```
+
+搜索只覆盖已建立索引的内容，**刚写完的东西可能要过几秒才搜得到**；
+列表是实时的。两者互补，不要只用一个。
+
+### 正文里遇到 `rinto://` 链接
+
+文档正文里会出现这样的链接：
+
+```markdown
+先做 [接入 r-nacos](rinto://task/01936f2a-…)，细节见 [部署一节](rinto://block/01a023d8-…)
+```
+
+**地址本身就说明了该跑哪条命令**，按类型对应：
+
+| 地址 | 跟进方式 |
+|---|---|
+| `rinto://document/{id}` | `rinto-pmo doc show {id}` |
+| `rinto://block/{id}` | `rinto-pmo doc show` 它所属的文档，找到那一节 |
+| `rinto://task/{id}` | `rinto-pmo task show {id}` |
+| `rinto://project/{slug}` | `rinto-pmo project show {slug}` |
+
+**这些链接是实现依据的一部分，不是装饰。** 任务描述或文档里指向另一份文档的某一节，
+通常意味着那一节就是这件事的约定所在 —— 跟进去读，不要跳过。
+
+链接失效（指向已删除的东西）是可能的：这时按链接文字判断它原本想说什么，
+必要时向用户确认，不要自行推断出一个替代目标。
 
 如果实现过程中发现文档方案有问题，先向用户说明冲突和理由，不要自行偏离。
 文档中的「明确不做」尤其需要遵守。
@@ -154,6 +191,7 @@ rinto-pmo project --help
 rinto-pmo task --help
 rinto-pmo task <command> --help
 rinto-pmo doc --help
+rinto-pmo search --help
 ```
 
 这个 skill 只指导客户开发端执行任务和读取文档。创建、修改 Rinto 决策文档仍是服务端 agent 的职责，
