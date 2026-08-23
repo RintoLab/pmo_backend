@@ -193,9 +193,24 @@ config :rinto_pmo, RintoPMO.OSProcess,
   # Unbounded by default: cutting a line is lossy, so it is opt-in per child.
   max_line_bytes: :infinity
 
+config :rinto_pmo, RintoPMO.Embeddings.Worker,
+  # Rows embedded per source per pass. Also the signal for "there is more":
+  # a full batch means come straight back rather than wait out the interval.
+  batch_size: 100,
+  # Seconds before the next pass when there was nothing much to do. The gap
+  # between writing something and being able to find it, in other words --
+  # short because it costs nothing, since a pass over an empty backlog is seven
+  # indexed queries returning nothing.
+  interval_seconds: 15
+
 config :rinto_pmo, Oban,
   repo: RintoPMO.Repo,
-  queues: [default: 10],
+  queues: [
+    default: 10,
+    # Width one: two passes at once would hand the same rows to the inference
+    # service twice. `unique` on the worker keeps them from piling up as well.
+    embeddings: 1
+  ],
   plugins: [
     # Both workers that ask a model anything deduplicate over `:incomplete`,
     # which assumes a job cannot sit in `executing` forever. A node that dies
@@ -217,7 +232,13 @@ config :rinto_pmo, Oban,
     # which is what pruning does. A day is long enough that a client polling a
     # job id always finds it, and short enough that the table does not grow
     # without bound.
-    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24}
+    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24},
+
+    # The embedding pass keeps itself going by enqueueing the next one, which
+    # works right up until a pass is discarded and the chain ends for good.
+    # This does nothing while that chain is healthy -- the worker's `unique`
+    # makes it a no-op -- and restarts it when it is not.
+    {Oban.Plugins.Cron, crontab: [{"* * * * *", RintoPMO.Embeddings.Worker}]}
   ]
 
 config :rinto_pmo_web,
