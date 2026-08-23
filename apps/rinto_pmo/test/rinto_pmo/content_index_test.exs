@@ -226,6 +226,71 @@ defmodule RintoPMO.ContentIndexTest do
     end
   end
 
+  # `embedding IS NULL` is the entire "does this need embedding" state, so what
+  # clears it decides how often the embedding service gets called. Blindly
+  # clearing on every rewrite would turn a rebuild into a full re-embedding of
+  # the corpus.
+  describe "when a rewrite clears the embedding" do
+    defp embed!(row) do
+      vector = Pgvector.new(List.duplicate(0.1, 1024))
+
+      Searchable
+      |> where([searchable], searchable.id == ^row.id)
+      |> Repo.update_all(set: [embedding: vector])
+
+      Repo.get!(Searchable, row.id)
+    end
+
+    test "changed text clears it" do
+      {:ok, task} = Tasks.create_task(insert(:project), %{title: "甲", description: "原来的说明"})
+      [row] = projections("task")
+      assert embed!(row).embedding
+
+      {:ok, _updated} = Tasks.update_task(task, %{description: "改过的说明"})
+
+      assert [%{embedding: nil}] = projections("task")
+    end
+
+    test "a changed title clears it too" do
+      {:ok, task} = Tasks.create_task(insert(:project), %{title: "甲"})
+      [row] = projections("task")
+      assert embed!(row).embedding
+
+      {:ok, _updated} = Tasks.update_task(task, %{title: "乙"})
+
+      assert [%{embedding: nil}] = projections("task")
+    end
+
+    test "a change to something that is not embedded keeps it" do
+      project = insert(:project)
+      {:ok, task} = Tasks.create_task(project, %{title: "甲", description: "说明"})
+      [row] = projections("task")
+      assert embed!(row).embedding
+
+      {:ok, _updated} = Tasks.update_task(task, %{due_on: ~D[2026-12-31]})
+
+      assert [%{embedding: kept}] = projections("task")
+      assert kept
+    end
+
+    # The case that actually costs money: a repair must not re-embed everything
+    # it touched.
+    test "rebuilding keeps every vector whose text is unchanged" do
+      document_with("## 部署步骤\n\n先确认 systemd unit")
+      {:ok, _task} = Tasks.create_task(insert(:project), %{title: "甲", description: "乙"})
+
+      for row <- Repo.all(Searchable), do: embed!(row)
+      assert Enum.all?(Repo.all(Searchable), & &1.embedding)
+
+      ContentIndex.rebuild()
+
+      assert Repo.all(Searchable) != []
+
+      assert Enum.all?(Repo.all(Searchable), & &1.embedding),
+             "a rebuild sent unchanged rows back for re-embedding"
+    end
+  end
+
   describe "rebuild covers both indexes" do
     test "restores projections that were dropped" do
       document_with("## 部署步骤\n\n先确认 systemd unit")

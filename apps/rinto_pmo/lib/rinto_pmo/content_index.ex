@@ -53,8 +53,9 @@ defmodule RintoPMO.ContentIndex do
   Indexes a document's newest revision: the document itself, and every block.
 
   A block is its own projection rather than part of its document's, so a hit
-  lands on the section that says the thing. Blocks are purged by document first,
-  because a revision can drop one entirely.
+  lands on the section that says the thing. Blocks that a revision dropped are
+  removed after the survivors are rewritten -- clearing first would delete
+  embeddings that are still good.
   """
   @spec sync_document(Ecto.Repo.t(), DocumentRevision.t()) :: :ok
   def sync_document(repo, %DocumentRevision{blocks: blocks} = revision) when is_list(blocks) do
@@ -70,8 +71,6 @@ defmodule RintoPMO.ContentIndex do
       archived: archived
     })
 
-    Search.purge_blocks(repo, document.id)
-
     Enum.each(blocks, fn block ->
       Search.sync(repo, "block", block.block_id, %{
         title: heading(block.content),
@@ -82,7 +81,10 @@ defmodule RintoPMO.ContentIndex do
       })
     end)
 
-    :ok
+    # After the rewrites, and naming what survives rather than clearing first:
+    # a projection deleted takes its embedding with it, and a revision that
+    # touched one block should not cost a re-embedding of every other.
+    Search.purge_blocks_except(repo, document.id, Enum.map(blocks, & &1.block_id))
   end
 
   @doc """
@@ -172,21 +174,39 @@ defmodule RintoPMO.ContentIndex do
   half of new ones. That means a long transaction on a large corpus, which is
   accepted: this is a tool a person runs, not something on a request path.
 
+  ## Why the projections are not emptied first, and the references are
+
+  `links` is truncated and rewritten, because a link row costs nothing to
+  produce -- it is read straight out of text already in hand.
+
+  A projection carries an embedding, which cost a model call. Deleting the rows
+  would throw every vector away and turn a repair into a re-embedding of the
+  whole corpus. So projections are written over the top instead, and anything
+  the sweep did not touch -- a row whose resource is gone -- is removed
+  afterwards by the timestamp it failed to get.
+
   Returns a tally per kind of source read.
   """
   @spec rebuild(Ecto.Repo.t()) :: %{String.t() => non_neg_integer()}
   def rebuild(repo \\ Repo) do
     repo.transact(fn repo ->
       repo.delete_all(Link)
-      repo.delete_all(Searchable)
+      swept_from = DateTime.utc_now()
 
-      {:ok,
-       %{
-         "document" => rebuild_documents(repo),
-         "annotation" => rebuild_annotations(repo),
-         "task" => rebuild_tasks(repo),
-         "message" => rebuild_messages(repo)
-       }}
+      tally = %{
+        "document" => rebuild_documents(repo),
+        "annotation" => rebuild_annotations(repo),
+        "task" => rebuild_tasks(repo),
+        "message" => rebuild_messages(repo)
+      }
+
+      # Every projection just rewritten carries a fresh `updated_at`. Whatever
+      # still has an older one has no resource behind it any more.
+      Searchable
+      |> where([searchable], searchable.updated_at < ^swept_from)
+      |> repo.delete_all()
+
+      {:ok, tally}
     end)
     |> case do
       {:ok, tally} -> tally

@@ -42,6 +42,12 @@ config :rinto_pmo,
     links: RintoPMO.Links
   ]
 
+# `vector` is not a type Postgrex knows natively -- it comes with the pgvector
+# extension -- so the repo is given a type module that includes it. Set here
+# rather than per environment: it is a property of the schema, not of a
+# deployment.
+config :rinto_pmo, RintoPMO.Repo, types: RintoPMO.PostgrexTypes
+
 config :rinto_pmo, RintoPMO.Links,
   # Characters of a source's body carried in a backlink row. Shorter than a
   # hover card's: a backlink panel is a list of many, and a preview long enough

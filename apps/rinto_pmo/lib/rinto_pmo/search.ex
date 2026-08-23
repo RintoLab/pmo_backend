@@ -31,6 +31,18 @@ defmodule RintoPMO.Search do
   `:archived`, all optional. A resource with neither title nor body is removed
   instead of stored: an empty row can never be a hit, and keeping it would make
   every count wrong.
+
+  ## The vector is kept unless the text it represents changed
+
+  `title` and `body` are what gets embedded. Everything else on the row --
+  scope, the archived flag -- can change without making an existing vector
+  wrong, and clearing it there would send the row back through the embedding
+  service for no reason.
+
+  The case that matters is `RintoPMO.ContentIndex.rebuild/1`: it re-projects
+  every resource in the system, and a blind clear would turn a repair into a
+  full re-embedding of the entire corpus. Archiving a document, or moving a
+  task, would each do a smaller version of the same thing.
   """
   @spec sync(Ecto.Repo.t(), String.t(), UUIDv7.t(), map()) :: :ok
   def sync(repo, resource_type, resource_id, fields) do
@@ -45,13 +57,43 @@ defmodule RintoPMO.Search do
       %Searchable{}
       |> Searchable.changeset(attrs)
       |> repo.insert!(
-        on_conflict:
-          {:replace, [:title, :body, :project_id, :document_id, :archived, :updated_at]},
+        on_conflict: replacements(),
         conflict_target: [:resource_type, :resource_id]
       )
 
       :ok
     end
+  end
+
+  # `:replace` cannot express "clear this column only when those two changed",
+  # so the condition is written as the update itself: `embedding` is set to null
+  # where the incoming text differs from the stored text, and to its own current
+  # value where it does not.
+  defp replacements do
+    from searchable in Searchable,
+      update: [
+        set: [
+          title: fragment("EXCLUDED.title"),
+          body: fragment("EXCLUDED.body"),
+          project_id: fragment("EXCLUDED.project_id"),
+          document_id: fragment("EXCLUDED.document_id"),
+          archived: fragment("EXCLUDED.archived"),
+          updated_at: fragment("EXCLUDED.updated_at"),
+          embedding:
+            fragment(
+              """
+              CASE
+                WHEN ? IS DISTINCT FROM EXCLUDED.title OR ? IS DISTINCT FROM EXCLUDED.body
+                THEN NULL
+                ELSE ?
+              END
+              """,
+              searchable.title,
+              searchable.body,
+              searchable.embedding
+            )
+        ]
+      ]
   end
 
   @doc """
@@ -68,16 +110,22 @@ defmodule RintoPMO.Search do
   end
 
   @doc """
-  Removes every projection a document's blocks had.
+  Removes the projections of a document's blocks other than `keep`.
 
-  Used before re-projecting a revision, because a revision can drop a block and
-  a per-block rewrite would leave the dropped one findable.
+  Written this way round rather than "delete them all and re-insert", because
+  deleting a projection throws away its embedding. A revision usually changes
+  one block out of many, and rewriting the lot would send every untouched block
+  back through the embedding service on every commit.
+
+  What this is for is the block a revision *dropped*: it has no projection to
+  rewrite, so it has to be named as absent instead.
   """
-  @spec purge_blocks(Ecto.Repo.t(), UUIDv7.t()) :: :ok
-  def purge_blocks(repo, document_id) do
+  @spec purge_blocks_except(Ecto.Repo.t(), UUIDv7.t(), [UUIDv7.t()]) :: :ok
+  def purge_blocks_except(repo, document_id, keep) when is_list(keep) do
     Searchable
     |> where([searchable], searchable.resource_type == "block")
     |> where([searchable], searchable.document_id == ^document_id)
+    |> where([searchable], searchable.resource_id not in ^keep)
     |> repo.delete_all()
 
     :ok

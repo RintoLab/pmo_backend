@@ -33,15 +33,29 @@ defmodule RintoPMO.Search.Searchable do
 
   ## What retrieval over this looks like
 
-  Semantic: an embedding of the query against an embedding of each row. There
-  is no lexical index, because the one thing that would earn one is a person
+  Semantic: an embedding of the query against `embedding` on each row. There is
+  no lexical index, because the one thing that would earn one is a person
   half-typing a title and expecting a prefix match, and nobody in this system
   does that -- bodies are written by a model, which gets a `rinto://` URI back
   from its search tool and pastes it.
 
-  The embedding column is not here yet; the projection is, because "which text
-  represents this resource" is the same question either way and has to follow
-  edits regardless.
+  ## `embedding` is null exactly when one is needed
+
+  That is the whole of the state, and the reason there is no `embedded_at`
+  beside it: when a projection last changed is `updated_at`, and the only thing
+  a worker has to ask is whether there is a vector or not.
+
+  It follows that **a rewrite must not blindly clear it.** Only the text that
+  gets embedded -- `title` and `body` -- invalidates a vector. Re-projecting
+  because a task was archived, or because everything was rebuilt, changes
+  neither, and clearing the column there would send the whole corpus back
+  through the embedding service for nothing. See `RintoPMO.Search.sync/4`.
+
+  A row waiting for its vector is not findable at all, since there is no
+  lexical path to fall back to. That is accepted -- whoever just wrote the
+  thing is holding its id already -- but it does mean the gap between writing
+  and embedding is a gap in discovery, so the worker is meant to run promptly
+  rather than eventually.
 
   ## Still an index, not a truth
 
@@ -71,6 +85,11 @@ defmodule RintoPMO.Search.Searchable do
     # Carried rather than filtered out. Archiving is not deleting, and whether
     # archived things belong in a given list is the caller's decision.
     field :archived, :boolean, default: false
+
+    # Null means "needs embedding". Never cast from a caller: it is written by
+    # the worker that computes it, and cleared by `RintoPMO.Search.sync/4` when
+    # the text it stood for changes.
+    field :embedding, Pgvector.Ecto.Vector
 
     timestamps()
   end
