@@ -30,11 +30,14 @@ defmodule RintoPMO.Links do
   use RintoPMO, :context
 
   alias RintoPMO.Annotations.Annotation
+  alias RintoPMO.Annotations.AnnotationReply
+  alias RintoPMO.Conversations.Message
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Links.Link
   alias RintoPMO.References
+  alias RintoPMO.Tasks.Task
 
   @doc """
   Rewrites the index for one piece of text.
@@ -84,6 +87,92 @@ defmodule RintoPMO.Links do
     |> repo.delete_all()
 
     :ok
+  end
+
+  @doc """
+  Empties the index and reads it back out of every body in the system.
+
+  This is what makes "the index is not the truth" checkable rather than merely
+  asserted. It is also the backfill for bodies written before the index existed,
+  and the repair for any sync a future write path forgets.
+
+  One transaction, so a run that dies leaves the previous index rather than half
+  of a new one. That does mean a long transaction on a large corpus, which is
+  accepted: this is a tool a person runs, not something on a request path.
+
+  Returns a tally per source type.
+  """
+  @spec rebuild(Ecto.Repo.t()) :: %{String.t() => non_neg_integer()}
+  def rebuild(repo \\ Repo) do
+    repo.transact(fn repo ->
+      repo.delete_all(Link)
+
+      {:ok,
+       %{
+         "document_block" => rebuild_blocks(repo),
+         "annotation" => rebuild_annotations(repo),
+         "annotation_reply" => rebuild_replies(repo),
+         "task" => rebuild_tasks(repo),
+         "message" => rebuild_messages(repo)
+       }}
+    end)
+    |> case do
+      {:ok, tally} -> tally
+    end
+  end
+
+  # Only the newest revision of each document, matching what the write path
+  # indexes. Loaded a page at a time rather than streamed with a preload, which
+  # `Repo.stream/2` does not do.
+  defp rebuild_blocks(repo) do
+    DocumentRevision
+    |> distinct([revision], revision.document_id)
+    |> order_by([revision], asc: revision.document_id, desc: revision.id)
+    |> repo.all()
+    |> Enum.chunk_every(100)
+    |> Enum.reduce(0, fn revisions, count ->
+      loaded = repo.preload(revisions, :blocks)
+      Enum.each(loaded, &sync_document(repo, &1))
+      count + Enum.sum(Enum.map(loaded, &length(&1.blocks)))
+    end)
+  end
+
+  defp rebuild_annotations(repo) do
+    Annotation
+    |> select([annotation], {annotation.id, annotation.document_id, annotation.content})
+    |> repo.all()
+    |> tap_each(fn {id, document_id, content} ->
+      sync(repo, "annotation", id, content, document_id: document_id)
+    end)
+  end
+
+  defp rebuild_replies(repo) do
+    AnnotationReply
+    |> join(:inner, [reply], annotation in Annotation, on: annotation.id == reply.annotation_id)
+    |> select([reply, annotation], {reply.id, annotation.document_id, reply.content})
+    |> repo.all()
+    |> tap_each(fn {id, document_id, content} ->
+      sync(repo, "annotation_reply", id, content, document_id: document_id)
+    end)
+  end
+
+  defp rebuild_tasks(repo) do
+    Task
+    |> select([task], {task.id, task.description})
+    |> repo.all()
+    |> tap_each(fn {id, description} -> sync(repo, "task", id, description) end)
+  end
+
+  defp rebuild_messages(repo) do
+    Message
+    |> select([message], {message.id, message.content})
+    |> repo.all()
+    |> tap_each(fn {id, content} -> sync(repo, "message", id, content) end)
+  end
+
+  defp tap_each(rows, fun) do
+    Enum.each(rows, fun)
+    length(rows)
   end
 
   defp insert_all(_repo, _source_type, _source_id, _document_id, content)
