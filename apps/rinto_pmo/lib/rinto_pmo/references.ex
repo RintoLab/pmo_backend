@@ -121,7 +121,6 @@ defmodule RintoPMO.References do
     "block" => %{key: :id, linkable: true, expandable: true, searchable: true},
     "annotation" => %{key: :id, linkable: true, expandable: true, searchable: true},
     "task" => %{key: :id, linkable: true, expandable: true, searchable: true},
-    "attachment" => %{key: :id, linkable: true, expandable: true, searchable: true},
 
     # Linkable but not expandable, which is the distinction that lets a topic be
     # cited at all. Expanding a conversation is what has no bottom -- every
@@ -129,10 +128,14 @@ defmodule RintoPMO.References do
     # expansion, not of naming the thing. See docs/api-frontend-guide.md.
     "conversation" => %{key: :id, linkable: true, expandable: false, searchable: true},
 
-    # The one type that is linkable without a projection of its own. A proposal
-    # is only ever reached through the document it is proposed against, so
-    # surfacing it as an independent search hit would offer a target nobody
-    # navigates to directly. This is the exception the invariant below allows.
+    # Two types are linkable without a projection of their own, for opposite
+    # reasons. An attachment has almost no text -- a filename -- and embedding
+    # it would spend a vector on characters a camera chose; see
+    # `RintoPMO.Attachments.Attachment`. A proposal has plenty of text, but is
+    # only ever reached through the document it is proposed against, so an
+    # independent search hit would offer a target nobody navigates to directly.
+    # Both are reached through the body that mentions them.
+    "attachment" => %{key: :id, linkable: true, expandable: true, searchable: false},
     "proposal" => %{key: :id, linkable: true, expandable: true, searchable: false}
   }
 

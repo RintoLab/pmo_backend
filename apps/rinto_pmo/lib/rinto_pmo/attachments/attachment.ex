@@ -9,12 +9,24 @@ defmodule RintoPMO.Attachments.Attachment do
   `last_used_at` is not cast: it is stamped by
   `RintoPMO.Attachments.touch_attachments/1` when a reference is actually
   expanded into a prompt, never by a caller claiming the image was used.
+
+  ## No embedding
+
+  An attachment's only text is its filename. Embedding that would be the thing
+  the embeddings migration refuses to do for a document title -- spending a
+  1024-dimension vector, and a network call to make it, on a handful of
+  characters -- except worse: a title is written to describe the thing, while
+  `screenshot-2026-08-23.png` was written by a camera. The nearest neighbours
+  of such a vector are other filenames that look like it, which is not what
+  anybody was asking for.
+
+  So an attachment is not searchable. It stays linkable and expandable, and is
+  reached the way it is actually reached: through the body that mentions it.
   """
 
   use RintoPMO, :schema
 
   alias RintoPMO.Actors.Actor
-  alias RintoPMO.Embeddings
 
   @type t :: %__MODULE__{}
 
@@ -26,11 +38,6 @@ defmodule RintoPMO.Attachments.Attachment do
     field :height, :integer
     field :checksum, :string
     field :last_used_at, :utc_datetime_usec
-
-    # Null means "needs embedding". Never cast from a caller: it is written
-    # by the worker that computes it, and voided by whichever changeset rewrites
-    # the filename it was made from. See `RintoPMO.Embeddings`.
-    field :embedding, Pgvector.Ecto.Vector
 
     belongs_to :actor, Actor
 
@@ -54,6 +61,5 @@ defmodule RintoPMO.Attachments.Attachment do
     |> validate_number(:width, greater_than: 0)
     |> validate_number(:height, greater_than: 0)
     |> foreign_key_constraint(:actor_id)
-    |> Embeddings.invalidate([:filename])
   end
 end

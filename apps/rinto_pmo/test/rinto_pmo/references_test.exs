@@ -97,12 +97,18 @@ defmodule RintoPMO.ReferencesTest do
   end
 
   describe "types/0" do
-    test "every linkable type is searchable, apart from the one stated exception" do
-      for {type, capabilities} <- References.types(), capabilities.linkable, type != "proposal" do
+    test "every linkable type is searchable, apart from the two stated exceptions" do
+      unsearchable = ["proposal", "attachment"]
+
+      for {type, capabilities} <- References.types(),
+          capabilities.linkable,
+          type not in unsearchable do
         assert capabilities.searchable, "#{type} can be linked to but never found"
       end
 
-      refute References.types()["proposal"].searchable
+      for type <- unsearchable do
+        refute References.types()[type].searchable
+      end
     end
 
     test "a conversation may be linked to but not expanded" do

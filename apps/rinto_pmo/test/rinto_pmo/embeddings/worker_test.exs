@@ -11,7 +11,6 @@ defmodule RintoPMO.Embeddings.WorkerTest do
   alias RintoPMO.AIMock
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
-  alias RintoPMO.Attachments.Attachment
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Embeddings.Worker
@@ -48,8 +47,7 @@ defmodule RintoPMO.Embeddings.WorkerTest do
           {Project, nil},
           {Annotation, nil},
           {AnnotationReply, nil},
-          {Conversation, nil},
-          {Attachment, nil}
+          {Conversation, nil}
         ],
         other != schema do
       settle(other)

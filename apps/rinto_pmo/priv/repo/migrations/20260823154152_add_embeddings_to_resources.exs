@@ -18,6 +18,14 @@ defmodule RintoPMO.Repo.Migrations.AddEmbeddingsToResources do
   # reachable. It would also have nowhere natural to live: `documents` has no
   # title column, the title being a field of each revision.
   #
+  # ## Attachments deliberately have none, for the same reason
+  #
+  # An attachment's only text is its filename, which is shorter than a title
+  # and was usually written by a camera rather than by a person describing
+  # anything. The nearest neighbours of that vector are other filenames shaped
+  # like it. An attachment is reached through the body that mentions it, and
+  # `RintoPMO.Attachments.Attachment` says so.
+  #
   # ## Replies are embedded on their own, not folded into their thread
   #
   # Concatenating a thread would re-embed the whole of it on every reply, over
@@ -31,8 +39,7 @@ defmodule RintoPMO.Repo.Migrations.AddEmbeddingsToResources do
           :annotation_replies,
           :tasks,
           :projects,
-          :conversations,
-          :attachments
+          :conversations
         ] do
       alter table(table) do
         add :embedding, :vector, size: 1024

@@ -22,11 +22,15 @@ pub struct SearchArgs {
 
     /// Which kind of thing to search. Required: searching one kind while
     /// believing you searched everything is a wrong answer that looks right.
+    ///
+    /// `attachment` and `proposal` are addressable but not searchable -- an
+    /// attachment's only text is its filename, and a proposal is reached
+    /// through the document it is proposed against.
     #[arg(
         long,
         short = 't',
         value_parser = [
-            "block", "document", "annotation", "task", "project", "conversation", "attachment",
+            "block", "document", "annotation", "task", "project", "conversation",
         ]
     )]
     r#type: String,

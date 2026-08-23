@@ -44,7 +44,7 @@ defmodule RintoPMO.Embeddings.Worker do
   nothing would ever be embedded, nothing would ever be findable, and the only
   evidence would be a column that is null everywhere. So a pass that came back
   empty-handed logs once -- once per pass rather than once per kind of thing,
-  because seven lines say no more than one does.
+  because a line for every source says no more than one line does.
   """
 
   use Oban.Worker,
@@ -62,7 +62,6 @@ defmodule RintoPMO.Embeddings.Worker do
 
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
-  alias RintoPMO.Attachments.Attachment
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
@@ -80,8 +79,7 @@ defmodule RintoPMO.Embeddings.Worker do
     {Project, [:name, :description]},
     {Annotation, [:content]},
     {AnnotationReply, [:content]},
-    {Conversation, [:title]},
-    {Attachment, [:filename]}
+    {Conversation, [:title]}
   ]
 
   @impl Oban.Worker

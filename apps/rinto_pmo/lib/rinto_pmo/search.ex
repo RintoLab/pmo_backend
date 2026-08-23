@@ -50,7 +50,6 @@ defmodule RintoPMO.Search do
 
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
-  alias RintoPMO.Attachments.Attachment
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
@@ -294,19 +293,6 @@ defmodule RintoPMO.Search do
     })
     |> Repo.all()
     |> Enum.map(&candidate(&1, "conversation"))
-  end
-
-  defp candidates("attachment", vector, opts) do
-    Attachment
-    |> nearest(vector, opts, :none)
-    |> select([row], %{
-      key: row.id,
-      text: row.filename,
-      title: row.filename,
-      distance: fragment("? <=> ?", row.embedding, ^vector)
-    })
-    |> Repo.all()
-    |> Enum.map(&candidate(&1, "attachment"))
   end
 
   # Only the current snapshot of a block is searchable, which is what the join
