@@ -201,6 +201,12 @@ config :rinto_pmo, RintoPMO.Search,
   # missed all three. Reranking a hundred costs about 100ms more than twenty,
   # so depth is nearly free and shallowness is not.
   recall_limit: 100,
+  # The ceiling on a caller's own `recall_limit`. A safety valve rather than a
+  # measurement: every candidate is one forward pass through the reranker and
+  # one document in a single HTTP request, and a thousand blocks at a few
+  # kilobytes apiece is already a multi-megabyte body. Refused rather than
+  # clamped, so a caller comparing depths knows which depth it actually got.
+  max_recall_limit: 1000,
   # Results handed back after reranking.
   result_limit: 20,
   # Characters of a hit's text carried back. Enough to see why it matched.

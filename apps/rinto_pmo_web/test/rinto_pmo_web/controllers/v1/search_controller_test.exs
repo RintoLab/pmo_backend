@@ -84,6 +84,54 @@ defmodule RintoPMOWeb.V1.SearchControllerTest do
     end
   end
 
+  # A different question from `limit`: how deep the candidate set goes, which
+  # decides what can be found at all rather than how much of it is shown.
+  test "GET search accepts an explicit recall_limit", %{conn: conn} do
+    expect(SearchMock, :search, fn _query, opts ->
+      assert opts[:recall_limit] == 200
+      assert opts[:limit] == 5
+      {:ok, []}
+    end)
+
+    conn = get(conn, ~p"/api/v1/search?q=部署&type=block&limit=5&recall_limit=200")
+
+    assert json_response(conn, 200)["data"] == []
+  end
+
+  test "GET search leaves recall_limit alone when it is not asked for", %{conn: conn} do
+    expect(SearchMock, :search, fn _query, opts ->
+      refute Keyword.has_key?(opts, :recall_limit)
+      {:ok, []}
+    end)
+
+    conn = get(conn, ~p"/api/v1/search?q=部署&type=block")
+
+    assert json_response(conn, 200)["data"] == []
+  end
+
+  test "GET search rejects a recall_limit that is not a positive number", %{conn: conn} do
+    for recall_limit <- ["0", "-1", "abc", "5x"] do
+      conn = get(conn, ~p"/api/v1/search?q=部署&type=block&recall_limit=#{recall_limit}")
+      assert %{"error" => "bad_request"} = json_response(conn, 400)
+    end
+  end
+
+  # Refused rather than clamped, and the ceiling comes back so a caller
+  # comparing depths knows what it may ask for next.
+  test "GET search says so when the depth is over the ceiling", %{conn: conn} do
+    expect(SearchMock, :search, fn _query, _opts ->
+      {:error, :recall_limit_too_large, %{max: 1000, given: 5000}}
+    end)
+
+    conn = get(conn, ~p"/api/v1/search?q=x&type=block&recall_limit=5000")
+
+    assert %{"error" => "recall_limit_too_large", "details" => details} =
+             json_response(conn, 422)
+
+    assert details["max"] == 1000
+    assert details["given"] == 5000
+  end
+
   test "GET search rejects a missing query", %{conn: conn} do
     assert %{"error" => "bad_request"} =
              conn |> get(~p"/api/v1/search?type=block") |> json_response(400)

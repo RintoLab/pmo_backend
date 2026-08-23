@@ -83,13 +83,19 @@ defmodule RintoPMO.Search do
           | {:project_id, UUIDv7.t() | nil}
           | {:include_archived, boolean()}
           | {:limit, pos_integer()}
+          | {:recall_limit, pos_integer()}
 
   defmodule Behaviour do
     @moduledoc false
 
     @callback search(String.t(), keyword()) ::
                 {:ok, [RintoPMO.Search.result()]}
-                | {:error, :unsearchable_type | :ai_not_configured | :ai_unavailable, map()}
+                | {:error,
+                   :unsearchable_type
+                   | :blank_query
+                   | :recall_limit_too_large
+                   | :ai_not_configured
+                   | :ai_unavailable, map()}
                 | {:error, term()}
   end
 
@@ -98,7 +104,20 @@ defmodule RintoPMO.Search do
   @doc """
   Searches one kind of thing, best first.
 
-  Options: `:type` (**required**), `:project_id`, `:include_archived`, `:limit`.
+  Options: `:type` (**required**), `:project_id`, `:include_archived`, `:limit`,
+  `:recall_limit`.
+
+  **`:limit` and `:recall_limit` are different questions.** `:limit` is how many
+  results to hand back; `:recall_limit` is how many candidates the cosine stage
+  pulls for the reranker to read, and it decides what *can* be found at all --
+  a result outside the candidate set is not ranked low, it is absent. Raising
+  `:limit` past `:recall_limit` therefore adds nothing, and lowering `:limit`
+  saves nothing: the reranking is already done by then.
+
+  It exists to be varied. The defaults were arrived at by running one query at
+  several depths and seeing where the best result sat (see the `:recall_limit`
+  configuration), and repeating that measurement should not mean editing
+  configuration and restarting.
 
   **There is no default type.** A caller that has not said what it is looking
   for has not decided yet, and picking for it would mean quietly searching
@@ -117,6 +136,10 @@ defmodule RintoPMO.Search do
   looks like an answer. Browsing is `GET /documents`, which is a different
   question with a different endpoint.
 
+  A `:recall_limit` over the configured ceiling is
+  `{:error, :recall_limit_too_large, _}` rather than a quiet clamp -- a caller
+  comparing one depth against another has to know which depth it got.
+
   A search needs the inference service, so one it cannot reach is
   `{:error, :ai_not_configured, _}` when this installation has no
   `RINTO_AI_TOKEN` and `{:error, :ai_unavailable, _}` when the service itself
@@ -125,11 +148,16 @@ defmodule RintoPMO.Search do
   @impl true
   @spec search(String.t(), [option()]) ::
           {:ok, [result()]}
-          | {:error, :unsearchable_type | :blank_query | :ai_not_configured | :ai_unavailable,
-             map()}
+          | {:error,
+             :unsearchable_type
+             | :blank_query
+             | :recall_limit_too_large
+             | :ai_not_configured
+             | :ai_unavailable, map()}
           | {:error, term()}
   def search(query, opts \\ []) when is_binary(query) do
     type = Keyword.get(opts, :type)
+    recall = recall_limit(opts)
 
     cond do
       String.trim(query) == "" ->
@@ -137,6 +165,9 @@ defmodule RintoPMO.Search do
 
       not searchable?(type) ->
         {:error, :unsearchable_type, %{type: type, searchable: searchable_types()}}
+
+      recall > max_recall_limit() ->
+        {:error, :recall_limit_too_large, %{max: max_recall_limit(), given: recall}}
 
       true ->
         run(query, type, opts)
@@ -244,7 +275,7 @@ defmodule RintoPMO.Search do
   defp candidates("annotation", vector, opts) do
     (annotation_candidates(vector, opts) ++ reply_candidates(vector, opts))
     |> Enum.sort_by(& &1.distance)
-    |> Enum.take(recall_limit())
+    |> Enum.take(recall_limit(opts))
   end
 
   defp candidates("task", vector, opts) do
@@ -315,7 +346,7 @@ defmodule RintoPMO.Search do
     |> scoped(opts, :document)
     |> archived(opts)
     |> order_by([row], asc: fragment("? <=> ?", row.embedding, ^vector))
-    |> limit(^recall_limit())
+    |> limit(^recall_limit(opts))
     |> select([row, revision, document], %{
       block_id: row.block_id,
       text: row.content,
@@ -409,7 +440,7 @@ defmodule RintoPMO.Search do
     |> where([row], not is_nil(row.embedding))
     |> scoped(opts, on)
     |> order_by([row], asc: fragment("? <=> ?", row.embedding, ^vector))
-    |> limit(^recall_limit())
+    |> limit(^recall_limit(opts))
   end
 
   # Whether an archived document's content counts. Written against the named
@@ -450,7 +481,12 @@ defmodule RintoPMO.Search do
   defp excerpt(text), do: Text.excerpt(text, config(:max_excerpt_chars))
 
   defp ai, do: Utils.module(:ai)
-  defp recall_limit, do: config(:recall_limit)
+
+  # Read from the caller's options everywhere it is used, so that the depth a
+  # request asked for is the depth every branch of the candidate query applies.
+  defp recall_limit(opts), do: Keyword.get(opts, :recall_limit) || config(:recall_limit)
+
+  defp max_recall_limit, do: config(:max_recall_limit)
   defp result_limit, do: config(:result_limit)
 
   defp config(key) do

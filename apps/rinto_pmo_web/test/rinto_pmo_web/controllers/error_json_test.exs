@@ -108,6 +108,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {422, "Nothing of that kind is indexed for search.",
        %{type: "proposal", searchable: ["block", "task"]}},
     blank_query: {422, "A search needs something to search for.", %{}},
+    recall_limit_too_large:
+      {422, "Too many candidates to rerank in one request. Ask for a smaller recall_limit.",
+       %{max: 1000, given: 5000}},
     unresolvable_references:
       {422, "The body points at things that do not exist. Check the rinto:// addresses.",
        %{uris: ["rinto://task/01936f2a-1c4e-7c3a-9f1b-2d4e6a8b0c1d"]}},

@@ -242,5 +242,60 @@ defmodule RintoPMO.SearchTest do
       assert {:ok, results} = Search.search("x", type: "block", limit: 2)
       assert length(results) == 2
     end
+
+    # The depth decides what the reranker is even shown, so it has to bind
+    # before the ranking rather than after it. Asserted on what reaches the
+    # reranker, not on the result count -- trimming afterwards would satisfy a
+    # count and still have read the whole corpus.
+    test "an explicit recall_limit is what reaches the reranker" do
+      document_with("## 一\n\n甲\n\n## 二\n\n乙\n\n## 三\n\n丙")
+      embed_everything()
+
+      expect(AIMock, :embed_query, fn _query -> {:ok, vector()} end)
+
+      expect(AIMock, :rerank, fn _query, documents ->
+        assert length(documents) == 2
+
+        {:ok, [%{index: 0, score: 0.9}, %{index: 1, score: 0.5}]}
+      end)
+
+      assert {:ok, results} = Search.search("x", type: "block", recall_limit: 2)
+      assert length(results) == 2
+    end
+
+    test "recall_limit defaults to the configured depth" do
+      document_with("## 一\n\n甲\n\n## 二\n\n乙\n\n## 三\n\n丙")
+      embed_everything()
+
+      expect(AIMock, :embed_query, fn _query -> {:ok, vector()} end)
+
+      expect(AIMock, :rerank, fn _query, documents ->
+        assert length(documents) == 3
+
+        {:ok, Enum.map(0..2, &%{index: &1, score: 0.5})}
+      end)
+
+      assert {:ok, _results} = Search.search("x", type: "block")
+    end
+
+    # Refused rather than clamped: a caller comparing one depth against another
+    # would otherwise draw its conclusion from a depth it did not ask for.
+    test "refuses a recall_limit over the ceiling" do
+      configured = Application.fetch_env!(:rinto_pmo, Search)[:max_recall_limit]
+
+      assert {:error, :recall_limit_too_large, details} =
+               Search.search("部署", type: "block", recall_limit: configured + 1)
+
+      assert details.max == configured
+      assert details.given == configured + 1
+    end
+
+    # Checked before the service is asked, so a request that was never going to
+    # be served does not cost an embedding call. No `expect` for AIMock here:
+    # calling it at all would fail the test.
+    test "refuses the depth before embedding the query" do
+      assert {:error, :recall_limit_too_large, _details} =
+               Search.search("部署", type: "block", recall_limit: 10_000_000)
+    end
   end
 end

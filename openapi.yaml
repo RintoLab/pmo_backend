@@ -818,6 +818,27 @@ paths:
           schema:
             type: integer
             minimum: 1
+        - name: recall_limit
+          in: query
+          required: false
+          description: >-
+            Candidates the cosine stage pulls for the reranker to read.
+            Defaults to 100.
+
+
+            This decides what *can* be found: a result outside the candidate set
+            is not ranked low, it is absent. Raising `limit` past this adds
+            nothing, and lowering `limit` saves nothing, because the reranking is
+            already done by then. Vary this to measure retrieval depth -- run one
+            query at 20, 50, 100, 200 and see where the best result sits.
+
+
+            Over the server's ceiling is `recall_limit_too_large` (422) rather
+            than a quiet clamp: comparing depths requires knowing which depth you
+            got.
+          schema:
+            type: integer
+            minimum: 1
       responses:
         "200":
           description: Results, best first

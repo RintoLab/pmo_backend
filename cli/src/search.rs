@@ -43,6 +43,13 @@ pub struct SearchArgs {
     #[arg(long)]
     limit: Option<u32>,
 
+    /// Candidates the vector stage pulls for the reranker to read (default
+    /// 100). This decides what *can* be found -- a result outside the candidate
+    /// set is absent, not ranked low -- so raising `--limit` past it adds
+    /// nothing. Vary it to measure retrieval depth.
+    #[arg(long)]
+    recall_limit: Option<u32>,
+
     /// Include archived content, which is left out by default
     #[arg(long)]
     include_archived: bool,
@@ -53,12 +60,16 @@ pub fn run(args: SearchArgs) -> Result<()> {
     let client = Client::new(config.api(), config.token()?)?;
 
     let limit = args.limit.map(|value| value.to_string());
+    let recall_limit = args.recall_limit.map(|value| value.to_string());
     let mut query: Vec<(&str, &str)> = vec![("q", &args.query), ("type", &args.r#type)];
     if let Some(project_id) = args.project_id.as_deref() {
         query.push(("project_id", project_id));
     }
     if let Some(limit) = limit.as_deref() {
         query.push(("limit", limit));
+    }
+    if let Some(recall_limit) = recall_limit.as_deref() {
+        query.push(("recall_limit", recall_limit));
     }
     if args.include_archived {
         query.push(("include_archived", "true"));

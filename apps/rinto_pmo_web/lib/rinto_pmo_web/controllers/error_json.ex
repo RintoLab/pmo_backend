@@ -92,6 +92,12 @@ defmodule RintoPMOWeb.ErrorJSON do
     # has neighbours -- so the alternative to refusing is a list ordered by
     # nothing, which looks like an answer. Browsing is a different endpoint.
     blank_query: {422, "A search needs something to search for."},
+    # Asked to rerank more candidates than one request carries. Refused rather
+    # than clamped: the point of naming a depth is to compare it against
+    # another, and a caller quietly given a different one draws the wrong
+    # conclusion from the results.
+    recall_limit_too_large:
+      {422, "Too many candidates to rerank in one request. Ask for a smaller recall_limit."},
     unresolvable_references:
       {422, "The body points at things that do not exist. Check the rinto:// addresses."},
     internal_server_error: {500, "An internal server error occurred."},

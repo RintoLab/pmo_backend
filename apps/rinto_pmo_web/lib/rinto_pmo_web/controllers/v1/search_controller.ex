@@ -24,7 +24,8 @@ defmodule RintoPMOWeb.V1.SearchController do
       include_archived: params["include_archived"] == "true"
     ]
 
-    with {:ok, opts} <- put_limit(opts, params),
+    with {:ok, opts} <- put_positive(opts, params, "limit", :limit),
+         {:ok, opts} <- put_positive(opts, params, "recall_limit", :recall_limit),
          {:ok, results} <- Utils.module(:search).search(query, opts) do
       render(conn, :index, results: results)
     end
@@ -38,12 +39,19 @@ defmodule RintoPMOWeb.V1.SearchController do
     {:error, :bad_request, %{q: ["can't be blank"]}}
   end
 
-  defp put_limit(opts, %{"limit" => limit}) do
-    case Integer.parse(limit) do
-      {parsed, ""} when parsed > 0 -> {:ok, Keyword.put(opts, :limit, parsed)}
-      _invalid -> {:error, :bad_request, %{limit: ["is invalid"]}}
+  # Absent means "use the default", so only a present-and-unusable value is a
+  # mistake. Zero and negative are refused rather than floored: a caller asking
+  # for none of something meant something, and it was not this.
+  defp put_positive(opts, params, param, key) do
+    case Map.fetch(params, param) do
+      :error ->
+        {:ok, opts}
+
+      {:ok, value} ->
+        case Integer.parse(value) do
+          {parsed, ""} when parsed > 0 -> {:ok, Keyword.put(opts, key, parsed)}
+          _invalid -> {:error, :bad_request, %{key => ["is invalid"]}}
+        end
     end
   end
-
-  defp put_limit(opts, _params), do: {:ok, opts}
 end
