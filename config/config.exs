@@ -41,7 +41,8 @@ config :rinto_pmo,
     # in their place would let a document test pass over an index nothing wrote.
     links: RintoPMO.Links,
     # Embeddings and reranking. A service, not an actor -- see `RintoPMO.AI`.
-    ai: RintoPMO.AI
+    ai: RintoPMO.AI,
+    search: RintoPMO.Search
   ]
 
 # The local inference service: embeddings and reranking.
@@ -192,6 +193,18 @@ config :rinto_pmo, RintoPMO.OSProcess,
   # a child that never emits a newline cannot grow the buffer without bound.
   # Unbounded by default: cutting a line is lossy, so it is opt-in per child.
   max_line_bytes: :infinity
+
+config :rinto_pmo, RintoPMO.Search,
+  # Candidates pulled by cosine distance before reranking. Measured rather than
+  # guessed: across three queries on this system's own content, the best result
+  # after reranking sat at cosine rank 27, 25 and 56 -- so twenty would have
+  # missed all three. Reranking a hundred costs about 100ms more than twenty,
+  # so depth is nearly free and shallowness is not.
+  recall_limit: 100,
+  # Results handed back after reranking.
+  result_limit: 20,
+  # Characters of a hit's text carried back. Enough to see why it matched.
+  max_excerpt_chars: 300
 
 config :rinto_pmo, RintoPMO.Embeddings.Worker,
   # Rows embedded per source per pass. Also the signal for "there is more":

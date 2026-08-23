@@ -104,6 +104,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     too_many_references:
       {422, "Too many references in one request. Ask in smaller batches.",
        %{max: 200, given: 201}},
+    unsearchable_type:
+      {422, "Nothing of that kind is indexed for search.",
+       %{type: "proposal", searchable: ["block", "task"]}},
     internal_server_error: {500, "An internal server error occurred.", %{}},
     agent_unavailable:
       {503, "The agent runtime could not be started.", %{reason: ":pi_not_found"}},

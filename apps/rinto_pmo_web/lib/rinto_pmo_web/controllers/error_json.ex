@@ -81,6 +81,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     # than truncated: a caller handed back half its links would render the rest
     # as broken, which reads as data loss instead of a limit.
     too_many_references: {422, "Too many references in one request. Ask in smaller batches."},
+    # Asked to search a kind of thing nothing is indexed under. Said rather than
+    # answered with an empty list: the question could never have found anything,
+    # which is a mistake in the request rather than a result.
+    unsearchable_type: {422, "Nothing of that kind is indexed for search."},
     internal_server_error: {500, "An internal server error occurred."},
     agent_unavailable: {503, "The agent runtime could not be started."},
     attachment_unwritable: {500, "The attachment could not be stored."},

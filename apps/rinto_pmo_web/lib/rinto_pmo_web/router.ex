@@ -57,6 +57,11 @@ defmodule RintoPMOWeb.Router do
     # holds the body and can read its own references off it.
     get "/backlinks", BacklinkController, :index
 
+    # Finding things by meaning: an embedded query against embedded content,
+    # then a reranker. One kind of thing per request -- see `RintoPMO.Search`
+    # on why nothing merges a ranking across types.
+    get "/search", SearchController, :index
+
     # Adopting a scratch document as a formal one. A person's action, so it has
     # no counterpart in the agent CLI.
     post "/documents/:id/formalize", DocumentController, :formalize

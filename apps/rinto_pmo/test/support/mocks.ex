@@ -8,6 +8,7 @@ Hammox.defmock(RintoPMO.RepoCredentialsMock, for: RintoPMO.RepoCredentials.Behav
 Hammox.defmock(RintoPMO.TasksMock, for: RintoPMO.Tasks.Behaviour)
 Hammox.defmock(RintoPMO.AIMock, for: RintoPMO.AI.Behaviour)
 Hammox.defmock(RintoPMO.LinksMock, for: RintoPMO.Links.Behaviour)
+Hammox.defmock(RintoPMO.SearchMock, for: RintoPMO.Search.Behaviour)
 Hammox.defmock(RintoPMO.References.ResolverMock, for: RintoPMO.References.Resolver.Behaviour)
 Hammox.defmock(RintoPMO.OSProcessMock, for: RintoPMO.OSProcess.Behaviour)
 Hammox.defmock(RintoPMO.Agent.RpcMock, for: RintoPMO.Agent.Rpc.Behaviour)

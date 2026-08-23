@@ -700,6 +700,111 @@ paths:
                 $ref: "#/components/schemas/APIError"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /search:
+    get:
+      tags: [References]
+      operationId: search
+      summary: Find things by meaning
+      description: >-
+        Two stages. The query is embedded, the nearest hundred rows are pulled by
+        cosine distance, and a reranker then reads the query against each and
+        scores it properly. The first stage is cheap and rough; the second is the
+        one that is right.
+
+
+        A hundred is measured rather than chosen for comfort: across three
+        queries on this system's own content, the best result after reranking sat
+        at cosine rank 27, 25 and 56, so a candidate set of twenty would have
+        missed all three. The embedding model is small and its recall is
+        correspondingly rough, which is what reranking is for.
+
+
+        **One kind of thing per request.** Nothing merges a ranking across types,
+        because there is no need to -- listing tasks and listing documents
+        already have their own endpoints. Asking about two kinds means asking
+        twice.
+
+
+        **What matches is not always what is returned.** Searching `document`
+        matches blocks and answers with their documents, since a document's
+        content is its sections; searching `annotation` matches annotations and
+        their replies and answers with the thread. Duplicates collapse to their
+        best-scoring member, so a document whose four sections all match is one
+        result.
+
+
+        **`uri` is the field that matters**: it is the canonical address, so a
+        model pastes it straight into a body and a client hands it to
+        `POST /references/resolve` or `GET /backlinks` unchanged. Nothing has to
+        assemble an id.
+
+
+        Content written in the last few seconds may not be here yet -- a row is
+        findable once its vector has been computed, which happens on a sweep
+        rather than at write time.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: What to look for, in natural language.
+          schema:
+            type: string
+        - name: type
+          in: query
+          required: false
+          description: >
+            Which kind of thing to search. Defaults to `block`, which is where a
+            body's content lives -- a document is found through the section that
+            says the thing. A type that nothing is indexed under is refused
+            rather than answered with an empty list.
+          schema:
+            type: string
+            enum: [block, document, annotation, task, project, conversation, attachment]
+            default: block
+        - name: project_id
+          in: query
+          required: false
+          description: Narrow to one project. Scope filters before distance does.
+          schema:
+            type: string
+            format: uuid
+        - name: include_archived
+          in: query
+          required: false
+          description: >
+            Archived things are left out by default. This differs from
+            `GET /backlinks`, which must answer completely -- that asks "who
+            pointed at this", while this asks "find me something to use", and
+            archived means "not in use".
+          schema:
+            type: boolean
+            default: false
+        - name: limit
+          in: query
+          required: false
+          description: Results to return after reranking.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Results, best first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          description: "`q` is missing, or `limit` is not a positive number"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          description: Nothing of that kind is indexed for search
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /references/resolve:
     post:
       tags: [References]
@@ -3275,6 +3380,56 @@ components:
             Whether the document carrying the source has been archived. Flagged
             rather than filtered: archiving is not deleting, and the reference is
             still real.
+    SearchResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+    SearchResult:
+      type: object
+      required: [uri, type, score, archived]
+      properties:
+        uri:
+          type: string
+          description: >
+            The canonical address of the result. Paste it into a body, or hand it
+            to `POST /references/resolve` or `GET /backlinks` unchanged.
+          example: "rinto://block/01936f2a-1c4e-7c3a-9f1b-2d4e6a8b0c1d"
+        type:
+          type: string
+          description: The kind of thing found, matching the `type` asked for.
+        title:
+          type: string
+          nullable: true
+          description: The result's name. For a block, its heading; for an annotation, its document's title.
+        excerpt:
+          type: string
+          nullable: true
+          description: The text that matched, truncated. Enough to see why it was returned.
+        document_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The document a block or annotation belongs to. Present so that
+            following a hit does not need a second call, the same second level
+            the reference resolver and backlinks hand back.
+        document_title:
+          type: string
+          nullable: true
+        score:
+          type: number
+          format: float
+          description: >
+            The reranker's score, higher being better. Not a cosine distance, and
+            on the model's own scale -- useful for ordering within one response,
+            not as a threshold across queries.
+        archived:
+          type: boolean
+          description: Whether the result, or the document carrying it, has been archived.
     ResolveReferencesInput:
       type: object
       required: [uris]
