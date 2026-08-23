@@ -830,7 +830,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/APIError"
         "422":
-          description: Nothing of that kind is indexed for search
+          description: >
+            `unsearchable_type` -- nothing of that kind is indexed; or
+            `blank_query` -- `q` was empty or whitespace. A blank query is
+            refused rather than treated as "everything": an empty string embeds
+            to a vector like any other, and that vector has neighbours, so the
+            alternative is a list ordered by nothing that looks like an answer.
+            Browsing is `GET /documents`.
           content:
             application/json:
               schema:

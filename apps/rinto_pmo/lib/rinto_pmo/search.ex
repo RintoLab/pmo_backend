@@ -112,17 +112,30 @@ defmodule RintoPMO.Search do
   is indexed under, and for one this build has never heard of. All three are
   mistakes in the request rather than empty results, and saying so beats
   answering "nothing found" to a question that could never have found anything.
+
+  **A blank query is refused rather than treated as "everything".** Embedding an
+  empty string produces a vector, and that vector has neighbours, so the
+  alternative is a list of results ordered by nothing at all -- an answer that
+  looks like an answer. Browsing is `GET /documents`, which is a different
+  question with a different endpoint.
   """
   @impl true
   @spec search(String.t(), [option()]) ::
-          {:ok, [result()]} | {:error, :unsearchable_type, map()} | {:error, term()}
+          {:ok, [result()]}
+          | {:error, :unsearchable_type | :blank_query, map()}
+          | {:error, term()}
   def search(query, opts \\ []) when is_binary(query) do
     type = Keyword.get(opts, :type)
 
-    if searchable?(type) do
-      run(query, type, opts)
-    else
-      {:error, :unsearchable_type, %{type: type, searchable: searchable_types()}}
+    cond do
+      String.trim(query) == "" ->
+        {:error, :blank_query, %{}}
+
+      not searchable?(type) ->
+        {:error, :unsearchable_type, %{type: type, searchable: searchable_types()}}
+
+      true ->
+        run(query, type, opts)
     end
   end
 

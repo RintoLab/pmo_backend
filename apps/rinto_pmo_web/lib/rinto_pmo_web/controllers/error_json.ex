@@ -88,6 +88,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     # A body pointing at something that is not there. The offending addresses
     # come back in `details.uris` so that whoever wrote them can fix those
     # rather than re-read the whole document.
+    # An empty query embeds to a vector like any other string, and that vector
+    # has neighbours -- so the alternative to refusing is a list ordered by
+    # nothing, which looks like an answer. Browsing is a different endpoint.
+    blank_query: {422, "A search needs something to search for."},
     unresolvable_references:
       {422, "The body points at things that do not exist. Check the rinto:// addresses."},
     internal_server_error: {500, "An internal server error occurred."},
