@@ -39,8 +39,42 @@ config :rinto_pmo,
     # Only the read side of the reference index. `sync/5` and `purge/3` stay out
     # of the injector on purpose: they are part of writing correctly, and a mock
     # in their place would let a document test pass over an index nothing wrote.
-    links: RintoPMO.Links
+    links: RintoPMO.Links,
+    # Embeddings and reranking. A service, not an actor -- see `RintoPMO.AI`.
+    ai: RintoPMO.AI
   ]
+
+# The local inference service: embeddings and reranking.
+#
+# Not pi. pi is a coding assistant that holds a conversation, and neither of
+# these is a conversation -- they are single-shot calls whose whole job is to
+# turn text into numbers. They also have no actor behind them: `title_actor`
+# and the rest name *who* is answering, and nobody is answering here. So this
+# is configured as a service address rather than through `RintoPMO.Settings`.
+#
+# `token` is deliberately absent from this file. It is a credential, and
+# credentials are read at runtime -- see `config/runtime.exs`, and
+# `config/dev.secret.exs` for a developer's own copy.
+config :rinto_pmo, :ai,
+  base_url: "https://ai.kenton.wang/v1",
+  embedding_uri: "/embeddings",
+  rerank_uri: "/rerank",
+  score_uri: "/score",
+  # Qwen3-Embedding-0.6B, whose 1024 dimensions are what `block_embeddings` and
+  # every other `embedding` column are declared as. Changing the model means
+  # rewriting those columns, so this is not a setting to flip casually.
+  embedding_model: "qwen3",
+  rerank_model: "qwen3",
+  score_model: "qwen3",
+  # On the query side only -- Qwen3-Embedding is trained with an instruction
+  # there and none on the document side. Wording is a tuning knob, not a
+  # contract, which is why it is here rather than in the code.
+  query_instruction:
+    "Given a search query, retrieve relevant passages from a project's documents, tasks and discussions",
+  # Wall clock for one call. These are single-shot transformations, not a model
+  # thinking, so a slow one is a service in trouble rather than one working.
+  timeout: 30_000,
+  token: nil
 
 # `vector` is not a type Postgrex knows natively -- it comes with the pgvector
 # extension -- so the repo is given a type module that includes it. Set here

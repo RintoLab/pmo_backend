@@ -29,6 +29,17 @@ if config_env() != :test do
   config :rinto_pmo, RintoPMO.Actors, token: System.get_env("RINTO_TOKEN")
 end
 
+# The credential for the inference service in `config/config.exs`. Read here
+# rather than there for the same reason `RINTO_TOKEN` is: a token committed to
+# a tracked file is a token that has leaked.
+#
+# Absent is a valid state -- nothing is embedded, and whatever depends on that
+# says so -- rather than a reason to refuse to boot. A developer without the
+# service configured should still be able to run the rest of the system.
+if token = System.get_env("RINTO_AI_TOKEN") do
+  config :rinto_pmo, :ai, token: token
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

@@ -33,7 +33,8 @@ config :rinto_pmo, :injectors,
   wbs_generator: RintoPMO.Agent.WbsGeneratorMock,
   task_estimator: RintoPMO.Agent.TaskEstimatorMock,
   reference_resolver: RintoPMO.References.ResolverMock,
-  links: RintoPMO.LinksMock
+  links: RintoPMO.LinksMock,
+  ai: RintoPMO.AIMock
 
 # Uploads land in a scratch directory: tests write real files, and the project
 # tree should not collect them.
