@@ -61,9 +61,9 @@ config :rinto_pmo, :ai,
   embedding_uri: "/embeddings",
   rerank_uri: "/rerank",
   score_uri: "/score",
-  # Qwen3-Embedding-0.6B, whose 1024 dimensions are what `block_embeddings` and
-  # every other `embedding` column are declared as. Changing the model means
-  # rewriting those columns, so this is not a setting to flip casually.
+  # Qwen3-Embedding-0.6B, whose 1024 dimensions are what every `embedding`
+  # column is declared as. Changing the model means rewriting those columns, so
+  # this is not a setting to flip casually.
   embedding_model: "qwen3",
   rerank_model: "qwen3",
   score_model: "qwen3",

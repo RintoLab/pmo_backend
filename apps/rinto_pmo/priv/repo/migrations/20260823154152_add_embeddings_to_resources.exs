@@ -8,7 +8,9 @@ defmodule RintoPMO.Repo.Migrations.AddEmbeddingsToResources do
   # the content, no table to keep in step, and deletes and cascades that already
   # do the right thing.
   #
-  # Blocks are the exception, and `block_embeddings` says why.
+  # Blocks are the exception only in how their vector survives a revision, and
+  # `20260823122024_add_embeddings_to_document_blocks` says why. The column
+  # itself lives on `document_blocks` the same way these do.
   #
   # ## Documents deliberately have none
   #
