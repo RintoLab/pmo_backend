@@ -91,7 +91,7 @@ defmodule RintoPMO.Search do
 
     @callback search(String.t(), keyword()) ::
                 {:ok, [RintoPMO.Search.result()]}
-                | {:error, :unsearchable_type, map()}
+                | {:error, :unsearchable_type | :ai_not_configured | :ai_unavailable, map()}
                 | {:error, term()}
   end
 
@@ -118,11 +118,17 @@ defmodule RintoPMO.Search do
   alternative is a list of results ordered by nothing at all -- an answer that
   looks like an answer. Browsing is `GET /documents`, which is a different
   question with a different endpoint.
+
+  A search needs the inference service, so one it cannot reach is
+  `{:error, :ai_not_configured, _}` when this installation has no
+  `RINTO_AI_TOKEN` and `{:error, :ai_unavailable, _}` when the service itself
+  answered badly or not at all.
   """
   @impl true
   @spec search(String.t(), [option()]) ::
           {:ok, [result()]}
-          | {:error, :unsearchable_type | :blank_query, map()}
+          | {:error, :unsearchable_type | :blank_query | :ai_not_configured | :ai_unavailable,
+             map()}
           | {:error, term()}
   def search(query, opts \\ []) when is_binary(query) do
     type = Keyword.get(opts, :type)
@@ -154,15 +160,35 @@ defmodule RintoPMO.Search do
   defp searchable?(type), do: type in searchable_types()
 
   defp run(query, type, opts) do
-    with {:ok, vector} <- ai().embed_query(query) do
-      candidates = candidates(type, Pgvector.new(vector), opts)
+    result =
+      with {:ok, vector} <- ai().embed_query(query) do
+        candidates = candidates(type, Pgvector.new(vector), opts)
 
-      case rank(query, candidates) do
-        {:ok, ranked} -> {:ok, Enum.take(ranked, Keyword.get(opts, :limit, result_limit()))}
-        error -> error
+        case rank(query, candidates) do
+          {:ok, ranked} -> {:ok, Enum.take(ranked, Keyword.get(opts, :limit, result_limit()))}
+          error -> error
+        end
       end
-    end
+
+    named(result)
   end
+
+  # The inference service is not optional here: without it there is no vector to
+  # search with, and no reranking -- and cosine order alone is the order that was
+  # measured to be wrong. So an unreachable service is a failure with a name
+  # rather than an empty list, and the name says which of the two things to go
+  # and fix. Told apart the way `token_not_configured` is told apart from
+  # `unauthorized`: an installation that was never given `RINTO_AI_TOKEN` is an
+  # operator's oversight, a service that is down is an outage, and nobody does
+  # the same thing about them.
+  defp named({:error, :not_configured}), do: {:error, :ai_not_configured, %{}}
+
+  defp named({:error, {:http, status, _body}}), do: {:error, :ai_unavailable, %{status: status}}
+
+  defp named({:error, {:transport, reason}}),
+    do: {:error, :ai_unavailable, %{reason: inspect(reason)}}
+
+  defp named(result), do: result
 
   # Reranking is what the candidate set was gathered for, so a reranker that is
   # unavailable is a failed search rather than a chance to hand back the cosine

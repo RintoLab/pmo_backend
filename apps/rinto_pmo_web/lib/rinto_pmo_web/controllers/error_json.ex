@@ -96,6 +96,13 @@ defmodule RintoPMOWeb.ErrorJSON do
       {422, "The body points at things that do not exist. Check the rinto:// addresses."},
     internal_server_error: {500, "An internal server error occurred."},
     agent_unavailable: {503, "The agent runtime could not be started."},
+    # Searching without the service that does the searching. Told apart from
+    # `ai_unavailable` for the same reason `token_not_configured` is told apart
+    # from `unauthorized`: this one is an installation nobody finished
+    # configuring, and no amount of retrying will change it.
+    ai_not_configured:
+      {503, "The server was started without RINTO_AI_TOKEN, so it cannot search."},
+    ai_unavailable: {503, "The inference service could not be reached."},
     attachment_unwritable: {500, "The attachment could not be stored."},
     attachment_unreadable: {500, "The attachment bytes are missing or unreadable."}
   }

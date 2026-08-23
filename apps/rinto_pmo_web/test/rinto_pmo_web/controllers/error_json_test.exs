@@ -114,6 +114,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     internal_server_error: {500, "An internal server error occurred.", %{}},
     agent_unavailable:
       {503, "The agent runtime could not be started.", %{reason: ":pi_not_found"}},
+    ai_not_configured:
+      {503, "The server was started without RINTO_AI_TOKEN, so it cannot search.", %{}},
+    ai_unavailable: {503, "The inference service could not be reached.", %{status: 502}},
     session_limit_reached:
       {409, "Every running agent session is waiting on a person. Close one to make room.", %{}},
     attachment_unwritable: {500, "The attachment could not be stored.", %{reason: "enospc"}},

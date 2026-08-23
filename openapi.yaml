@@ -841,6 +841,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
+        "503":
+          description: >
+            `ai_not_configured` -- this server was started without
+            `RINTO_AI_TOKEN`, so it has no way to embed a query and never will
+            until somebody deploys it one; or `ai_unavailable` -- the inference
+            service refused or could not be reached.
+
+
+            Both are the whole of the search rather than a degraded one. Without
+            a vector there is no query at all, and without reranking what is
+            left is cosine order, which is the order this endpoint's second
+            stage exists because it was measured to be wrong.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /references/resolve:
     post:
       tags: [References]

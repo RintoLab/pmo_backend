@@ -212,13 +212,24 @@ defmodule RintoPMO.SearchTest do
       expect(AIMock, :embed_query, fn _query -> {:ok, vector()} end)
       expect(AIMock, :rerank, fn _query, _documents -> {:error, :not_configured} end)
 
-      assert {:error, :not_configured} = Search.search("部署", type: "block")
+      assert {:error, :ai_not_configured, %{}} = Search.search("部署", type: "block")
     end
 
     test "a failed query embedding fails the search" do
       expect(AIMock, :embed_query, fn _query -> {:error, {:transport, :econnrefused}} end)
 
-      assert {:error, {:transport, :econnrefused}} = Search.search("部署", type: "block")
+      assert {:error, :ai_unavailable, %{reason: ":econnrefused"}} =
+               Search.search("部署", type: "block")
+    end
+
+    # A server nobody gave a token to and a service that is down are different
+    # problems with different fixes, so they are not the same error.
+    test "a missing token is told apart from a service that answered badly" do
+      expect(AIMock, :embed_query, fn _query -> {:error, :not_configured} end)
+      assert {:error, :ai_not_configured, %{}} = Search.search("部署", type: "block")
+
+      expect(AIMock, :embed_query, fn _query -> {:error, {:http, 502, "bad gateway"}} end)
+      assert {:error, :ai_unavailable, %{status: 502}} = Search.search("部署", type: "block")
     end
   end
 

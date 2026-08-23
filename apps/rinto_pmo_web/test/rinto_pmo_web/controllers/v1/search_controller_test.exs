@@ -109,4 +109,26 @@ defmodule RintoPMOWeb.V1.SearchControllerTest do
     assert %{"error" => "unsearchable_type", "details" => details} = json_response(conn, 422)
     assert details["type"] == "proposal"
   end
+
+  # An installation deployed without RINTO_AI_TOKEN answers every search this
+  # way, and the message is what tells whoever deployed it what is missing.
+  test "GET search says so when this server has no inference credential", %{conn: conn} do
+    expect(SearchMock, :search, fn _query, _opts -> {:error, :ai_not_configured, %{}} end)
+
+    conn = get(conn, ~p"/api/v1/search?q=部署&type=block")
+
+    assert %{"error" => "ai_not_configured", "message" => message} = json_response(conn, 503)
+    assert message =~ "RINTO_AI_TOKEN"
+  end
+
+  test "GET search says so when the inference service is down", %{conn: conn} do
+    expect(SearchMock, :search, fn _query, _opts ->
+      {:error, :ai_unavailable, %{reason: ":econnrefused"}}
+    end)
+
+    conn = get(conn, ~p"/api/v1/search?q=部署&type=block")
+
+    assert %{"error" => "ai_unavailable", "details" => details} = json_response(conn, 503)
+    assert details["reason"] == ":econnrefused"
+  end
 end
