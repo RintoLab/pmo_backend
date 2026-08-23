@@ -69,8 +69,8 @@ defmodule RintoPMO.References.ResolverTest do
     end
 
     test "document takes its title from the latest revision" do
-      {document, _first} = document_with("旧标题")
-      insert(:document_revision, document: document, title: "新标题")
+      {document, first} = document_with("旧标题")
+      insert_revision_after(first, document: document, title: "新标题")
 
       assert %{state: :ok, title: "新标题", subtitle: "draft"} =
                resolve_one(uri("document", document.id))
@@ -141,7 +141,7 @@ defmodule RintoPMO.References.ResolverTest do
       {document, first} = document_with("上线流程")
       block = insert(:document_block, revision: first, content: "## 会被删掉的一节")
 
-      second = insert(:document_revision, document: document, title: "上线流程")
+      second = insert_revision_after(first, document: document, title: "上线流程")
       insert(:document_block, revision: second, content: "## 留下来的一节")
 
       assert %{state: :broken} = resolve_one(uri("block", block.block_id))
@@ -151,7 +151,7 @@ defmodule RintoPMO.References.ResolverTest do
       {document, first} = document_with("上线流程")
       block = insert(:document_block, revision: first, content: "## 第一版")
 
-      second = insert(:document_revision, document: document, title: "上线流程")
+      second = insert_revision_after(first, document: document, title: "上线流程")
       insert(:document_block, revision: second, block_id: block.block_id, content: "## 第二版")
 
       assert %{state: :ok, title: "第二版"} = resolve_one(uri("block", block.block_id))

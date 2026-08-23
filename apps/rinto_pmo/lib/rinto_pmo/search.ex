@@ -53,7 +53,6 @@ defmodule RintoPMO.Search do
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
-  alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Revisions
   alias RintoPMO.Projects.Project
   alias RintoPMO.References
@@ -396,9 +395,7 @@ defmodule RintoPMO.Search do
   end
 
   defp document_titles(document_ids) do
-    DocumentRevision
-    |> distinct([revision], revision.document_id)
-    |> order_by([revision], asc: revision.document_id, desc: revision.id)
+    Revisions.latest()
     |> where([revision], revision.document_id in ^Enum.uniq(document_ids))
     |> select([revision], {revision.document_id, revision.title})
     |> Repo.all()

@@ -10,6 +10,7 @@ defmodule RintoPMO.DocumentsTest do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Notifier
+  alias RintoPMO.Documents.Revisions
   alias RintoPMO.Projects
   alias RintoPMO.ProjectsMock
   alias RintoPMO.Settings
@@ -416,6 +417,29 @@ defmodule RintoPMO.DocumentsTest do
       assert revision.parent_id == parent.id
       assert revision.title == parent.title
       assert revision.blocks == []
+    end
+
+    # Every read of a document and every read of a block goes through this
+    # flag, so a revision that landed without demoting its parent would not be
+    # a stale row -- it would be two current ones, and nothing downstream has
+    # a tiebreak.
+    test "a new revision takes the latest flag off its parent" do
+      project = insert(:project)
+      {:ok, document} = create_document(project, %{title: "Draft"})
+      first = document.latest_revision
+
+      assert Repo.get!(DocumentRevision, first.id).is_latest
+
+      {:ok, second} = Documents.create_revision(document, %{base_revision_id: first.id})
+
+      refute Repo.get!(DocumentRevision, first.id).is_latest
+      assert Repo.get!(DocumentRevision, second.id).is_latest
+
+      assert [second.id] ==
+               Revisions.latest()
+               |> where([revision], revision.document_id == ^document.id)
+               |> select([revision], revision.id)
+               |> Repo.all()
     end
 
     test "rejects a stale base revision" do

@@ -22,6 +22,12 @@ defmodule RintoPMO.Documents.DocumentRevision do
     field :change_summary, :string
     field :base_revision_id, UUIDv7, virtual: true
 
+    # Which revision of the document counts. Never cast: a revision is the
+    # latest one by being the one just written, and is demoted by the next one
+    # landing (`RintoPMO.Documents.insert_revision/4`), never by a caller
+    # saying so. `RintoPMO.Documents.Revisions` is what reads it.
+    field :is_latest, :boolean, default: true
+
     belongs_to :document, Document
     belongs_to :parent, __MODULE__
     belongs_to :source_conversation, Conversation

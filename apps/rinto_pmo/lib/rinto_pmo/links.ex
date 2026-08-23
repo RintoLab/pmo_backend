@@ -37,7 +37,6 @@ defmodule RintoPMO.Links do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
-  alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Revisions
   alias RintoPMO.Links.Link
   alias RintoPMO.References
@@ -228,9 +227,8 @@ defmodule RintoPMO.Links do
   # indexes. Loaded a page at a time rather than streamed with a preload, which
   # `Repo.stream/2` does not do.
   defp rebuild_documents(repo) do
-    DocumentRevision
-    |> distinct([revision], revision.document_id)
-    |> order_by([revision], asc: revision.document_id, desc: revision.id)
+    Revisions.latest()
+    |> order_by([revision], asc: revision.document_id)
     |> repo.all()
     |> Enum.chunk_every(100)
     |> Enum.reduce(0, fn revisions, count ->

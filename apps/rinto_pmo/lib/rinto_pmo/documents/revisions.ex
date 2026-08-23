@@ -10,6 +10,22 @@ defmodule RintoPMO.Documents.Revisions do
   That was written out by hand in four places before this existed, and got
   wrong in one of them. It is the single most error-prone thing about this
   schema, which is reason enough for it to have one spelling.
+
+  ## It is a column, not a sort
+
+  This used to be `DISTINCT ON (document_id) ... ORDER BY document_id, id DESC`
+  over the whole of `document_revisions`, with nothing narrowing it. Every
+  search, every backlink, every reference resolved and every embedding pass
+  paid for a sort of every revision of every document that has ever existed --
+  including the ones asking about a single block.
+
+  `document_revisions.is_latest` and its partial unique index turn that into an
+  index lookup whose cost tracks the number of documents rather than the number
+  of edits ever made. It also makes "exactly one current revision per document"
+  something the database enforces rather than something these queries assumed.
+
+  The flag is maintained by `RintoPMO.Documents.insert_revision/4`, which
+  demotes the parent before inserting its successor.
   """
 
   import Ecto.Query
@@ -17,20 +33,14 @@ defmodule RintoPMO.Documents.Revisions do
   alias RintoPMO.Documents.DocumentRevision
 
   @doc """
-  The newest revision of every document, as a subquery to join against.
+  The current revision of every document.
 
-  `DISTINCT ON` rather than a correlated subquery per row: revisions are
-  ordered by id, so the newest of each document is the first row of its group.
+  Unprojected on purpose: callers join this as a subquery for a title or an id,
+  and one of them wants the row itself. A narrower select would be a second
+  spelling of the same idea, which is what this module exists to prevent.
   """
   @spec latest() :: Ecto.Query.t()
   def latest do
-    DocumentRevision
-    |> distinct([revision], revision.document_id)
-    |> order_by([revision], asc: revision.document_id, desc: revision.id)
-    |> select([revision], %{
-      id: revision.id,
-      document_id: revision.document_id,
-      title: revision.title
-    })
+    where(DocumentRevision, [revision], revision.is_latest)
   end
 end

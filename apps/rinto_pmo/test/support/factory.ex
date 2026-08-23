@@ -60,6 +60,24 @@ defmodule RintoPMO.Factory do
     }
   end
 
+  @doc """
+  Inserts the revision that supersedes `parent`, demoting it on the way.
+
+  A document has exactly one current revision, and
+  `document_revisions_one_latest_per_document` enforces it, so a history built
+  by hand has to be built the way `RintoPMO.Documents.insert_revision/4` builds
+  one: the parent stops being the latest before its successor exists. Inserting
+  a second revision with `insert(:document_revision, document: document)`
+  raises, which is the constraint working rather than a test to route around.
+  """
+  def insert_revision_after(%DocumentRevision{} = parent, attrs \\ []) do
+    parent
+    |> Ecto.Changeset.change(is_latest: false)
+    |> RintoPMO.Repo.update!()
+
+    insert(:document_revision, Keyword.put_new(attrs, :parent_id, parent.id))
+  end
+
   def document_block_factory do
     %DocumentBlock{
       block_id: UUIDv7.generate(),

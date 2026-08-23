@@ -44,6 +44,7 @@ defmodule RintoPMO.Documents do
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Markdown
   alias RintoPMO.Documents.Notifier
+  alias RintoPMO.Documents.Revisions
   alias RintoPMO.Links
   alias RintoPMO.References.Guard
   alias RintoPMO.Settings
@@ -62,18 +63,12 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def list_documents(filter) when is_map(filter) do
-    latest_revision_query =
-      from revision in DocumentRevision,
-        where: revision.document_id == parent_as(:document).id,
-        order_by: [desc: revision.id],
-        limit: 1
-
     Document
     |> from(as: :document)
     |> where([document], is_nil(document.archived_at))
     |> filter_documents(filter)
-    |> join(:inner_lateral, [document: _document], revision in subquery(latest_revision_query),
-      on: true
+    |> join(:inner, [document: document], revision in subquery(Revisions.latest()),
+      on: revision.document_id == document.id
     )
     |> order_by([_document, revision], desc: revision.id)
     |> select([document, revision], {document, revision})
@@ -1157,6 +1152,8 @@ defmodule RintoPMO.Documents do
       true ->
         case BlockOps.apply(parent.blocks, attr(attrs, :block_ops, [])) do
           {:ok, block_entries} ->
+            supersede(repo, parent)
+
             changeset
             |> put_block_snapshots(block_entries, parent.blocks)
             |> repo.insert()
@@ -1166,6 +1163,17 @@ defmodule RintoPMO.Documents do
             {:error, {code, details}}
         end
     end
+  end
+
+  # Before the insert, not after: `document_revisions_one_latest_per_document`
+  # permits one current revision per document at every moment rather than
+  # merely at commit, and a partial unique index cannot be deferred. Both
+  # statements are in the caller's transaction, so an insert that fails takes
+  # this back with it and the parent is the latest again.
+  defp supersede(repo, %DocumentRevision{id: id}) do
+    DocumentRevision
+    |> where([revision], revision.id == ^id)
+    |> repo.update_all(set: [is_latest: false])
   end
 
   # In the same transaction as the revision, because an index written afterwards

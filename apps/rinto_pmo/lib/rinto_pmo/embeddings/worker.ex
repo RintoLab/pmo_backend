@@ -64,7 +64,7 @@ defmodule RintoPMO.Embeddings.Worker do
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Documents.DocumentBlock
-  alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Documents.Revisions
   alias RintoPMO.Projects.Project
   alias RintoPMO.Repo
   alias RintoPMO.Tasks.Task
@@ -186,13 +186,9 @@ defmodule RintoPMO.Embeddings.Worker do
   # historical snapshot would look like outstanding work and be embedded again
   # on every pass, forever.
   defp current_only(query, DocumentBlock) do
-    latest =
-      DocumentRevision
-      |> distinct([revision], revision.document_id)
-      |> order_by([revision], asc: revision.document_id, desc: revision.id)
-      |> select([revision], %{id: revision.id})
-
-    join(query, :inner, [row], revision in subquery(latest), on: revision.id == row.revision_id)
+    join(query, :inner, [row], revision in subquery(Revisions.latest()),
+      on: revision.id == row.revision_id
+    )
   end
 
   defp current_only(query, _schema), do: query

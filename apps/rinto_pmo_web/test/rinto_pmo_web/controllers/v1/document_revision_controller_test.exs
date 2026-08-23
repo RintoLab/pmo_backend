@@ -36,7 +36,7 @@ defmodule RintoPMOWeb.V1.DocumentRevisionControllerTest do
   test "POST revisions creates a new snapshot", %{conn: conn} do
     document = expect_document()
     parent = document.latest_revision
-    revision = insert(:document_revision, document: document, parent: parent, title: parent.title)
+    revision = insert_revision_after(parent, document: document, title: parent.title)
     revision = %{revision | blocks: []}
 
     params = %{
@@ -79,7 +79,7 @@ defmodule RintoPMOWeb.V1.DocumentRevisionControllerTest do
     actor = insert(:actor)
 
     revision =
-      insert(:document_revision,
+      insert_revision_after(document.latest_revision,
         document: document,
         change_summary: "Tightened §3",
         source_conversation: conversation
