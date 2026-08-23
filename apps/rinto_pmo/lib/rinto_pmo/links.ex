@@ -31,13 +31,69 @@ defmodule RintoPMO.Links do
 
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
+  alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Conversations.Message
   alias RintoPMO.Documents.BlockProposal
+  alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Links.Link
   alias RintoPMO.References
   alias RintoPMO.Tasks.Task
+
+  @typedoc """
+  One reference pointing at the thing that was asked about.
+
+  `source` names where the text lives; `label` is what that text called the
+  target, which is what a reader is shown when the target itself is gone.
+  """
+  @type backlink :: %{
+          source_type: String.t(),
+          source_id: UUIDv7.t(),
+          document_id: UUIDv7.t() | nil,
+          document_title: String.t() | nil,
+          title: String.t() | nil,
+          excerpt: String.t() | nil,
+          label: String.t(),
+          position: non_neg_integer(),
+          archived: boolean()
+        }
+
+  defmodule Behaviour do
+    @moduledoc false
+
+    @callback backlinks(RintoPMO.References.Reference.t()) :: [RintoPMO.Links.backlink()]
+  end
+
+  @behaviour Behaviour
+
+  @doc """
+  Everything whose text points at `reference`, newest first.
+
+  **Only the read side is injected.** `sync/5` and friends are part of writing
+  correctly, and a mock in their place would let a document test pass over an
+  index that was never written.
+
+  A source whose own target has since been deleted still answers here. That is
+  the point of keeping the row: the reference was really made, and reporting it
+  as broken is more useful than pretending it never happened.
+  """
+  @impl true
+  def backlinks(%References.Reference{} = reference) do
+    Link
+    |> where([link], link.target_type == ^reference.type)
+    |> by_key(reference)
+    |> order_by([link], desc: link.id)
+    |> Repo.all()
+    |> describe()
+  end
+
+  defp by_key(query, reference) do
+    case References.id(reference) do
+      nil -> where(query, [link], link.target_slug == ^reference.key)
+      id -> where(query, [link], link.target_id == ^id)
+    end
+  end
 
   @doc """
   Rewrites the index for one piece of text.
@@ -173,6 +229,154 @@ defmodule RintoPMO.Links do
   defp tap_each(rows, fun) do
     Enum.each(rows, fun)
     length(rows)
+  end
+
+  # Describing sources
+
+  # Deliberately not shared with `RintoPMO.References.Resolver`, which projects
+  # *targets* by URI. The overlap is three of these five kinds, keyed
+  # differently and shaped differently; a common layer for that would cost more
+  # in indirection than the duplication does. If a third consumer wants the
+  # same projections, that is when it is worth extracting.
+  defp describe([]), do: []
+
+  defp describe(links) do
+    sources = links |> Enum.group_by(& &1.source_type, & &1.source_id) |> load_sources()
+
+    Enum.map(links, fn link ->
+      sources
+      |> Map.get({link.source_type, link.source_id}, %{})
+      |> Map.merge(%{
+        source_type: link.source_type,
+        source_id: link.source_id,
+        label: link.label,
+        position: link.position
+      })
+      |> then(&Map.merge(source_defaults(), &1))
+    end)
+  end
+
+  defp source_defaults do
+    %{document_id: nil, document_title: nil, title: nil, excerpt: nil, archived: false}
+  end
+
+  defp load_sources(by_type) do
+    Enum.reduce(by_type, %{}, fn {source_type, ids}, acc ->
+      Map.merge(acc, load_source(source_type, Enum.uniq(ids)))
+    end)
+  end
+
+  # `source_id` for a block is its stable `block_id`, and only the newest
+  # revision is indexed, so this reads the same snapshot the index was built
+  # from rather than any historical copy.
+  defp load_source("document_block", block_ids) do
+    DocumentBlock
+    |> join(:inner, [block], revision in subquery(latest_revisions()),
+      on: revision.id == block.revision_id
+    )
+    |> join(:inner, [_block, revision], document in Document,
+      on: document.id == revision.document_id
+    )
+    |> where([block], block.block_id in ^block_ids)
+    |> select([block, revision, document], {block, revision, document.archived_at})
+    |> Repo.all()
+    |> Map.new(fn {block, revision, archived_at} ->
+      {{"document_block", block.block_id},
+       %{
+         document_id: revision.document_id,
+         document_title: revision.title,
+         title: revision.title,
+         excerpt: excerpt(block.content),
+         archived: not is_nil(archived_at)
+       }}
+    end)
+  end
+
+  defp load_source("annotation", ids) do
+    Annotation
+    |> join(:inner, [annotation], revision in subquery(latest_revisions()),
+      on: revision.document_id == annotation.document_id
+    )
+    |> where([annotation], annotation.id in ^ids)
+    |> select([annotation, revision], {annotation, revision.title})
+    |> Repo.all()
+    |> Map.new(fn {annotation, title} ->
+      {{"annotation", annotation.id},
+       %{
+         document_id: annotation.document_id,
+         document_title: title,
+         title: title,
+         excerpt: excerpt(annotation.content)
+       }}
+    end)
+  end
+
+  defp load_source("annotation_reply", ids) do
+    AnnotationReply
+    |> join(:inner, [reply], annotation in Annotation, on: annotation.id == reply.annotation_id)
+    |> join(:inner, [_reply, annotation], revision in subquery(latest_revisions()),
+      on: revision.document_id == annotation.document_id
+    )
+    |> where([reply], reply.id in ^ids)
+    |> select([reply, annotation, revision], {reply, annotation.document_id, revision.title})
+    |> Repo.all()
+    |> Map.new(fn {reply, document_id, title} ->
+      {{"annotation_reply", reply.id},
+       %{
+         document_id: document_id,
+         document_title: title,
+         title: title,
+         excerpt: excerpt(reply.content)
+       }}
+    end)
+  end
+
+  defp load_source("task", ids) do
+    Task
+    |> where([task], task.id in ^ids)
+    |> Repo.all()
+    |> Map.new(&{{"task", &1.id}, %{title: &1.title, excerpt: excerpt(&1.description)}})
+  end
+
+  # A topic's title, and the message's own position in it. Not the message
+  # text: a transcript quoted out of context reads as a conclusion, which is
+  # the same reason a conversation is linkable but never expandable.
+  defp load_source("message", ids) do
+    Message
+    |> join(:inner, [message], conversation in Conversation,
+      on: conversation.id == message.conversation_id
+    )
+    |> where([message], message.id in ^ids)
+    |> select([message, conversation], {message.id, conversation.title})
+    |> Repo.all()
+    |> Map.new(fn {id, title} -> {{"message", id}, %{title: title}} end)
+  end
+
+  defp load_source(_unknown, _ids), do: %{}
+
+  defp latest_revisions do
+    DocumentRevision
+    |> distinct([revision], revision.document_id)
+    |> order_by([revision], asc: revision.document_id, desc: revision.id)
+    |> select([revision], %{
+      id: revision.id,
+      document_id: revision.document_id,
+      title: revision.title
+    })
+  end
+
+  defp excerpt(nil), do: nil
+  defp excerpt(""), do: nil
+
+  defp excerpt(text) when is_binary(text) do
+    trimmed = String.trim(text)
+    limit = Application.fetch_env!(:rinto_pmo, __MODULE__)[:max_excerpt_chars]
+
+    if String.length(trimmed) > limit do
+      String.slice(trimmed, 0, limit) <> "…"
+    else
+      trimmed
+    end
   end
 
   defp insert_all(_repo, _source_type, _source_id, _document_id, content)

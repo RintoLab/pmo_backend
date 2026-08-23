@@ -51,6 +51,12 @@ defmodule RintoPMOWeb.Router do
     # `preview_blocks` is one -- a read whose input does not fit in a URL.
     post "/references/resolve", ReferenceController, :resolve
 
+    # The other direction: everything whose text points at one thing. Keyed by
+    # the canonical URI, so what a body cites and what is asked here are the
+    # same string. There is deliberately no outbound counterpart -- a client
+    # holds the body and can read its own references off it.
+    get "/backlinks", BacklinkController, :index
+
     # Adopting a scratch document as a formal one. A person's action, so it has
     # no counterpart in the agent CLI.
     post "/documents/:id/formalize", DocumentController, :formalize

@@ -647,6 +647,59 @@ paths:
                 $ref: "#/components/schemas/DocumentResponse"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /backlinks:
+    get:
+      tags: [References]
+      operationId: listBacklinks
+      summary: List everything whose text points at one thing
+      description: >-
+        The other direction from `POST /references/resolve`: not what this body
+        points at, but what points at this. Keyed by the canonical URI, so that
+        what an author pasted into a body and what is asked here are the same
+        string.
+
+
+        There is deliberately no outbound counterpart. A client holds the body
+        and can read its own references off it; only the reverse needs an index.
+
+
+        Backlinks are a query result, never written back into the target's text.
+        Roam, Obsidian and Notion all decline to do that, and a system that
+        edited what a person or a model wrote would be worse than one that did
+        not.
+
+
+        A reference whose target has since been deleted still answers here --
+        keeping the row is the whole reason there are no foreign keys. Nothing
+        here reports whether the *source* still exists: it does, or the row would
+        have gone with it.
+
+
+        Only the newest revision of each document is indexed, so this answers
+        "who points at this now" rather than "who ever did".
+      parameters:
+        - name: target
+          in: query
+          required: true
+          description: The canonical `rinto://` URI of the thing being asked about.
+          schema:
+            type: string
+            example: "rinto://task/01936f2a-1c4e-7c3a-9f1b-2d4e6a8b0c1d"
+      responses:
+        "200":
+          description: What points at it, grouped by the kind of source
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BacklinksResponse"
+        "400":
+          description: "`target` is missing"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /references/resolve:
     post:
       tags: [References]
@@ -3136,6 +3189,92 @@ components:
             document, so formatting is normalised. Use
             `POST /documents/preview_blocks` to see the split before creating anything.
       additionalProperties: false
+    BacklinksResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [total, groups]
+          properties:
+            total:
+              type: integer
+              description: References found, across all groups.
+            groups:
+              type: array
+              description: >
+                Grouped by the kind of place the text lives, ordered by that
+                kind. A backlink panel reads as sections; a client that wanted a
+                flat list can concatenate, while one that wanted sections out of
+                a flat list would have to group it back itself.
+              items:
+                $ref: "#/components/schemas/BacklinkGroup"
+    BacklinkGroup:
+      type: object
+      required: [source_type, count, entries]
+      properties:
+        source_type:
+          type: string
+          enum: [document_block, annotation, annotation_reply, task, message]
+          description: The kind of place the referring text lives.
+        count:
+          type: integer
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/Backlink"
+    Backlink:
+      type: object
+      required: [source_type, source_id, label, position, archived]
+      properties:
+        source_type:
+          type: string
+        source_id:
+          type: string
+          format: uuid
+          description: >
+            The referring thing. For `document_block` this is the block's stable
+            `block_id`, not a per-revision row id.
+        document_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The document the referring text lives in, where it lives in one.
+        document_title:
+          type: string
+          nullable: true
+        title:
+          type: string
+          nullable: true
+          description: >
+            What to name the source in a list: the document's title for a block,
+            an annotation or a reply; the task's title for a task; the topic's
+            title for a message.
+        excerpt:
+          type: string
+          nullable: true
+          description: >
+            The referring text, truncated. Always absent for a message: a
+            transcript quoted out of context reads as a conclusion, which is the
+            same reason a conversation is linkable but never expandable.
+        label:
+          type: string
+          description: >
+            The link text as written. This is what to show a reader when the
+            target itself is gone.
+        position:
+          type: integer
+          description: >
+            Where the reference falls in its source's own text. Two references
+            from one source to one target are two entries with different
+            positions -- they are not deduplicated, because collapsing them would
+            lose which mention was which.
+        archived:
+          type: boolean
+          description: >
+            Whether the document carrying the source has been archived. Flagged
+            rather than filtered: archiving is not deleting, and the reference is
+            still real.
     ResolveReferencesInput:
       type: object
       required: [uris]

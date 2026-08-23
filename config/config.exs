@@ -35,8 +35,18 @@ config :rinto_pmo,
     # Reading what a `rinto://` reference points at. Only the read side is
     # injected: parsing a reference is pure and belongs to every write path,
     # and mocking it would let a document test lie about what it stored.
-    reference_resolver: RintoPMO.References.Resolver
+    reference_resolver: RintoPMO.References.Resolver,
+    # Only the read side of the reference index. `sync/5` and `purge/3` stay out
+    # of the injector on purpose: they are part of writing correctly, and a mock
+    # in their place would let a document test pass over an index nothing wrote.
+    links: RintoPMO.Links
   ]
+
+config :rinto_pmo, RintoPMO.Links,
+  # Characters of a source's body carried in a backlink row. Shorter than a
+  # hover card's: a backlink panel is a list of many, and a preview long enough
+  # to read in isolation makes the list unscannable.
+  max_excerpt_chars: 120
 
 config :rinto_pmo, RintoPMO.References.Resolver,
   # References resolved in one request. A body carries as many as its author
