@@ -63,11 +63,12 @@ defmodule RintoPMO.References.Resolver do
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
-  alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Documents.Revisions
   alias RintoPMO.Projects.Project
   alias RintoPMO.References
   alias RintoPMO.References.Reference
   alias RintoPMO.Tasks.Task
+  alias RintoPMO.Text
 
   @type state :: :ok | :broken | :unknown_type | :invalid
 
@@ -182,7 +183,7 @@ defmodule RintoPMO.References.Resolver do
 
   defp load("document", ids) do
     Document
-    |> join(:inner, [document], revision in subquery(latest_revisions()),
+    |> join(:inner, [document], revision in subquery(Revisions.latest()),
       on: revision.document_id == document.id
     )
     |> where([document], document.id in ^ids)
@@ -204,7 +205,7 @@ defmodule RintoPMO.References.Resolver do
   # snapshots and the old ones never go away.
   defp load("block", ids) do
     DocumentBlock
-    |> join(:inner, [block], revision in subquery(latest_revisions()),
+    |> join(:inner, [block], revision in subquery(Revisions.latest()),
       on: revision.id == block.revision_id
     )
     |> join(:inner, [_block, revision], document in Document,
@@ -216,7 +217,7 @@ defmodule RintoPMO.References.Resolver do
     |> Map.new(fn {block, revision, archived_at} ->
       {block.block_id,
        projection(%{
-         title: heading(block.content),
+         title: Text.heading(block.content),
          subtitle: revision.title,
          excerpt: excerpt(block.content),
          document_id: revision.document_id,
@@ -228,7 +229,7 @@ defmodule RintoPMO.References.Resolver do
 
   defp load("annotation", ids) do
     Annotation
-    |> join(:inner, [annotation], revision in subquery(latest_revisions()),
+    |> join(:inner, [annotation], revision in subquery(Revisions.latest()),
       on: revision.document_id == annotation.document_id
     )
     |> where([annotation], annotation.id in ^ids)
@@ -248,7 +249,7 @@ defmodule RintoPMO.References.Resolver do
 
   defp load("proposal", ids) do
     BlockProposal
-    |> join(:inner, [proposal], revision in subquery(latest_revisions()),
+    |> join(:inner, [proposal], revision in subquery(Revisions.latest()),
       on: revision.document_id == proposal.document_id
     )
     |> where([proposal], proposal.id in ^ids)
@@ -300,51 +301,11 @@ defmodule RintoPMO.References.Resolver do
     end)
   end
 
-  # `DISTINCT ON` rather than a correlated subquery per row: revisions are
-  # ordered by id, so the newest per document is the first row of each group.
-  defp latest_revisions do
-    DocumentRevision
-    |> distinct([revision], revision.document_id)
-    |> order_by([revision], asc: revision.document_id, desc: revision.id)
-    |> select([revision], %{
-      id: revision.id,
-      document_id: revision.document_id,
-      title: revision.title
-    })
-  end
-
   # Projecting
 
-  defp heading(content) when is_binary(content) do
-    content
-    |> String.split("\n", parts: 2)
-    |> List.first()
-    |> String.trim()
-    |> String.replace(~r/^#+\s*/, "")
-    |> case do
-      "" -> nil
-      heading -> truncate(heading)
-    end
-  end
-
-  defp heading(_content), do: nil
-
-  defp excerpt(nil), do: nil
-  defp excerpt(""), do: nil
-  defp excerpt(text) when is_binary(text), do: text |> String.trim() |> truncate()
-
-  defp truncate(text) do
-    limit = max_chars()
-
-    if String.length(text) > limit do
-      String.slice(text, 0, limit) <> "…"
-    else
-      text
-    end
-  end
+  defp excerpt(text), do: Text.excerpt(text, config(:max_excerpt_chars))
 
   defp max_references, do: config(:max_references)
-  defp max_chars, do: config(:max_excerpt_chars)
 
   defp config(key) do
     :rinto_pmo

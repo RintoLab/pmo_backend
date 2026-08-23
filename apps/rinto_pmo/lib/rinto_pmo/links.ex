@@ -38,10 +38,12 @@ defmodule RintoPMO.Links do
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Documents.Revisions
   alias RintoPMO.Links.Link
   alias RintoPMO.References
   alias RintoPMO.Tasks.Task
   alias RintoPMO.Tasks.Task
+  alias RintoPMO.Text
 
   @typedoc """
   One reference pointing at the thing that was asked about.
@@ -304,7 +306,7 @@ defmodule RintoPMO.Links do
   # from rather than any historical copy.
   defp load_source("document_block", block_ids) do
     DocumentBlock
-    |> join(:inner, [block], revision in subquery(latest_revisions()),
+    |> join(:inner, [block], revision in subquery(Revisions.latest()),
       on: revision.id == block.revision_id
     )
     |> join(:inner, [_block, revision], document in Document,
@@ -327,7 +329,7 @@ defmodule RintoPMO.Links do
 
   defp load_source("annotation", ids) do
     Annotation
-    |> join(:inner, [annotation], revision in subquery(latest_revisions()),
+    |> join(:inner, [annotation], revision in subquery(Revisions.latest()),
       on: revision.document_id == annotation.document_id
     )
     |> where([annotation], annotation.id in ^ids)
@@ -347,7 +349,7 @@ defmodule RintoPMO.Links do
   defp load_source("annotation_reply", ids) do
     AnnotationReply
     |> join(:inner, [reply], annotation in Annotation, on: annotation.id == reply.annotation_id)
-    |> join(:inner, [_reply, annotation], revision in subquery(latest_revisions()),
+    |> join(:inner, [_reply, annotation], revision in subquery(Revisions.latest()),
       on: revision.document_id == annotation.document_id
     )
     |> where([reply], reply.id in ^ids)
@@ -387,30 +389,8 @@ defmodule RintoPMO.Links do
 
   defp load_source(_unknown, _ids), do: %{}
 
-  defp latest_revisions do
-    DocumentRevision
-    |> distinct([revision], revision.document_id)
-    |> order_by([revision], asc: revision.document_id, desc: revision.id)
-    |> select([revision], %{
-      id: revision.id,
-      document_id: revision.document_id,
-      title: revision.title
-    })
-  end
-
-  defp excerpt(nil), do: nil
-  defp excerpt(""), do: nil
-
-  defp excerpt(text) when is_binary(text) do
-    trimmed = String.trim(text)
-    limit = Application.fetch_env!(:rinto_pmo, __MODULE__)[:max_excerpt_chars]
-
-    if String.length(trimmed) > limit do
-      String.slice(trimmed, 0, limit) <> "…"
-    else
-      trimmed
-    end
-  end
+  defp excerpt(text),
+    do: Text.excerpt(text, Application.fetch_env!(:rinto_pmo, __MODULE__)[:max_excerpt_chars])
 
   defp insert_all(_repo, _source_type, _source_id, _document_id, content)
        when content in [nil, ""],

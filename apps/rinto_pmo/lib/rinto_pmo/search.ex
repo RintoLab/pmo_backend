@@ -55,10 +55,12 @@ defmodule RintoPMO.Search do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Documents.Revisions
   alias RintoPMO.Projects.Project
   alias RintoPMO.References
   alias RintoPMO.References.Reference
   alias RintoPMO.Tasks.Task
+  alias RintoPMO.Text
   alias RintoPMO.Utils
 
   @typedoc """
@@ -279,7 +281,7 @@ defmodule RintoPMO.Search do
   defp block_candidates(vector, opts, answering_as) do
     DocumentBlock
     |> where([row], not is_nil(row.embedding))
-    |> join(:inner, [row], revision in subquery(latest_revisions()),
+    |> join(:inner, [row], revision in subquery(Revisions.latest()),
       on: revision.id == row.revision_id
     )
     |> join(:inner, [_row, revision], document in Document,
@@ -301,24 +303,12 @@ defmodule RintoPMO.Search do
     |> Repo.all()
     |> Enum.map(fn row ->
       key = if answering_as == "block", do: row.block_id, else: row.document_id
-      title = if answering_as == "block", do: heading(row.text), else: row.document_title
+      title = if answering_as == "block", do: Text.heading(row.text), else: row.document_title
 
       row
       |> Map.merge(%{key: key, title: title})
       |> candidate(answering_as)
     end)
-  end
-
-  # The newest revision of each document, which is the only one anything reads.
-  defp latest_revisions do
-    DocumentRevision
-    |> distinct([revision], revision.document_id)
-    |> order_by([revision], asc: revision.document_id, desc: revision.id)
-    |> select([revision], %{
-      id: revision.id,
-      document_id: revision.document_id,
-      title: revision.title
-    })
   end
 
   defp annotation_candidates(vector, opts) do
@@ -435,36 +425,7 @@ defmodule RintoPMO.Search do
     }
   end
 
-  # A block has no title of its own, so its first heading stands in for one.
-  # Computed here rather than stored: it is the first line of text the row
-  # already carries, and a stored copy would be one more thing to keep in step
-  # for no gain. Falling back to the first line keeps a block that opens with
-  # prose from being nameless in a result list.
-  defp heading(content) when is_binary(content) do
-    content
-    |> String.split("\n", parts: 2)
-    |> List.first()
-    |> String.trim()
-    |> String.replace(~r/^#+\s*/, "")
-    |> case do
-      "" -> nil
-      heading -> heading
-    end
-  end
-
-  defp heading(_content), do: nil
-
-  defp excerpt(nil), do: nil
-  defp excerpt(""), do: nil
-
-  defp excerpt(text) do
-    trimmed = String.trim(text)
-    limit = config(:max_excerpt_chars)
-
-    if String.length(trimmed) > limit,
-      do: String.slice(trimmed, 0, limit) <> "…",
-      else: trimmed
-  end
+  defp excerpt(text), do: Text.excerpt(text, config(:max_excerpt_chars))
 
   defp ai, do: Utils.module(:ai)
   defp recall_limit, do: config(:recall_limit)
