@@ -35,6 +35,7 @@ defmodule RintoPMO.Conversations.Conversation do
 
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Conversations.Message
+  alias RintoPMO.Embeddings
 
   @type t :: %__MODULE__{}
 
@@ -44,6 +45,11 @@ defmodule RintoPMO.Conversations.Conversation do
     field :title_generated_at, :utc_datetime_usec
     field :pi_session_id, :string
     field :replay_pending, :boolean, default: false
+
+    # Null means "needs embedding". Never cast from a caller: it is written
+    # by the worker that computes it, and voided by whichever changeset rewrites
+    # the title it was made from. See `RintoPMO.Embeddings`.
+    field :embedding, Pgvector.Ecto.Vector
 
     belongs_to :actor, Actor
     belongs_to :assistant_actor, Actor
@@ -63,6 +69,7 @@ defmodule RintoPMO.Conversations.Conversation do
     |> put_title_source(named?(attrs))
     |> foreign_key_constraint(:actor_id)
     |> foreign_key_constraint(:assistant_actor_id)
+    |> Embeddings.invalidate([:title])
   end
 
   @doc false
@@ -75,6 +82,7 @@ defmodule RintoPMO.Conversations.Conversation do
     # naming it nothing. Either way the auto-namer stops considering it.
     |> put_title_source(title_given?(attrs))
     |> foreign_key_constraint(:assistant_actor_id)
+    |> Embeddings.invalidate([:title])
   end
 
   @doc false

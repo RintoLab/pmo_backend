@@ -8,6 +8,7 @@ defmodule RintoPMO.Projects.Project do
   use RintoPMO, :schema
 
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Embeddings
   alias RintoPMO.Projects.ProjectRepo
 
   @type t :: %__MODULE__{}
@@ -17,6 +18,11 @@ defmodule RintoPMO.Projects.Project do
     field :slug, :string
     field :description, :string
     field :status, Ecto.Enum, values: [:active, :archived], default: :active
+
+    # Null means "needs embedding". Never cast from a caller: it is written
+    # by the worker that computes it, and voided by whichever changeset rewrites
+    # the name and description it was made from. See `RintoPMO.Embeddings`.
+    field :embedding, Pgvector.Ecto.Vector
 
     has_many :repos, ProjectRepo
     has_many :documents, Document
@@ -33,6 +39,7 @@ defmodule RintoPMO.Projects.Project do
       message: "must contain only lowercase letters, numbers, and hyphens"
     )
     |> unique_constraint(:slug)
+    |> Embeddings.invalidate([:name, :description])
   end
 
   @doc false

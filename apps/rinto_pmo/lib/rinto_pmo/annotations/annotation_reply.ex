@@ -16,12 +16,18 @@ defmodule RintoPMO.Annotations.AnnotationReply do
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Conversations.Message
+  alias RintoPMO.Embeddings
 
   @type t :: %__MODULE__{}
 
   schema "annotation_replies" do
     field :content, :string
     field :position, :integer
+
+    # Null means "needs embedding". Never cast from a caller: it is written
+    # by the worker that computes it, and voided by whichever changeset rewrites
+    # the content it was made from. See `RintoPMO.Embeddings`.
+    field :embedding, Pgvector.Ecto.Vector
 
     belongs_to :annotation, Annotation
     belongs_to :actor, Actor
@@ -41,6 +47,7 @@ defmodule RintoPMO.Annotations.AnnotationReply do
     |> foreign_key_constraint(:actor_id)
     |> foreign_key_constraint(:source_message_id)
     |> unique_constraint(:position, name: :annotation_replies_annotation_id_position_index)
+    |> Embeddings.invalidate([:content])
   end
 
   @doc false
@@ -49,5 +56,6 @@ defmodule RintoPMO.Annotations.AnnotationReply do
     |> cast(attrs, [:content])
     |> validate_required([:content])
     |> validate_length(:content, min: 1)
+    |> Embeddings.invalidate([:content])
   end
 end

@@ -83,6 +83,7 @@ defmodule RintoPMO.Tasks.Task do
 
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Embeddings
   alias RintoPMO.Projects.Project
 
   @type t :: %__MODULE__{}
@@ -146,6 +147,11 @@ defmodule RintoPMO.Tasks.Task do
     field :assigned_at, :utc_datetime_usec
     field :started_at, :utc_datetime_usec
     field :completed_at, :utc_datetime_usec
+
+    # Null means "needs embedding". Never cast from a caller: it is written
+    # by the worker that computes it, and voided by whichever changeset rewrites
+    # the title and description it was made from. See `RintoPMO.Embeddings`.
+    field :embedding, Pgvector.Ecto.Vector
 
     belongs_to :project, Project
     belongs_to :document, Document
@@ -236,6 +242,7 @@ defmodule RintoPMO.Tasks.Task do
     task
     |> cast(attrs, [:kind])
     |> common_changes(attrs)
+    |> Embeddings.invalidate([:title, :description])
   end
 
   @doc false
@@ -243,6 +250,7 @@ defmodule RintoPMO.Tasks.Task do
     task
     |> change()
     |> common_changes(attrs)
+    |> Embeddings.invalidate([:title, :description])
   end
 
   defp common_changes(chset, attrs) do

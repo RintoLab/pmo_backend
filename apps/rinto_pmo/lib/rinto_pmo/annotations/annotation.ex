@@ -24,6 +24,7 @@ defmodule RintoPMO.Annotations.Annotation do
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Embeddings
 
   @type t :: %__MODULE__{}
   @type status :: :open | :resolved | :dismissed
@@ -36,6 +37,11 @@ defmodule RintoPMO.Annotations.Annotation do
     field :selected_text, :string
     field :content, :string
     field :status, Ecto.Enum, values: @statuses, default: :open
+
+    # Null means "needs embedding". Never cast from a caller: it is written
+    # by the worker that computes it, and voided by whichever changeset rewrites
+    # the content it was made from. See `RintoPMO.Embeddings`.
+    field :embedding, Pgvector.Ecto.Vector
 
     belongs_to :document, Document
     belongs_to :actor, Actor
@@ -67,6 +73,7 @@ defmodule RintoPMO.Annotations.Annotation do
     |> validate_length(:content, min: 1)
     |> foreign_key_constraint(:document_id)
     |> foreign_key_constraint(:actor_id)
+    |> Embeddings.invalidate([:content])
   end
 
   @doc false
@@ -75,6 +82,7 @@ defmodule RintoPMO.Annotations.Annotation do
     |> cast(attrs, [:content, :block_id, :block_text, :selected_text])
     |> validate_required([:content])
     |> validate_length(:content, min: 1)
+    |> Embeddings.invalidate([:content])
   end
 
   @doc false

@@ -2,16 +2,15 @@ defmodule RintoPMO.ContentIndex do
   @moduledoc """
   The one place that says what each resource contributes to each index.
 
-  Two indexes read the same writes and want different things out of them. A
-  task gives `RintoPMO.Links` its description, because that is the only field
-  that can carry a reference; it gives `RintoPMO.Search` its title *and* its
-  description, plus the project it belongs to. A conversation gives Links
-  nothing at all -- its messages carry references, it does not -- and gives
-  Search only its title.
+  Two things are derived from content rather than stored with it: the
+  `rinto://` references a body makes (`RintoPMO.Links`) and the findable
+  projection of a block (`RintoPMO.Documents.BlockEmbedding`). Both have to be
+  written with the resource, and each wants something different out of it.
 
-  Rather than teach both indexes about every schema, or make every write site
-  remember two calls with different arguments, that knowledge lives here.
-  Contexts call `sync/2` with the thing they just wrote.
+  Every other resource's embedding is a column on its own row, voided by the
+  changeset that rewrites the text -- see `RintoPMO.Embeddings`. Nothing about
+  those passes through here, which is why this module is smaller than the
+  number of findable types would suggest.
 
   ## Why this exists now and did not before
 
@@ -29,11 +28,10 @@ defmodule RintoPMO.ContentIndex do
 
   ## The projection precedes the query path
 
-  Retrieval over `RintoPMO.Search` will be semantic, and neither the embedding
-  column nor the query path is built. Writing the projection first is not
-  getting ahead: the text that represents a resource is the input to embedding
-  exactly as it would be to any other kind of matching, and it has to follow
-  edits from the moment content starts changing.
+  Nothing computes vectors yet and nothing queries them. Maintaining the
+  projection first is not getting ahead: the text a block stands for has to
+  follow edits from the moment content starts changing, whatever is later done
+  with it.
   """
 
   use RintoPMO, :context
@@ -41,12 +39,11 @@ defmodule RintoPMO.ContentIndex do
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Conversations.Message
+  alias RintoPMO.Documents.BlockEmbedding
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Links
   alias RintoPMO.Links.Link
-  alias RintoPMO.Search
-  alias RintoPMO.Search.Searchable
   alias RintoPMO.Tasks.Task
 
   @doc """
@@ -64,27 +61,17 @@ defmodule RintoPMO.ContentIndex do
     document = repo.get!(Document, revision.document_id)
     archived = not is_nil(document.archived_at)
 
-    Search.sync(repo, "document", document.id, %{
-      title: revision.title,
-      body: nil,
-      project_id: document.project_id,
-      archived: archived
-    })
-
     Enum.each(blocks, fn block ->
-      Search.sync(repo, "block", block.block_id, %{
-        title: heading(block.content),
-        body: block.content,
-        project_id: document.project_id,
-        document_id: document.id,
-        archived: archived
-      })
+      project_block(repo, block, document, archived)
     end)
 
     # After the rewrites, and naming what survives rather than clearing first:
-    # a projection deleted takes its embedding with it, and a revision that
-    # touched one block should not cost a re-embedding of every other.
-    Search.purge_blocks_except(repo, document.id, Enum.map(blocks, & &1.block_id))
+    # a row deleted takes its vector with it, and a revision that touched one
+    # block must not cost a re-embedding of every other.
+    BlockEmbedding
+    |> where([projection], projection.document_id == ^document.id)
+    |> where([projection], projection.block_id not in ^Enum.map(blocks, & &1.block_id))
+    |> repo.delete_all()
   end
 
   @doc """
@@ -93,30 +80,17 @@ defmodule RintoPMO.ContentIndex do
   @spec sync(Ecto.Repo.t(), struct()) :: :ok
   def sync(repo, %Task{} = task) do
     Links.sync(repo, "task", task.id, task.description)
-
-    Search.sync(repo, "task", task.id, %{
-      title: task.title,
-      body: task.description,
-      project_id: task.project_id
-    })
   end
 
   def sync(repo, %Annotation{} = annotation) do
     Links.sync(repo, "annotation", annotation.id, annotation.content,
       document_id: annotation.document_id
     )
-
-    reproject_annotation(repo, annotation.id, annotation.document_id)
   end
 
-  # A reply changes what its annotation says, so it re-projects the annotation
-  # rather than getting a row of its own. A thread is one thing to find; a
-  # search that returned the annotation and four of its replies as five hits
-  # would be reporting the same conversation five times.
   def sync(repo, %AnnotationReply{} = reply) do
     document_id = annotation_document_id(repo, reply.annotation_id)
     Links.sync(repo, "annotation_reply", reply.id, reply.content, document_id: document_id)
-    reproject_annotation(repo, reply.annotation_id, document_id)
   end
 
   # Messages carry references but are not themselves findable: what a topic is
@@ -131,13 +105,15 @@ defmodule RintoPMO.ContentIndex do
   @spec purge(Ecto.Repo.t(), struct()) :: :ok
   def purge(repo, %Task{} = task) do
     Links.purge(repo, "task", task.id)
-    Search.purge(repo, "task", task.id)
   end
 
   # **Call this before the annotation is deleted.** Replies are cascaded away by
   # the database, which the indexes do not see, so their rows have to be read
   # out while the replies still exist -- otherwise every reply leaves a link row
   # pointing out of a thread that is gone.
+  # **Call this before the annotation is deleted.** Replies are cascaded away by
+  # the database, which the reference index does not see, so their rows have to
+  # be read out while the replies still exist.
   def purge(repo, %Annotation{} = annotation) do
     AnnotationReply
     |> where([reply], reply.annotation_id == ^annotation.id)
@@ -146,7 +122,6 @@ defmodule RintoPMO.ContentIndex do
     |> Enum.each(&Links.purge(repo, "annotation_reply", &1))
 
     Links.purge(repo, "annotation", annotation.id)
-    Search.purge(repo, "annotation", annotation.id)
   end
 
   # **Call this after the reply is deleted**, the opposite way round from an
@@ -155,12 +130,6 @@ defmodule RintoPMO.ContentIndex do
   # the projection.
   def purge(repo, %AnnotationReply{} = reply) do
     Links.purge(repo, "annotation_reply", reply.id)
-
-    reproject_annotation(
-      repo,
-      reply.annotation_id,
-      annotation_document_id(repo, reply.annotation_id)
-    )
   end
 
   @doc """
@@ -174,16 +143,20 @@ defmodule RintoPMO.ContentIndex do
   half of new ones. That means a long transaction on a large corpus, which is
   accepted: this is a tool a person runs, not something on a request path.
 
-  ## Why the projections are not emptied first, and the references are
+  ## Why the block projections are not emptied first, and the references are
 
   `links` is truncated and rewritten, because a link row costs nothing to
   produce -- it is read straight out of text already in hand.
 
-  A projection carries an embedding, which cost a model call. Deleting the rows
-  would throw every vector away and turn a repair into a re-embedding of the
-  whole corpus. So projections are written over the top instead, and anything
-  the sweep did not touch -- a row whose resource is gone -- is removed
+  A block projection carries an embedding, which cost a model call. Deleting
+  the rows would throw every vector away and turn a repair into a re-embedding
+  of every block in the system. They are written over the top instead, and
+  anything the sweep did not touch -- a row whose block is gone -- is removed
   afterwards by the timestamp it failed to get.
+
+  Nothing here rebuilds the embeddings that live on their own tables. There is
+  nothing to rebuild: those rows *are* the resource, so a vector is only ever
+  missing because the text changed and nothing has recomputed it yet.
 
   Returns a tally per kind of source read.
   """
@@ -200,10 +173,10 @@ defmodule RintoPMO.ContentIndex do
         "message" => rebuild_messages(repo)
       }
 
-      # Every projection just rewritten carries a fresh `updated_at`. Whatever
-      # still has an older one has no resource behind it any more.
-      Searchable
-      |> where([searchable], searchable.updated_at < ^swept_from)
+      # Every block projection just rewritten carries a fresh `updated_at`.
+      # Whatever still has an older one has no block behind it any more.
+      BlockEmbedding
+      |> where([projection], projection.updated_at < ^swept_from)
       |> repo.delete_all()
 
       {:ok, tally}
@@ -255,30 +228,6 @@ defmodule RintoPMO.ContentIndex do
     length(messages)
   end
 
-  # An annotation reads as its own text plus every reply under it, because that
-  # is the unit somebody is looking for -- the thread, not one turn of it.
-  defp reproject_annotation(repo, annotation_id, document_id) do
-    case repo.get(Annotation, annotation_id) do
-      nil ->
-        Search.purge(repo, "annotation", annotation_id)
-
-      annotation ->
-        replies =
-          AnnotationReply
-          |> where([reply], reply.annotation_id == ^annotation_id)
-          |> order_by([reply], asc: reply.position)
-          |> select([reply], reply.content)
-          |> repo.all()
-
-        Search.sync(repo, "annotation", annotation_id, %{
-          title: nil,
-          body: Enum.join([annotation.content | replies], "\n\n"),
-          project_id: project_of(repo, document_id),
-          document_id: document_id
-        })
-    end
-  end
-
   defp annotation_document_id(repo, annotation_id) do
     Annotation
     |> where([annotation], annotation.id == ^annotation_id)
@@ -286,13 +235,51 @@ defmodule RintoPMO.ContentIndex do
     |> repo.one()
   end
 
-  defp project_of(_repo, nil), do: nil
+  defp project_block(repo, block, document, archived) do
+    attrs = %{
+      block_id: block.block_id,
+      title: heading(block.content),
+      body: block.content,
+      project_id: document.project_id,
+      document_id: document.id,
+      archived: archived
+    }
 
-  defp project_of(repo, document_id) do
-    Document
-    |> where([document], document.id == ^document_id)
-    |> select([document], document.project_id)
-    |> repo.one()
+    %BlockEmbedding{}
+    |> BlockEmbedding.changeset(attrs)
+    |> repo.insert!(on_conflict: block_replacements(), conflict_target: [:block_id])
+  end
+
+  # `:replace` cannot express "clear this column only when those two changed",
+  # so the condition is written as the update itself. Rewriting a block that a
+  # revision left alone -- which is every block but one, on a typical commit --
+  # must keep its vector. See `RintoPMO.Embeddings` for the same rule as it
+  # applies to every other resource.
+  defp block_replacements do
+    from projection in BlockEmbedding,
+      update: [
+        set: [
+          title: fragment("EXCLUDED.title"),
+          body: fragment("EXCLUDED.body"),
+          project_id: fragment("EXCLUDED.project_id"),
+          document_id: fragment("EXCLUDED.document_id"),
+          archived: fragment("EXCLUDED.archived"),
+          updated_at: fragment("EXCLUDED.updated_at"),
+          embedding:
+            fragment(
+              """
+              CASE
+                WHEN ? IS DISTINCT FROM EXCLUDED.title OR ? IS DISTINCT FROM EXCLUDED.body
+                THEN NULL
+                ELSE ?
+              END
+              """,
+              projection.title,
+              projection.body,
+              projection.embedding
+            )
+        ]
+      ]
   end
 
   # A block has no title field, so its first heading stands in for one. Falling

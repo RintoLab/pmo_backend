@@ -14,6 +14,7 @@ defmodule RintoPMO.Attachments.Attachment do
   use RintoPMO, :schema
 
   alias RintoPMO.Actors.Actor
+  alias RintoPMO.Embeddings
 
   @type t :: %__MODULE__{}
 
@@ -25,6 +26,11 @@ defmodule RintoPMO.Attachments.Attachment do
     field :height, :integer
     field :checksum, :string
     field :last_used_at, :utc_datetime_usec
+
+    # Null means "needs embedding". Never cast from a caller: it is written
+    # by the worker that computes it, and voided by whichever changeset rewrites
+    # the filename it was made from. See `RintoPMO.Embeddings`.
+    field :embedding, Pgvector.Ecto.Vector
 
     belongs_to :actor, Actor
 
@@ -48,5 +54,6 @@ defmodule RintoPMO.Attachments.Attachment do
     |> validate_number(:width, greater_than: 0)
     |> validate_number(:height, greater_than: 0)
     |> foreign_key_constraint(:actor_id)
+    |> Embeddings.invalidate([:filename])
   end
 end
