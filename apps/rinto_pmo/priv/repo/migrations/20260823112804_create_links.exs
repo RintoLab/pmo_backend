@@ -6,7 +6,7 @@ defmodule RintoPMO.Repo.Migrations.CreateLinks do
   # system.
   #
   # This table is an index, not a truth. Every row is derivable from the text
-  # it was read out of, and `mix rinto.links.rebuild` is what makes that claim
+  # it was read out of, and `mix rinto.index.rebuild` is what makes that claim
   # something you can check rather than something the design merely asserts.
   def change do
     create table(:links, primary_key: false) do

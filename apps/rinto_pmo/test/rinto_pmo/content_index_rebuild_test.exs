@@ -1,10 +1,10 @@
-defmodule RintoPMO.LinksRebuildTest do
+defmodule RintoPMO.ContentIndexRebuildTest do
   use RintoPMO.DataCase, async: true
 
   alias RintoPMO.Annotations
+  alias RintoPMO.ContentIndex
   alias RintoPMO.Conversations
   alias RintoPMO.Documents
-  alias RintoPMO.Links
   alias RintoPMO.Links.Link
   alias RintoPMO.Tasks
 
@@ -83,7 +83,7 @@ defmodule RintoPMO.LinksRebuildTest do
 
     refute written == []
 
-    Links.rebuild()
+    ContentIndex.rebuild()
 
     assert fingerprint() == written
   end
@@ -91,10 +91,10 @@ defmodule RintoPMO.LinksRebuildTest do
   test "is idempotent" do
     populate()
 
-    Links.rebuild()
+    ContentIndex.rebuild()
     once = fingerprint()
 
-    Links.rebuild()
+    ContentIndex.rebuild()
 
     assert fingerprint() == once
   end
@@ -106,7 +106,7 @@ defmodule RintoPMO.LinksRebuildTest do
     Repo.delete_all(Link)
     assert fingerprint() == []
 
-    Links.rebuild()
+    ContentIndex.rebuild()
 
     assert fingerprint() == written
   end
@@ -128,7 +128,7 @@ defmodule RintoPMO.LinksRebuildTest do
 
     refute fingerprint() == written
 
-    Links.rebuild()
+    ContentIndex.rebuild()
 
     assert fingerprint() == written
   end
@@ -162,7 +162,7 @@ defmodule RintoPMO.LinksRebuildTest do
         ]
       })
 
-    Links.rebuild()
+    ContentIndex.rebuild()
 
     assert [rebuilt] = Repo.all(Link)
     assert rebuilt.target_id == second.id
@@ -171,17 +171,16 @@ defmodule RintoPMO.LinksRebuildTest do
   test "reports what it read" do
     populate()
 
-    tally = Links.rebuild()
+    tally = ContentIndex.rebuild()
 
-    assert tally["document_block"] > 0
+    assert tally["document"] > 0
     assert tally["annotation"] == 1
-    assert tally["annotation_reply"] == 1
     assert tally["task"] > 0
     assert tally["message"] == 1
   end
 
   test "on an empty system produces an empty index" do
-    assert Links.rebuild()["annotation"] == 0
+    assert ContentIndex.rebuild()["annotation"] == 0
     assert fingerprint() == []
   end
 end

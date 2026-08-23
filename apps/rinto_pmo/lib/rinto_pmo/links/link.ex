@@ -5,7 +5,7 @@ defmodule RintoPMO.Links.Link do
   ## This is an index, not a truth
 
   Every row here is derivable from the text it was read out of. Drop the whole
-  table and `mix rinto.links.rebuild` puts it back. That is not a disclaimer --
+  table and `mix rinto.index.rebuild` puts it back. That is not a disclaimer --
   it is what lets the rest of the design be simple: no foreign keys to maintain,
   no cascade to reason about, and a missed cleanup that costs a stale row rather
   than a corrupt system.

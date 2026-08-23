@@ -7,8 +7,8 @@ defmodule RintoPMO.Annotations do
 
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
+  alias RintoPMO.ContentIndex
   alias RintoPMO.Documents.Document
-  alias RintoPMO.Links
 
   defmodule Behaviour do
     @moduledoc false
@@ -108,7 +108,9 @@ defmodule RintoPMO.Annotations do
   @impl true
   def delete_annotation(%Annotation{} = annotation) do
     Repo.transact(fn repo ->
-      Links.purge(repo, "annotation", annotation.id)
+      # Before the delete, not after: the database cascades the replies away,
+      # and their index rows have to be read out while they still exist.
+      ContentIndex.purge(repo, annotation)
       repo.delete(annotation)
     end)
   end
@@ -170,7 +172,7 @@ defmodule RintoPMO.Annotations do
       %AnnotationReply{annotation_id: locked.id, position: position}
       |> AnnotationReply.changeset(attrs)
       |> repo.insert()
-      |> index_reply(repo, locked.document_id)
+      |> index_reply(repo)
     end)
   end
 
@@ -183,7 +185,7 @@ defmodule RintoPMO.Annotations do
       reply
       |> AnnotationReply.update_changeset(attrs)
       |> repo.update()
-      |> index_reply(repo, document_id_of(repo, reply))
+      |> index_reply(repo)
     end)
   end
 
@@ -193,8 +195,12 @@ defmodule RintoPMO.Annotations do
   @impl true
   def delete_reply(%AnnotationReply{} = reply) do
     Repo.transact(fn repo ->
-      Links.purge(repo, "annotation_reply", reply.id)
-      repo.delete(reply)
+      with {:ok, deleted} <- repo.delete(reply) do
+        # After the delete, not before: the annotation is re-projected as its
+        # own text plus its replies, and this one must already be gone from it.
+        ContentIndex.purge(repo, reply)
+        {:ok, deleted}
+      end
     end)
   end
 
@@ -212,30 +218,18 @@ defmodule RintoPMO.Annotations do
   # In the same transaction as the write, so that the body and "who points at
   # this?" never disagree, not even briefly. See `RintoPMO.Links`.
   defp index({:ok, %Annotation{} = annotation}, repo) do
-    Links.sync(repo, "annotation", annotation.id, annotation.content,
-      document_id: annotation.document_id
-    )
-
+    ContentIndex.sync(repo, annotation)
     {:ok, annotation}
   end
 
   defp index(result, _repo), do: result
 
-  defp index_reply({:ok, %AnnotationReply{} = reply}, repo, document_id) do
-    Links.sync(repo, "annotation_reply", reply.id, reply.content, document_id: document_id)
+  defp index_reply({:ok, %AnnotationReply{} = reply}, repo) do
+    ContentIndex.sync(repo, reply)
     {:ok, reply}
   end
 
-  defp index_reply(result, _repo, _document_id), do: result
-
-  # A reply knows its annotation but not its document, and the index wants the
-  # document so that everything written inside one is reachable together.
-  defp document_id_of(repo, %AnnotationReply{annotation_id: annotation_id}) do
-    Annotation
-    |> where([annotation], annotation.id == ^annotation_id)
-    |> select([annotation], annotation.document_id)
-    |> repo.one()
-  end
+  defp index_reply(result, _repo), do: result
 
   defp filter_annotations(query, filter) do
     Enum.reduce(filter, query, fn

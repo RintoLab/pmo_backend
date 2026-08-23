@@ -1,10 +1,11 @@
-defmodule Mix.Tasks.Rinto.Links.Rebuild do
-  @shortdoc "Reads the rinto:// reference index back out of every body"
+defmodule Mix.Tasks.Rinto.Index.Rebuild do
+  @shortdoc "Rebuilds the reference and discovery indexes from content"
 
   @moduledoc """
-  Empties the `links` index and rebuilds it from the text it is derived from.
+  Empties the reference and discovery indexes and rebuilds both from the
+  content they are derived from.
 
-      mix rinto.links.rebuild
+      mix rinto.index.rebuild
 
   Three jobs, all the same job:
 
@@ -22,26 +23,29 @@ defmodule Mix.Tasks.Rinto.Links.Rebuild do
   Only the newest revision of each document is read, matching what the live
   write path indexes -- see `RintoPMO.Links.Link` on why history is not indexed.
 
+  Named for the indexes rather than for `links` alone: it rebuilds both, and a
+  name that mentioned one of them would be a standing invitation to forget the
+  other.
+
   One transaction, so a run that dies leaves the index it found rather than half
   of a new one.
   """
 
   use Mix.Task
 
-  alias RintoPMO.Links
+  alias RintoPMO.ContentIndex
 
   @impl Mix.Task
   def run(_argv) do
     Mix.Task.run("app.start")
 
-    tally = Links.rebuild()
+    tally = ContentIndex.rebuild()
 
     Mix.shell().info("""
-    document blocks:   #{tally["document_block"]}
-    annotations:       #{tally["annotation"]}
-    annotation replies: #{tally["annotation_reply"]}
-    tasks:             #{tally["task"]}
-    messages:          #{tally["message"]}
+    documents:   #{tally["document"]}
+    annotations: #{tally["annotation"]}
+    tasks:       #{tally["task"]}
+    messages:    #{tally["message"]}
     """)
   end
 end

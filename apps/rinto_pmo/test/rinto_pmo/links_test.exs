@@ -159,6 +159,29 @@ defmodule RintoPMO.LinksTest do
       assert links("annotation") == []
     end
 
+    # The database cascades replies away when their annotation goes, and the
+    # index does not see that happen. Their rows have to be read out while the
+    # replies still exist, or every one of them is left pointing out of a thread
+    # that no longer exists.
+    test "deleting an annotation takes its replies' references with it" do
+      document = insert(:document)
+      insert(:document_revision, document: document)
+      annotation = insert(:annotation, document: document)
+      task = insert(:task)
+
+      {:ok, _reply} =
+        Annotations.create_reply(annotation, %{
+          actor_id: insert(:actor).id,
+          content: "见 [x](#{uri("task", task.id)})"
+        })
+
+      assert [_link] = links("annotation_reply")
+
+      {:ok, _deleted} = Annotations.delete_annotation(annotation)
+
+      assert links("annotation_reply") == []
+    end
+
     test "replies are indexed and carry the document they were written in" do
       document = insert(:document)
       insert(:document_revision, document: document)
