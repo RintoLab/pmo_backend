@@ -36,6 +36,15 @@ defmodule RintoPMO.Embeddings.Worker do
   Plus `Oban.Plugins.Cron` inserting one every minute. That does nothing at all
   while the chain is healthy; it exists because a chain that only continues
   itself stops for good the first time a pass is discarded.
+
+  ## A pass that embedded nothing says so
+
+  Leaving the rows alone is the right answer to a service that is briefly down
+  and the wrong one to a server that was never given `RINTO_AI_TOKEN`: there,
+  nothing would ever be embedded, nothing would ever be findable, and the only
+  evidence would be a column that is null everywhere. So a pass that came back
+  empty-handed logs once -- once per pass rather than once per kind of thing,
+  because seven lines say no more than one does.
   """
 
   use Oban.Worker,
@@ -48,6 +57,8 @@ defmodule RintoPMO.Embeddings.Worker do
     unique: [period: 120, states: :incomplete]
 
   import Ecto.Query
+
+  require Logger
 
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
@@ -76,6 +87,8 @@ defmodule RintoPMO.Embeddings.Worker do
   @impl Oban.Worker
   def perform(_job) do
     filled = Enum.map(@sources, fn {schema, fields} -> fill(schema, fields) end)
+
+    report(filled)
 
     if Enum.any?(filled, &(&1 == :full)) do
       # More waiting than one pass could take. Come straight back rather than
@@ -118,9 +131,27 @@ defmodule RintoPMO.Embeddings.Worker do
     if length(rows) == batch_size(), do: :full, else: :done
   end
 
-  # Leave the rows alone and let the next pass try again. There is nothing to
-  # record: the null column already says what is outstanding.
-  defp store({:error, _reason}, _schema, _rows), do: :done
+  # Leave the rows alone and let the next pass try again -- the null column
+  # already says what is outstanding, so there is nothing to record. The reason
+  # is carried back only so that `report/1` can say it out loud.
+  defp store({:error, reason}, _schema, _rows), do: {:failed, reason}
+
+  # One line for the pass, not one per source: every source asks the same
+  # service, so a service that refused one refused all of them.
+  defp report(outcomes) do
+    case Enum.find(outcomes, &match?({:failed, _reason}, &1)) do
+      nil ->
+        :ok
+
+      {:failed, :not_configured} ->
+        Logger.warning(
+          "embeddings: this server has no RINTO_AI_TOKEN, so nothing can be embedded or found"
+        )
+
+      {:failed, reason} ->
+        Logger.warning("embeddings: the inference service answered #{inspect(reason)}")
+    end
+  end
 
   # Two conditions, and the second is not decoration: a row with nothing to
   # embed -- an unnamed topic, an empty block -- would otherwise be selected by

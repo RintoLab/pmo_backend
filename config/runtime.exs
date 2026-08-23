@@ -36,8 +36,16 @@ end
 # Absent is a valid state -- nothing is embedded, and whatever depends on that
 # says so -- rather than a reason to refuse to boot. A developer without the
 # service configured should still be able to run the rest of the system.
-if token = System.get_env("RINTO_AI_TOKEN") do
-  config :rinto_pmo, :ai, token: token
+#
+# Blank counts as absent. `RINTO_AI_TOKEN=` with nothing after it is what an
+# environment file written from a template looks like, and an empty string is
+# truthy here -- so without this the release would send `Bearer ` and read the
+# service's 401 back as an outage, which is the one diagnosis that sends
+# somebody to look at the wrong machine.
+ai_token = "RINTO_AI_TOKEN" |> System.get_env("") |> String.trim()
+
+if ai_token != "" do
+  config :rinto_pmo, :ai, token: ai_token
 end
 
 if config_env() == :prod do

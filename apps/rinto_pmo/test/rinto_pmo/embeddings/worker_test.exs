@@ -1,6 +1,11 @@
 defmodule RintoPMO.Embeddings.WorkerTest do
   use RintoPMO.DataCase, async: true
 
+  # A pass that could not reach the service says so, and several tests here are
+  # about a service that could not be reached.
+  @moduletag :capture_log
+
+  import ExUnit.CaptureLog
   import Hammox
 
   alias RintoPMO.AIMock
@@ -116,6 +121,42 @@ defmodule RintoPMO.Embeddings.WorkerTest do
       assert :ok = run()
 
       assert Repo.get!(Task, task.id).embedding
+    end
+
+    # A null column everywhere is the only other evidence there would be, and it
+    # looks exactly like a system nobody has written anything into yet.
+    test "a server with no token says so rather than embedding nothing quietly" do
+      insert(:task)
+      settle_all_but(Task)
+
+      expect(AIMock, :embed_documents, fn _texts -> {:error, :not_configured} end)
+
+      log = capture_log(fn -> assert :ok = run() end)
+
+      assert log =~ "RINTO_AI_TOKEN"
+    end
+
+    test "a service that answered badly is reported with what it answered" do
+      insert(:task)
+      settle_all_but(Task)
+
+      expect(AIMock, :embed_documents, fn _texts -> {:error, {:http, 502, "bad gateway"}} end)
+
+      log = capture_log(fn -> assert :ok = run() end)
+
+      assert log =~ "502"
+    end
+
+    # Seven sources, one service: seven lines would say no more than one does.
+    test "a failed pass is reported once, not once per source" do
+      insert(:task)
+      insert(:annotation)
+
+      stub(AIMock, :embed_documents, fn _texts -> {:error, :not_configured} end)
+
+      log = capture_log(fn -> assert :ok = run() end)
+
+      assert log |> String.split("embeddings:") |> length() == 2
     end
   end
 
