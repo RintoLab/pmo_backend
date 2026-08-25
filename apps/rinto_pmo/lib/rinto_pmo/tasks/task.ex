@@ -52,6 +52,12 @@ defmodule RintoPMO.Tasks.Task do
   would force this domain to decide how long a working day is, which is not its
   business.
 
+  What is being estimated is what the task costs **the person planning it**,
+  not how long it takes to happen. Work handed to an agent still costs the time
+  spent waiting on it and reviewing what came back, and that is the number to
+  write here. It is why `RintoPMO.Schedule` never looks at `assignee_id`:
+  whoever executes, the minutes are the same person's.
+
   None of the three may exceed `estimate_ceiling/0`, one working day. That is
   not a limit on ambition, it is what makes `RintoPMO.Schedule` total: since no
   work item is larger than a day, no work item can fail to fit in some week,

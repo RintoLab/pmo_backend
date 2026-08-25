@@ -57,6 +57,20 @@ tags:
       writes here rather than straight to a revision, because a revision is
       what a person agreed to. Two live proposals on one block is a contention:
       a question for a human, never a merge.
+  - name: Schedule
+    description: >
+      What each week holds and what did not fit. An iteration is a week and is
+      stored nowhere -- it is computed from the tasks selected into it, so
+      there is nothing to open, close, or keep in step with the calendar.
+      Deliberately not scoped to a project: a week's minutes are shared across
+      every project, so a per-project view filters these results rather than
+      asking for a project's own schedule.
+  - name: Calendar
+    description: >
+      Which days are not what the weekend rule says. Statutory holidays and the
+      weekends worked to make up for them are fetched daily from published
+      State Council announcements and are read-only here; leave is the half a
+      person writes.
   - name: Conversations
     description: >
       Topics: the process layer of collaborative review, as opposed to the
@@ -2136,6 +2150,271 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /tasks/{id}/dependencies:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+    get:
+      tags: [Tasks]
+      operationId: listTaskDependencies
+      summary: What a task waits for, and what waits for it
+      description: >
+        Both directions in one response. "Can I start this" and "what breaks if
+        I move it" are the two questions asked of an edge, and a client made to
+        call twice would draw half a graph.
+
+        A prerequisite that is `done` or `cancelled` still appears -- the edge
+        is still a true statement about the work -- but holds nothing up, which
+        the reader can see from its `status`.
+      responses:
+        "200":
+          description: Both ends of the task's edges
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDependenciesResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Tasks]
+      operationId: addTaskDependency
+      summary: Record that this task cannot start until another is done
+      description: >
+        Answers with the graph around the task, the same shape as `GET`, so a
+        caller that just drew an edge does not have to re-read to redraw.
+
+        An edge may cross projects, where a `parent_id` may not. The two
+        relations answer different questions: a parent decides where a task
+        lives, a dependency only constrains when it happens, and scheduling
+        here spans every project on purpose.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [depends_on_id]
+              properties:
+                depends_on_id:
+                  type: string
+                  format: uuid
+                  description: The task that must finish first.
+              additionalProperties: false
+      responses:
+        "200":
+          description: Edge recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDependenciesResponse"
+        "404":
+          description: >
+            `not_found` when the task in the path is absent, `task_not_found`
+            when `depends_on_id` is.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "409":
+          description: >
+            `dependency_cycle` -- the edge would close a loop. "A depends on B"
+            loops exactly when B already depends on A, through any chain, so
+            `details.cycle` carries the chain by task id rather than merely
+            asserting that one exists. The same code the WBS uses when a parent
+            would sit under its own child.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          description: >
+            `dependency_out_of_order` when the prerequisite is scheduled after
+            the work waiting on it, or is in the backlog while that work is
+            scheduled. `details` carries both ends and both days, because
+            "which one do I move" is the next question either way. Only live
+            prerequisites constrain: `done` and `cancelled` ones never do.
+
+            `task_not_dependable` for a summary node at either end -- a cover
+            holds no work of its own, so ordering it against work would be
+            ordering a heading.
+
+            `validation_error` when the edge already exists or points at the
+            task itself.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+  /tasks/{id}/dependencies/{depends_on_id}:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+      - name: depends_on_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [Tasks]
+      operationId: removeTaskDependency
+      summary: Remove a dependency edge
+      description: Absent is the same as removed; this never reports a missing edge.
+      responses:
+        "204":
+          description: Edge gone
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /schedule:
+    get:
+      tags: [Schedule]
+      operationId: getSchedule
+      summary: What each week holds, and what did not fit
+      description: >
+        Plans every week from `from` through `to`. Both are dates and the week
+        each falls in is what is planned; `from` defaults to today and `to` to
+        `from`, so the bare endpoint answers "this week".
+
+        **Weeks earlier than the current one are never returned.** The plan is
+        a forecast; what already happened is `started_at` / `completed_at` on
+        the tasks. Asking for a past week starts the answer at this one. Within
+        the current week the days already behind us hold nothing, so `capacity`
+        is smaller than a full week -- on a Thursday, three of the five days are
+        spent.
+
+        Weeks are a chain, not independent: work allocated in one is taken to
+        be finished by the end of it and drops out of the next week's
+        candidates, while `overflow` carries forward. Packing each week from
+        the same pool would count this week's open work again next week and
+        show next week as hopeless before it began.
+
+        A task is a candidate when `planned_start_on` falls in that week or
+        earlier, it is `work`, still live, and carries an estimate. Nothing is
+        filtered by assignee: there is one capacity pool, and `assignee_id`
+        records who is handling a task, not whose hours it spends. Nothing is
+        filtered by project either -- a per-project view filters these results,
+        because packing one project alone would hand it the whole week.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Any day in the first week. Defaults to today.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Any day in the last week. Defaults to `from`.
+      responses:
+        "200":
+          description: One entry per week, earliest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleResponse"
+        "400":
+          description: >
+            `bad_request` when a date cannot be read, or when the span is more
+            than 52 weeks -- past that every week is a projection of a
+            projection, so the range is a client bug rather than a question.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+  /calendar/days:
+    get:
+      tags: [Calendar]
+      operationId: listCalendarDays
+      summary: The days that depart from Monday-to-Friday
+      description: >
+        Only exceptions. The default stands on its own -- Monday through Friday,
+        480 minutes each -- so a year with no departures is an empty list.
+
+        `imports` is not decoration. A day missing from `data` means "ordinary"
+        only for a year that appears there; for any other year it means nobody
+        has fetched it, and every capacity figure in it came from the weekend
+        rule alone. `updated_at` on an import is when that year was last read,
+        which matters as much as whether it ever was: announcements get
+        amended, and the importer runs daily so a year stays current rather
+        than merely imported.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Defaults to today.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Defaults to a year after `from`.
+      responses:
+        "200":
+          description: Exceptions in the span, and the years behind them
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarDaysResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /calendar/days/{day}/leave:
+    parameters:
+      - name: day
+        in: path
+        required: true
+        schema:
+          type: string
+          format: date
+    put:
+      tags: [Calendar]
+      operationId: putCalendarLeave
+      summary: Record that the person is away on a day
+      description: >
+        Idempotent, and it wins over an imported holiday: being away on a day
+        that was already off is not a conflict, and the row that survives is
+        the one a person wrote. Imports may never overwrite it.
+
+        For one person this is the kind that matters most. A statutory holiday
+        arrives a few times a year and is the same for everybody; being away is
+        neither, and no announcement covers it.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  nullable: true
+                  description: Free text, shown rather than reasoned about.
+              additionalProperties: false
+      responses:
+        "200":
+          description: Leave recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarDayResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    delete:
+      tags: [Calendar]
+      operationId: deleteCalendarLeave
+      summary: Remove a day of leave
+      description: >
+        Only leave. A holiday is not a person's to delete, and the next import
+        would put it back regardless -- so this succeeds without removing one.
+      responses:
+        "204":
+          description: Leave gone, or was never there
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /tasks/{id}/split:
     parameters:
       - $ref: "#/components/parameters/TaskId"
@@ -4060,6 +4339,48 @@ components:
           description: >
             How many work descendants under a cover carry no `actual_minutes`.
             Null on a `work` row.
+        planned_start_on:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            The earliest day this task may be worked, and at the same time the
+            whole of "put it in that iteration": set it to a day in some week
+            and the task is selected into that week. **Null is the backlog** --
+            never a candidate for any week, which is how work nobody intends to
+            do is kept out without a mechanism of its own.
+
+            It is not where the task lands. That is `GET /schedule`'s answer,
+            because it depends on every other task competing for the same
+            minutes. A task can land later than this day, and can spill across
+            days, when the day it was selected for was already partly full.
+
+            A summary node holds none; on one this reports the earliest day
+            underneath it. There is deliberately no matching end -- see
+            `/schedule`.
+        unscheduled_tasks:
+          type: integer
+          minimum: 0
+          nullable: true
+          readOnly: true
+          description: >
+            How many work descendants under a cover are still in the backlog.
+            Null on a `work` row. Same honesty rule as `unestimated_tasks`: a
+            chunk reporting "starts in week 12" while half of it is unplanned
+            reads like a schedule while being a fragment of one.
+        priority:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+          default: 3
+          description: >
+            1 is highest, 3 is normal, and never null -- "no opinion" *is*
+            "normal", so unlike an estimate a missing priority carries nothing
+            worth counting.
+
+            It decides who gets cut when a week is over-filled, and sorts ahead
+            of everything else including how long a task has been waiting: work
+            carried over from last week has no claim to jump the queue. It
+            never decides that work happens before its own prerequisite.
         assigned_at:
           type: string
           format: date-time
@@ -4140,6 +4461,20 @@ components:
             Recorded duration in minutes, or null to clear. Refused on a
             summary node (`invalid_actual`). Completing a task can set this in
             the same act; PATCH is how it is filled in afterwards.
+        planned_start_on:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            Selects the task into the week this day falls in, and bounds where
+            inside that week it may land. Null is the backlog. Refused on a
+            summary node.
+        priority:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+          description: >
+            1 highest, defaults to 3. Decides who is cut when a week is
+            over-filled.
       additionalProperties: false
     TaskUpdateInput:
       type: object
@@ -4196,6 +4531,23 @@ components:
           description: >
             Recorded duration in minutes, or null to clear. Refused on a
             summary node (`invalid_actual`).
+        planned_start_on:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            Moves the task into the week this day falls in; null returns it to
+            the backlog.
+
+            Refused with `dependency_out_of_order` when the move would put the
+            task ahead of live work it waits for, or would push a prerequisite
+            past something waiting on it. Both ends of every edge the task sits
+            on are checked, and only when the day actually changes -- editing a
+            title never fails over a scheduling conflict.
+        priority:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+          description: 1 highest, 3 normal.
       additionalProperties: false
     TaskCompleteInput:
       type: object
@@ -4364,6 +4716,189 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Task"
+      additionalProperties: false
+    TaskDependenciesResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [depends_on, dependents]
+          properties:
+            depends_on:
+              type: array
+              description: What this task waits for.
+              items:
+                $ref: "#/components/schemas/Task"
+            dependents:
+              type: array
+              description: What waits for this task.
+              items:
+                $ref: "#/components/schemas/Task"
+          additionalProperties: false
+      additionalProperties: false
+    ScheduleResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScheduleWeek"
+      additionalProperties: false
+    ScheduleWeek:
+      type: object
+      required: [week, capacity, calendar_known, allocated, days, overflow, blocked]
+      properties:
+        week:
+          type: string
+          format: date
+          description: The Monday the week starts on. This is the whole of an iteration's identity.
+        capacity:
+          type: integer
+          minimum: 0
+          description: >
+            Minutes this week had to give. In the current week the days already
+            behind us are not counted, so this is smaller than a full week --
+            compare `allocated` against this rather than against 5 x 480.
+        calendar_known:
+          type: boolean
+          description: >
+            False when this week sits in a year whose holidays were never
+            fetched. The week is still planned -- refusing to answer helps
+            nobody -- but Monday-to-Friday is all that is behind `capacity`,
+            which in China plans Spring Festival as five ordinary working days.
+            Showing the number without showing this presents a guess as a fact.
+        allocated:
+          type: integer
+          minimum: 0
+          description: Sum of every slice in `days`.
+        days:
+          type: array
+          description: >
+            One entry per day that received work, earliest first. A day is a
+            shared 480-minute bar, not a per-task lane: a task that does not fit
+            in what is left of a day continues into the next one, and appears
+            under each with its own share. The shares sum to its estimate,
+            never more.
+          items:
+            $ref: "#/components/schemas/ScheduleDay"
+        overflow:
+          type: array
+          description: >
+            Selected into this week and did not fit, in priority order, so the
+            first entry came closest. These have **no landing day** -- they are
+            reported rather than pushed into a week nobody selected them for.
+            This is the answer to "is this week's plan realistic", and it names
+            the tasks where a percentage could not.
+          items:
+            $ref: "#/components/schemas/Task"
+        blocked:
+          type: array
+          description: >
+            Not filled because something they wait for was not. Kept apart from
+            `overflow` because they are two facts with two different answers:
+            overflow means the week is too full and the work to cut is here,
+            blocked means the problem is upstream. Merging them would send a
+            reader to cut work that was never the problem.
+
+            Most conflicts never reach here -- scheduling a task ahead of a live
+            prerequisite is refused at the write. What cannot be refused is
+            capacity, so a prerequisite that overflows takes its dependents with
+            it, transitively.
+          items:
+            $ref: "#/components/schemas/Task"
+      additionalProperties: false
+    ScheduleDay:
+      type: object
+      required: [day, allocated, capacity, tasks]
+      properties:
+        day:
+          type: string
+          format: date
+        allocated:
+          type: integer
+          minimum: 0
+        capacity:
+          type: integer
+          minimum: 0
+          description: Always one working day's minutes.
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScheduleAllocation"
+      additionalProperties: false
+    ScheduleAllocation:
+      type: object
+      required: [minutes, task]
+      properties:
+        minutes:
+          type: integer
+          minimum: 0
+          description: This task's share of this day, not its whole estimate.
+        task:
+          $ref: "#/components/schemas/Task"
+      additionalProperties: false
+    CalendarDay:
+      type: object
+      required: [day, kind]
+      properties:
+        day:
+          type: string
+          format: date
+        kind:
+          type: string
+          enum: [holiday, workday, leave]
+          description: >
+            `holiday` is a statutory day off on a day the weekend rule would
+            have worked. `workday` is the Saturday or Sunday worked to make up
+            for one -- the same field in the same source produces both, which is
+            why they share a table. `leave` is the person being away, and is the
+            only one a client writes.
+        name:
+          type: string
+          nullable: true
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    CalendarImport:
+      type: object
+      required: [year, source]
+      properties:
+        year:
+          type: integer
+        source:
+          type: string
+          description: Where the year was read from, so numbers that look wrong can be traced.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the year was last read.
+      additionalProperties: false
+    CalendarDaysResponse:
+      type: object
+      required: [data, imports]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarDay"
+        imports:
+          type: array
+          description: The years actually behind `data`. See the endpoint description.
+          items:
+            $ref: "#/components/schemas/CalendarImport"
+      additionalProperties: false
+    CalendarDayResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/CalendarDay"
       additionalProperties: false
     TaskStatusCounts:
       type: object

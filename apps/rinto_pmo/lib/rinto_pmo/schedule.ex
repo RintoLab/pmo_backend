@@ -73,11 +73,24 @@ defmodule RintoPMO.Schedule do
   A prerequisite that is `:done` or `:cancelled` holds nothing up. See
   `RintoPMO.Tasks.Dependency`.
 
-  ## Capacity is one pool
+  ## Capacity belongs to a person, and an estimate is already that person's time
 
-  Not per assignee. There is one person here; `assignee_id` records who is
-  handling a task, which may be an agent, and is not a claim on anybody's
-  hours. Nothing here filters by it.
+  Nothing here filters by `assignee_id`, and that is not a simplification: an
+  estimate measures what a task costs *the person planning it*, whoever or
+  whatever executes it. A task an agent picks up still spends the time spent
+  waiting on it and reviewing what came back, which is what the number was.
+
+  So an agent needs no capacity of its own, and giving it one would be worse
+  than useless -- how long a model took is not a stable unit. It runs
+  concurrently with other things, with itself, and with the person; a figure
+  built out of that would look like a resource and behave like noise.
+
+  Which leaves one pool, belonging to whoever the plan is for. Today that is
+  implicit because there is one of them. A second person is not a second pool
+  competing for the same minutes -- it is a second target, planned separately
+  by passing it in, and views that show several people at once simply lay the
+  results over each other, a day being 480 minutes times however many people
+  are in the picture.
 
   For the same reason nothing here filters by project. A week's minutes are
   shared across every project, so a per-project view has to pack everything and
