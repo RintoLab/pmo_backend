@@ -6,6 +6,7 @@ defmodule RintoPMOWeb.V1.TaskController do
   alias RintoPMO.Utils
   alias RintoPMOWeb.Plugs.ActorToken
   alias RintoPMOWeb.V1.JobJSON
+  alias RintoPMOWeb.V1.TaskSchemaJSON
 
   @statuses Map.new(Task.statuses(), &{Atom.to_string(&1), &1})
   @kinds Map.new(Task.kinds(), &{Atom.to_string(&1), &1})
@@ -34,6 +35,22 @@ defmodule RintoPMOWeb.V1.TaskController do
       |> put_status(:created)
       |> render(:show, task: task)
     end
+  end
+
+  @doc """
+  What a task write has to look like.
+
+  It describes the API rather than any row, which is why it takes neither a
+  project nor an id and touches no context. It is served instead of being
+  written into the client because the enums and the estimate ceiling come off
+  `RintoPMO.Tasks.Task` as the request is answered: a CLI carrying its own
+  copy updates on its own schedule and would go on teaching last release's
+  rules to an agent with no way to notice.
+  """
+  def schema(conn, _params) do
+    conn
+    |> put_view(TaskSchemaJSON)
+    |> render(:show)
   end
 
   @doc """
@@ -127,12 +144,16 @@ defmodule RintoPMOWeb.V1.TaskController do
 
   @doc """
   Puts a task back in the pool without touching its status.
+
+  The caller has to be holding it: letting go is the mirror of `claim`, so it
+  names nobody and refuses with `403` when the work is somebody else's. Taking
+  a task off another actor is `assign`, which says who gets it next.
   """
   def release(conn, %{"id" => id}) do
     context = tasks_context()
     task = context.get_task!(id)
 
-    with {:ok, task} <- context.release_task(task) do
+    with {:ok, task} <- context.release_task(task, ActorToken.current_actor!(conn).id) do
       render(conn, :show, task: task)
     end
   end
@@ -232,11 +253,16 @@ defmodule RintoPMOWeb.V1.TaskController do
     |> render(:show, job: Jobs.describe(job))
   end
 
+  # The token says who is doing this, the same way it does for `claim`. Two of
+  # the four events refuse when that is not the actor holding the task; the
+  # context owns which two, because a rule enforced here would be a rule the
+  # next caller could skip.
   defp transition(conn, id, event, attrs \\ %{}) do
     context = tasks_context()
     task = context.get_task!(id)
+    actor_id = ActorToken.current_actor!(conn).id
 
-    with {:ok, task} <- context.transition_task(task, event, attrs) do
+    with {:ok, task} <- context.transition_task(task, event, actor_id, attrs) do
       render(conn, :show, task: task)
     end
   end

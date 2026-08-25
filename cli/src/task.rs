@@ -16,6 +16,8 @@ pub enum TaskCommand {
     Show(TaskIdArgs),
     /// Show a project's task counts and estimates
     Stats(ProjectArgs),
+    /// Print the JSON shape that create, update and split read
+    Schema(SchemaArgs),
     /// Create a task from an API-shaped JSON object
     Create(CreateArgs),
     /// Update a task from an API-shaped JSON object
@@ -91,11 +93,18 @@ pub struct ListArgs {
 }
 
 #[derive(Args)]
+pub struct SchemaArgs {
+    /// Which write to describe: create, update or split; omit for all of them
+    #[arg(value_name = "SHAPE")]
+    shape: Option<String>,
+}
+
+#[derive(Args)]
 pub struct CreateArgs {
     /// Project slug
     project_slug: String,
 
-    /// JSON object using the TaskCreateInput shape; `title` is required
+    /// JSON object; run `task schema create` for its fields and an example
     #[arg(long, value_name = "FILE")]
     input: PathBuf,
 }
@@ -105,7 +114,7 @@ pub struct UpdateArgs {
     /// Task id
     task_id: String,
 
-    /// JSON object using the TaskUpdateInput shape
+    /// JSON object; run `task schema update` for its fields and an example
     #[arg(long, value_name = "FILE")]
     input: PathBuf,
 }
@@ -125,7 +134,8 @@ pub struct SplitArgs {
     /// Task id
     task_id: String,
 
-    /// JSON object shaped as {"children": [...]}; omit to create an empty summary
+    /// JSON object shaped as {"children": [...]}; omit to create an empty summary.
+    /// Run `task schema split` for the fields a child takes
     #[arg(long, value_name = "FILE")]
     input: Option<PathBuf>,
 }
@@ -135,9 +145,10 @@ pub fn run(command: TaskCommand) -> Result<()> {
     let client = &Client::new(config.api(), config.token()?)?;
 
     match command {
-        TaskCommand::List(args) => list(client, config.actor_id()?, args),
+        TaskCommand::List(args) => list(client, &config, args),
         TaskCommand::Show(args) => show(client, args),
         TaskCommand::Stats(args) => stats(client, args),
+        TaskCommand::Schema(args) => schema(client, args),
         TaskCommand::Create(args) => create(client, args),
         TaskCommand::Update(args) => update(client, args),
         TaskCommand::Assign(args) => assign(client, args),
@@ -152,9 +163,22 @@ pub fn run(command: TaskCommand) -> Result<()> {
     }
 }
 
-fn list(client: &Client, actor_id: &str, args: ListArgs) -> Result<()> {
+/// Reading the backlog asks nothing about who is reading it.
+///
+/// `--mine` is the one filter that does, and it is resolved here rather than
+/// at dispatch so that the question is only put when it was asked. The agent
+/// inside a topic has a token and no `actor_id` -- the backend spawns it with
+/// an environment and never writes it a config file -- so demanding one up
+/// front made every list, filtered or not, refuse in the environment that has
+/// the most reason to read the backlog.
+fn list(client: &Client, config: &Config, args: ListArgs) -> Result<()> {
+    let mine = if args.mine {
+        Some(config.actor_id()?)
+    } else {
+        None
+    };
     let path = format!("/projects/{}/tasks", args.project_slug);
-    let query = list_query(&args, actor_id);
+    let query = list_query(&args, mine);
     let query_refs: Vec<(&str, &str)> = query
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
@@ -174,7 +198,11 @@ fn list(client: &Client, actor_id: &str, args: ListArgs) -> Result<()> {
     Ok(())
 }
 
-fn list_query(args: &ListArgs, actor_id: &str) -> Vec<(String, String)> {
+/// `mine` is the actor `--mine` resolved to, and `None` when it was not passed.
+/// It arrives already resolved because working out whether to ask for it is the
+/// caller's job -- see `list`. The two are mutually exclusive at the parser
+/// (`conflicts_with`), so at most one of them ever fills `assignee_id`.
+fn list_query(args: &ListArgs, mine: Option<&str>) -> Vec<(String, String)> {
     let mut query = Vec::new();
     push_query(&mut query, "kind", args.kind.as_deref());
     push_query(&mut query, "status", args.status.as_deref());
@@ -182,11 +210,7 @@ fn list_query(args: &ListArgs, actor_id: &str) -> Vec<(String, String)> {
     push_query(
         &mut query,
         "assignee_id",
-        if args.mine {
-            Some(actor_id)
-        } else {
-            args.assignee_id.as_deref()
-        },
+        mine.or(args.assignee_id.as_deref()),
     );
     push_query(&mut query, "document_id", args.document_id.as_deref());
     push_query(
@@ -222,6 +246,47 @@ fn stats(client: &Client, args: ProjectArgs) -> Result<()> {
         .map_err(|err| Error::Network(format!("could not render task stats: {err}")))?;
     println!("{rendered}");
     Ok(())
+}
+
+/// What `--input` has to contain, asked rather than remembered.
+///
+/// The three write commands each read a JSON file, and nothing in this binary
+/// says what belongs in one -- the shape lives in the server's `Task` module,
+/// with the enums, the estimate ceiling and the fields that look writable and
+/// are not. Printing a copy from here would be printing whatever was true when
+/// this binary was built, which is not the same thing as what the server across
+/// the wire will accept.
+fn schema(client: &Client, args: SchemaArgs) -> Result<()> {
+    let schemas = client::data(client.get("/tasks/schema", &[])?)?;
+    let selected = select_shape(&schemas, args.shape.as_deref())?;
+    let rendered = serde_json::to_string_pretty(selected)
+        .map_err(|err| Error::Network(format!("could not render the task schema: {err}")))?;
+    println!("{rendered}");
+    Ok(())
+}
+
+/// Which shapes exist is the server's answer too, so an unknown name is
+/// refused with the list the response actually carried rather than one
+/// compiled in here -- a shape the server learns tomorrow is then reachable by
+/// a binary built today.
+fn select_shape<'a>(schemas: &'a Value, shape: Option<&str>) -> Result<&'a Value> {
+    let Some(shape) = shape else {
+        return Ok(schemas);
+    };
+
+    schemas.get(shape).ok_or_else(|| {
+        Error::Input(format!(
+            "no shape named \"{shape}\"; the server describes: {}",
+            shape_names(schemas)
+        ))
+    })
+}
+
+fn shape_names(schemas: &Value) -> String {
+    schemas
+        .as_object()
+        .map(|shapes| shapes.keys().cloned().collect::<Vec<_>>().join(", "))
+        .unwrap_or_default()
 }
 
 fn create(client: &Client, args: CreateArgs) -> Result<()> {
@@ -420,8 +485,35 @@ fn nullable_string<'a>(value: &'a Value, field: &str) -> &'a str {
 
 #[cfg(test)]
 mod tests {
-    use super::{list_query, task_detail, task_summary, ListArgs};
+    use super::{list_query, select_shape, task_detail, task_summary, ListArgs};
     use serde_json::json;
+
+    #[test]
+    fn a_named_shape_is_printed_on_its_own() {
+        let schemas = json!({"create": {"title": "TaskCreateInput"}, "update": {}});
+
+        assert_eq!(
+            select_shape(&schemas, Some("create")).unwrap(),
+            &json!({"title": "TaskCreateInput"})
+        );
+    }
+
+    #[test]
+    fn no_shape_prints_every_one_of_them() {
+        let schemas = json!({"create": {}, "update": {}, "split": {}});
+
+        assert_eq!(select_shape(&schemas, None).unwrap(), &schemas);
+    }
+
+    /// The names come out of the response, so a server that grows a fourth
+    /// shape can be asked for it without a new binary.
+    #[test]
+    fn an_unknown_shape_answers_with_the_ones_the_server_sent() {
+        let schemas = json!({"create": {}, "update": {}, "split": {}});
+        let error = select_shape(&schemas, Some("complete")).unwrap_err();
+
+        assert!(error.to_string().contains("create, split, update"));
+    }
 
     #[test]
     fn list_passes_every_filter_using_the_api_names() {
@@ -438,7 +530,7 @@ mod tests {
         };
 
         assert_eq!(
-            list_query(&args, "human-id"),
+            list_query(&args, None),
             vec![
                 ("kind".to_string(), "work".to_string()),
                 ("status".to_string(), "open".to_string()),
@@ -448,6 +540,28 @@ mod tests {
                 ("live".to_string(), "true".to_string()),
                 ("overdue".to_string(), "false".to_string()),
             ]
+        );
+    }
+
+    /// The environment that has no `actor_id` at all: an unfiltered list must
+    /// come out as a query that never mentions one.
+    #[test]
+    fn a_list_without_mine_asks_about_no_actor() {
+        let args = ListArgs {
+            project_slug: "demo".to_string(),
+            kind: None,
+            status: Some("open".to_string()),
+            parent_id: None,
+            assignee_id: None,
+            mine: false,
+            document_id: None,
+            live: None,
+            overdue: None,
+        };
+
+        assert_eq!(
+            list_query(&args, None),
+            vec![("status".to_string(), "open".to_string())]
         );
     }
 
@@ -466,7 +580,7 @@ mod tests {
         };
 
         assert_eq!(
-            list_query(&args, "human-id"),
+            list_query(&args, Some("human-id")),
             vec![
                 ("kind".to_string(), "work".to_string()),
                 ("assignee_id".to_string(), "human-id".to_string()),

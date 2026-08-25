@@ -145,6 +145,11 @@ defmodule RintoPMOWeb.Router do
     # message is what heats one.
     post "/conversations/:id/close", ConversationController, :close
 
+    # What a write has to look like: the shapes `create`, `update` and `split`
+    # read. It belongs to no project and no task, and it sits ahead of
+    # `resources` so that `schema` is not read as an id.
+    get "/tasks/schema", TaskController, :schema
+
     # Delete is not the opposite of create here -- `cancel` is what records
     # that work was dropped. This is for rows that should never have existed,
     # such as a breakdown an agent got wrong. Emptying a cover of its last

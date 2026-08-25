@@ -164,12 +164,12 @@ defmodule RintoPMO.Tasks do
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
     @callback claim_task(Task.t(), term()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-    @callback release_task(Task.t()) ::
+    @callback release_task(Task.t(), term()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
 
-    @callback transition_task(Task.t(), Task.event()) ::
+    @callback transition_task(Task.t(), Task.event(), term()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-    @callback transition_task(Task.t(), Task.event(), map()) ::
+    @callback transition_task(Task.t(), Task.event(), term(), map()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
 
     @callback request_estimation(Task.t(), estimation_kind()) ::
@@ -401,10 +401,15 @@ defmodule RintoPMO.Tasks do
   by someone else. A released `:in_progress` task keeps `started_at`, so the
   next actor inherits an honest record of how long it has been open rather
   than a clock reset to hide the handoff.
+
+  `actor_id` is who is letting go, and it has to be the actor holding the task
+  -- putting somebody else's work back in the pool is `assign_task/2`, which
+  says whose it becomes rather than leaving it to whoever looks next.
   """
   @impl true
-  def release_task(%Task{} = task) do
-    with :ok <- require_work(task) do
+  def release_task(%Task{} = task, actor_id) do
+    with :ok <- require_work(task),
+         :ok <- require_owner(task, actor_id) do
       task
       |> Task.assignment_changeset(nil)
       |> Repo.update()
@@ -412,24 +417,46 @@ defmodule RintoPMO.Tasks do
   end
 
   @doc """
-  Moves a task through the status machine.
+  Moves a task through the status machine, on behalf of `actor_id`.
 
   Refuses with `{:error, :task_state_conflict, details}` when the event does
   not apply to the current status, when the task is a summary node whose status
-  is not its own to move, or when `:start` is asked of a task nobody owns --
-  starting work with no owner is how a task ends up in progress with nobody on
-  it.
+  is not its own to move, or when `:start` or `:complete` is asked of a task
+  nobody owns -- working with no owner is how a task ends up in progress with
+  nobody on it.
+
+  ## Two of the four events belong to the assignee
+
+  `:start` and `:complete` are the acts of doing the work, so `actor_id` has to
+  be the actor the task is assigned to, and anyone else gets
+  `{:error, :task_not_yours, details}`. Until now this rule existed only as a
+  line in the executor's skill telling the agent to check `assignee_id` with
+  its own eyes; a rule that lives in a prompt is a suggestion, and this is the
+  same rule where it can be enforced.
+
+  `:cancel` and `:reopen` are deliberately left open. They decide whether work
+  happens at all rather than who does it, and dropping a piece of work somebody
+  else is holding is an ordinary planning act -- the whole point of `cancel`
+  keeping the record is that the decision was made from outside the work.
+
+  > #### One token, for now {: .info}
+  >
+  > `actor_id` comes from the token, so today it is always this installation's
+  > owner (see `RintoPMO.Actors`). That does not make the check idle: it is
+  > what stops work assigned to a *different* actor from being started or
+  > finished by the one holding the token. When tokens become per-actor, this
+  > rule needs no revisiting -- it is already asking the right question.
   """
   @impl true
-  def transition_task(%Task{} = task, event) when is_atom(event) do
-    transition_task(task, event, %{})
+  def transition_task(%Task{} = task, event, actor_id) when is_atom(event) do
+    transition_task(task, event, actor_id, %{})
   end
 
   @impl true
-  def transition_task(%Task{} = task, event, attrs) when is_map(attrs) do
+  def transition_task(%Task{} = task, event, actor_id, attrs) when is_map(attrs) do
     with :ok <- require_work(task),
          {:ok, _next} <- allowed_transition(task, event),
-         :ok <- require_assignee(task, event),
+         :ok <- require_owner(task, event, actor_id),
          {:ok, attrs} <- complete_attrs(event, attrs) do
       task
       |> Task.transition_changeset(event, attrs)
@@ -1681,11 +1708,31 @@ defmodule RintoPMO.Tasks do
     end
   end
 
-  defp require_assignee(%Task{status: status, assignee_id: nil}, :start) do
+  # The events that are the assignee's to make. See `transition_task/4` for why
+  # `:cancel` and `:reopen` are not among them.
+  @owned_events [:start, :complete]
+
+  defp require_owner(%Task{} = task, event, actor_id) when event in @owned_events do
+    require_owner(task, actor_id)
+  end
+
+  defp require_owner(%Task{}, _event, _actor_id), do: :ok
+
+  # Two refusals rather than one, because they have two different answers.
+  # Nobody holds it: claim it and carry on. Somebody else holds it: this was the
+  # wrong task, and no amount of re-reading state will change that -- which is
+  # also why the second is a 403 and the first a 409.
+  defp require_owner(%Task{status: status, assignee_id: nil}, _actor_id) do
     {:error, :task_state_conflict, %{status: status, reason: "task has no assignee"}}
   end
 
-  defp require_assignee(%Task{}, _event), do: :ok
+  defp require_owner(%Task{assignee_id: assignee_id}, actor_id)
+       when assignee_id == actor_id,
+       do: :ok
+
+  defp require_owner(%Task{assignee_id: assignee_id}, _actor_id) do
+    {:error, :task_not_yours, %{assignee_id: assignee_id}}
+  end
 
   defp validate_assignee(actor_id) do
     with {:ok, actor_id} <- cast_actor_id(actor_id),

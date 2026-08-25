@@ -203,7 +203,7 @@ defmodule RintoPMO.TasksTest do
     end
   end
 
-  describe "release_task/1" do
+  describe "release_task/2" do
     test "returns a task to the pool while keeping its progress" do
       actor = insert(:actor)
 
@@ -214,23 +214,44 @@ defmodule RintoPMO.TasksTest do
           started_at: ~U[2026-01-01 00:00:00.000000Z]
         )
 
-      assert {:ok, released} = Tasks.release_task(task)
+      assert {:ok, released} = Tasks.release_task(task, actor.id)
       assert released.assignee_id == nil
       assert released.assigned_at == nil
       assert released.status == :in_progress
       assert released.started_at == task.started_at
     end
+
+    test "refuses to put somebody else's work back in the pool" do
+      actor = insert(:actor)
+      task = insert(:task, assignee: actor, status: :in_progress)
+
+      assert {:error, :task_not_yours, %{assignee_id: assignee_id}} =
+               Tasks.release_task(task, insert(:actor).id)
+
+      assert assignee_id == actor.id
+      assert Repo.get!(Task, task.id).assignee_id == actor.id
+    end
+
+    test "refuses to release what nobody is holding" do
+      task = insert(:task, status: :in_progress)
+
+      assert {:error, :task_state_conflict, details} =
+               Tasks.release_task(task, insert(:actor).id)
+
+      assert details.reason == "task has no assignee"
+    end
   end
 
-  describe "transition_task/2" do
+  describe "transition_task/3" do
     test "runs the happy path from open to done" do
-      task = insert(:task, assignee: build(:actor))
+      actor = insert(:actor)
+      task = insert(:task, assignee: actor)
 
-      assert {:ok, started} = Tasks.transition_task(task, :start)
+      assert {:ok, started} = Tasks.transition_task(task, :start, actor.id)
       assert started.status == :in_progress
       assert started.started_at
 
-      assert {:ok, done} = Tasks.transition_task(started, :complete)
+      assert {:ok, done} = Tasks.transition_task(started, :complete, actor.id)
       assert done.status == :done
       assert done.completed_at
     end
@@ -238,41 +259,93 @@ defmodule RintoPMO.TasksTest do
     test "refuses to start a task nobody owns" do
       task = insert(:task)
 
-      assert {:error, :task_state_conflict, details} = Tasks.transition_task(task, :start)
+      assert {:error, :task_state_conflict, details} =
+               Tasks.transition_task(task, :start, insert(:actor).id)
+
       assert details.reason == "task has no assignee"
     end
 
-    test "refuses an event the current status has no edge for" do
-      task = insert(:task, assignee: build(:actor))
+    test "refuses to start or finish work that belongs to somebody else" do
+      actor = insert(:actor)
+      intruder = insert(:actor)
+      task = insert(:task, assignee: actor)
 
-      assert {:error, :task_state_conflict, %{status: :open, event: :complete}} =
-               Tasks.transition_task(task, :complete)
+      assert {:error, :task_not_yours, %{assignee_id: assignee_id}} =
+               Tasks.transition_task(task, :start, intruder.id)
+
+      assert assignee_id == actor.id
+      assert Repo.get!(Task, task.id).status == :open
+
+      {:ok, started} = Tasks.transition_task(task, :start, actor.id)
+
+      assert {:error, :task_not_yours, _details} =
+               Tasks.transition_task(started, :complete, intruder.id)
+
+      assert Repo.get!(Task, task.id).status == :in_progress
     end
 
-    test "cancelling keeps what was spent" do
+    test "cancelling and reopening are decisions from outside the work" do
+      actor = insert(:actor)
+      outsider = insert(:actor)
+
       task =
         insert(:task,
-          assignee: build(:actor),
+          assignee: actor,
           status: :in_progress,
           started_at: ~U[2026-01-01 00:00:00.000000Z]
         )
 
-      assert {:ok, cancelled} = Tasks.transition_task(task, :cancel)
+      assert {:ok, cancelled} = Tasks.transition_task(task, :cancel, outsider.id)
+      assert cancelled.status == :cancelled
+
+      assert {:ok, reopened} = Tasks.transition_task(cancelled, :reopen, outsider.id)
+      assert reopened.status == :open
+    end
+
+    test "refuses an event the current status has no edge for" do
+      actor = insert(:actor)
+      task = insert(:task, assignee: actor)
+
+      assert {:error, :task_state_conflict, %{status: :open, event: :complete}} =
+               Tasks.transition_task(task, :complete, actor.id)
+    end
+
+    test "the status machine answers before ownership does" do
+      actor = insert(:actor)
+      task = insert(:task, assignee: actor, status: :done)
+
+      assert {:error, :task_state_conflict, %{status: :done, event: :start}} =
+               Tasks.transition_task(task, :start, insert(:actor).id)
+    end
+
+    test "cancelling keeps what was spent" do
+      actor = insert(:actor)
+
+      task =
+        insert(:task,
+          assignee: actor,
+          status: :in_progress,
+          started_at: ~U[2026-01-01 00:00:00.000000Z]
+        )
+
+      assert {:ok, cancelled} = Tasks.transition_task(task, :cancel, actor.id)
       assert cancelled.status == :cancelled
       assert cancelled.started_at == task.started_at
       assert cancelled.completed_at == nil
     end
 
     test "reopening drops the timestamps that claimed the task finished" do
+      actor = insert(:actor)
+
       task =
         insert(:task,
-          assignee: build(:actor),
+          assignee: actor,
           status: :done,
           started_at: ~U[2026-01-01 00:00:00.000000Z],
           completed_at: ~U[2026-01-02 00:00:00.000000Z]
         )
 
-      assert {:ok, reopened} = Tasks.transition_task(task, :reopen)
+      assert {:ok, reopened} = Tasks.transition_task(task, :reopen, actor.id)
       assert reopened.status == :open
       assert reopened.started_at == nil
       assert reopened.completed_at == nil
@@ -293,7 +366,8 @@ defmodule RintoPMO.TasksTest do
 
       assert status_of(project, chunk) == :open
 
-      {:ok, _started} = Tasks.transition_task(%{first | assignee_id: insert(:actor).id}, :start)
+      owner = insert(:actor)
+      {:ok, _started} = Tasks.transition_task(%{first | assignee_id: owner.id}, :start, owner.id)
       assert status_of(project, chunk) == :in_progress
     end
 
@@ -351,13 +425,15 @@ defmodule RintoPMO.TasksTest do
                Tasks.assign_task(chunk, actor.id)
 
       assert {:error, :task_state_conflict, %{kind: :summary}} = Tasks.claim_task(chunk, actor.id)
-      assert {:error, :task_state_conflict, %{kind: :summary}} = Tasks.release_task(chunk)
 
       assert {:error, :task_state_conflict, %{kind: :summary}} =
-               Tasks.transition_task(chunk, :start)
+               Tasks.release_task(chunk, actor.id)
 
       assert {:error, :task_state_conflict, %{kind: :summary}} =
-               Tasks.transition_task(chunk, :cancel)
+               Tasks.transition_task(chunk, :start, actor.id)
+
+      assert {:error, :task_state_conflict, %{kind: :summary}} =
+               Tasks.transition_task(chunk, :cancel, actor.id)
     end
 
     test "a summary cannot be created holding an assignee" do
@@ -495,7 +571,8 @@ defmodule RintoPMO.TasksTest do
       assert nested.parent_id == top.id
 
       [quarter] = nested.children
-      {:ok, _done} = Tasks.transition_task(%{quarter | assignee_id: insert(:actor).id}, :start)
+      owner = insert(:actor)
+      {:ok, _done} = Tasks.transition_task(%{quarter | assignee_id: owner.id}, :start, owner.id)
 
       assert status_of(project, top) == :in_progress
     end
@@ -749,7 +826,7 @@ defmodule RintoPMO.TasksTest do
       actor = insert(:actor)
       task = insert(:task, project: project, assignee: actor)
 
-      {:ok, started} = Tasks.transition_task(task, :start)
+      {:ok, started} = Tasks.transition_task(task, :start, actor.id)
       assert started.status == :in_progress
 
       {:ok, summary} = Tasks.split_task(started, [%{"title" => "Only"}])
@@ -1270,35 +1347,42 @@ defmodule RintoPMO.TasksTest do
     end
 
     test "complete can stamp the duration in the same act" do
-      task = insert(:task, assignee: build(:actor), status: :in_progress)
+      actor = insert(:actor)
+      task = insert(:task, assignee: actor, status: :in_progress)
 
-      assert {:ok, done} = Tasks.transition_task(task, :complete, %{"actual_minutes" => 45})
+      assert {:ok, done} =
+               Tasks.transition_task(task, :complete, actor.id, %{"actual_minutes" => 45})
+
       assert done.status == :done
       assert done.actual_minutes == 45
     end
 
     test "complete without a duration leaves whatever was already stored" do
+      actor = insert(:actor)
+
       task =
         insert(:task,
-          assignee: build(:actor),
+          assignee: actor,
           status: :in_progress,
           actual_minutes: 20
         )
 
-      assert {:ok, done} = Tasks.transition_task(task, :complete)
+      assert {:ok, done} = Tasks.transition_task(task, :complete, actor.id)
       assert done.actual_minutes == 20
     end
 
     test "reopening clears the duration of a finish that did not hold" do
+      actor = insert(:actor)
+
       task =
         insert(:task,
-          assignee: build(:actor),
+          assignee: actor,
           status: :done,
           actual_minutes: 40,
           completed_at: ~U[2026-01-02 00:00:00.000000Z]
         )
 
-      assert {:ok, reopened} = Tasks.transition_task(task, :reopen)
+      assert {:ok, reopened} = Tasks.transition_task(task, :reopen, actor.id)
       assert reopened.actual_minutes == nil
     end
 

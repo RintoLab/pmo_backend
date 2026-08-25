@@ -80,6 +80,11 @@ rinto-pmo task show <task-id>
 - `due_on`、`estimate`：期限和估算
 - `assignee_id`：确实是当前 actor
 
+`start` / `complete` / `release` 现在由服务端强制这一条：不是持有人就返回
+`403 task_not_yours`，`details.assignee_id` 会告诉你它属于谁。
+这和 `task_already_claimed` 不同——那个是抢输了，换一条任务就行；`403` 表示这条活
+根本不归你，重试没有意义，要么去任务池领一条，要么是 task id 拿错了。
+
 ## 3. 读取实现依据
 
 如果任务的 `document_id` 不是 `none`：
@@ -171,12 +176,16 @@ rinto-pmo task release <task-id>
 `release` 不是取消任务；工作仍然存在，而且已经开始的状态和时间会保留。
 不要因为暂时遇到困难就 `cancel`。取消表示团队决定不再做这项工作，应由明确的项目决策触发。
 
+注意：`release` 之后这条任务就没有持有人了。如果后来又想把它做完，必须先重新
+`claim` —— 服务端不接受完成一条无人持有的任务。
+
 ## 状态纪律
 
 - 不要处理未领取的任务。
 - 不要对 `summary` 节点执行 claim/start/complete。
 - `open → start → in_progress → complete → done` 是正常路径。
 - claim 冲突后换任务，不自动重试。
+- 收到 `403 task_not_yours` 不要重试，也不要试图绕过：换一条自己领的任务。
 - 本地实现或测试失败时不要 complete。
 - 需要交接时 release，并向用户说明剩余问题。
 - 不要用 delete 代替 cancel；delete 只适合本不该存在的误建记录。

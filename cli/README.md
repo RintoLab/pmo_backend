@@ -51,6 +51,54 @@ for scripts.
 Configuration is stored at `~/.config/rinto-pmo/config.json`. Set
 `RINTO_CONFIG` to use a different path.
 
+## What it can do
+
+`rinto-pmo <group> --help` lists a group's commands and every flag; this is the
+map, not the reference. Two environments run this binary and they can do
+different things:
+
+* **Outside a topic** -- a coding agent on a developer's machine, configured by
+  `config init`. Writes are credited to the configured human.
+* **Inside a topic** -- spawned by the server with `RINTO_CONVERSATION_ID` in the
+  environment and no config file. Writes are credited to that topic's assistant,
+  and changes to documents can only be *proposed*, never committed.
+
+| Group | Commands |
+|---|---|
+| `config` | `init`, `show` |
+| `project` | `list`, `show` -- repositories, directory names, default branches |
+| `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `split`, `start`, `complete`, `cancel`, `reopen`, `delete` |
+| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `contentions`, `rebase` |
+| `search` | one command; finds things by meaning and answers with `rinto://` addresses |
+| `skill` | `list`, `install`, `sync` |
+| `update` | self-update from the Gitea package registry |
+
+Three things are worth knowing before writing anything:
+
+**Ask what a task write looks like; do not guess.** `task create`, `task update`
+and `task split` each read a JSON file, and `task schema [create|update|split]`
+prints the shape of one -- every field, the enums, the estimate ceiling, and a
+worked example. It is fetched from the server rather than kept in here, so it is
+what that server will accept and not what was true when this binary was built.
+Two things it will save you: the flat `estimate_optimistic` / `estimate_likely`
+/ `estimate_pessimistic` columns are not writable at all, and a key the update
+shape does not list is *ignored* rather than refused -- a PATCH carrying
+`status` answers 200 and changes nothing.
+
+
+**Documents are read two ways.** `doc show` prints what has been committed.
+`doc show --working` prints the document as the current topic sees it, with that
+topic's own standing proposals in place of the text they would replace. A topic
+that changed a document and then reads it back with plain `doc show` sees the
+text it replaced -- and proposing again from that overwrites its earlier
+proposal, because a topic holds one live proposal per block. Read `--working`
+before changing the same document twice.
+
+**Committing and deciding are not here, on purpose.** An agent proposes; a
+person commits the proposal and settles arguments between competing ones. There
+is no CLI verb for either, and that is the point of the proposal flow rather
+than a gap in this binary.
+
 ## Update
 
 ```sh

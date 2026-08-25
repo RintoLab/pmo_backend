@@ -10,6 +10,7 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {401, "The server was started without RINTO_TOKEN, so it can answer nothing.", %{}},
     human_actor_missing:
       {401, "This installation has no human actor. Run `mix rinto.actors.setup_human`.", %{}},
+    task_not_yours: {403, "The task is assigned to someone else.", %{assignee_id: "actor-1"}},
     not_found: {404, "The requested resource was not found.", %{}},
     image_too_large:
       {413, "The image exceeds the size accepted for inline use.",

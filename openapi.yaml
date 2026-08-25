@@ -1981,6 +1981,44 @@ paths:
       responses:
         "204":
           description: Rediscovery has been requested
+  /tasks/schema:
+    get:
+      tags: [Tasks]
+      operationId: getTaskSchema
+      summary: Get the JSON Schema for a task write
+      description: >
+        The shapes `POST /projects/{project_slug}/tasks`, `PATCH /tasks/{id}`
+        and `POST /tasks/{id}/split` accept, as three JSON Schema documents
+        keyed `create`, `update` and `split`. Same content as the
+        `TaskCreateInput` / `TaskUpdateInput` / `TaskSplitInput` components
+        below, said in a form a client can fetch: it exists for the CLI's
+        `task schema`, whose caller has this API but not this file.
+
+
+        Built from `RintoPMO.Tasks.Task` as the request is answered, so the
+        difficulty ladder, the priority range and the estimate ceiling are the
+        values the server will enforce rather than a copy of them. Each shape
+        carries an `examples` entry that the server's own test suite feeds
+        back through the domain, so an example that stopped being accepted
+        fails the build.
+
+
+        `additionalProperties: false` is an instruction to whoever writes the
+        body, not a description of the server: unlisted keys are ignored, not
+        refused. A `PATCH` carrying `status` answers `200` and changes
+        nothing.
+
+
+        Describes no row, so it takes no id and no project slug, and it is
+        declared ahead of `/tasks/{id}` -- `schema` is a shape name, never a
+        task id.
+      responses:
+        "200":
+          description: One JSON Schema per write shape
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSchemaResponse"
   /tasks/{id}:
     parameters:
       - $ref: "#/components/parameters/TaskId"
@@ -2139,6 +2177,11 @@ paths:
         Not a cancel: the work still needs doing, by someone else. Status and
         `started_at` survive, so the next owner inherits an honest record
         rather than a clock reset to hide the handoff.
+
+
+        The mirror of `claim`, so it names nobody and the caller has to be
+        holding the task. Taking work off a different actor is `assign`, which
+        says who gets it next instead of leaving it to whoever looks first.
       responses:
         "200":
           description: Task released
@@ -2146,8 +2189,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TaskResponse"
+        "403":
+          $ref: "#/components/responses/TaskNotYours"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/TaskStateConflict"
         "422":
           $ref: "#/components/responses/ValidationError"
   /tasks/{id}/dependencies:
@@ -2471,9 +2518,10 @@ paths:
       operationId: startTask
       summary: Move a task to in_progress
       description: >
-        Only from `open`, and only with an owner: starting ownerless work is
-        how a task ends up in progress with nobody on it. Stamps `started_at`.
-        Never applies to a summary node.
+        Only from `open`, and only by the actor holding the task: starting
+        ownerless work is how a task ends up in progress with nobody on it, and
+        starting somebody else's is `403`. Stamps `started_at`. Never applies
+        to a summary node.
       responses:
         "200":
           description: Task started
@@ -2481,6 +2529,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TaskResponse"
+        "403":
+          $ref: "#/components/responses/TaskNotYours"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -2493,9 +2543,14 @@ paths:
       operationId: completeTask
       summary: Mark a task done
       description: >
-        Only from `in_progress`, and never on a summary node. Stamps
-        `completed_at`. Optional `actual_minutes` records how long it took in
-        the same act; absent or null leaves whatever was already stored.
+        Only from `in_progress`, only by the actor holding the task, and never
+        on a summary node. Stamps `completed_at`. Optional `actual_minutes`
+        records how long it took in the same act; absent or null leaves
+        whatever was already stored.
+
+
+        A task that was released while in progress has no owner, so finishing
+        it means claiming it first.
       requestBody:
         required: false
         content:
@@ -2509,6 +2564,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TaskResponse"
+        "403":
+          $ref: "#/components/responses/TaskNotYours"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -3172,9 +3229,26 @@ components:
     TaskStateConflict:
       description: >
         `task_state_conflict`: the event does not apply to the task's current
-        status, `start` was asked of a task nobody owns, or the target is a
-        summary node, whose status is not its own to move. `details` carries
-        the observed `status`, and `kind` when a summary node was the cause.
+        status, `start` or `complete` was asked of a task nobody owns, or the
+        target is a summary node, whose status is not its own to move.
+        `details` carries the observed `status`, and `kind` when a summary node
+        was the cause.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    TaskNotYours:
+      description: >
+        `task_not_yours`: the work is assigned to a different actor, and
+        `details.assignee_id` names them. Doing the work and finishing it are
+        the assignee's acts, so `start`, `complete` and `release` refuse for
+        anybody else.
+
+
+        Told apart from `task_already_claimed` on purpose. That one is a race
+        you lost, and the answer is to pick a different task. This one means
+        the task was never yours to move: re-reading state will not change it,
+        so claim something from the pool, or check the id.
       content:
         application/json:
           schema:
@@ -4484,6 +4558,12 @@ components:
         same request as an edit of the wording. Moving `parent_id` away from a
         cover's last child demotes that cover to `work` as a side effect, so
         re-read the WBS after a structural move.
+
+
+        `additionalProperties: false` binds the caller, not the server: a key
+        that is not listed here is ignored rather than refused, so a body
+        carrying `status` is answered `200` and changes nothing. Read the
+        returned task rather than the status code.
       properties:
         parent_id:
           type: string
@@ -4705,6 +4785,18 @@ components:
           type: integer
           minimum: 0
           nullable: true
+        planned_start_on:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            Selects the child into the week this day falls in. Null is the
+            backlog. A breakdown that already knows when its parts are worked
+            can say so here rather than PATCHing each child afterwards.
+        priority:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+          description: 1 highest, 3 normal. Inherits nothing from the cover.
       additionalProperties: false
     TaskSplitResponse:
       type: object
@@ -5026,6 +5118,31 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Task"
+      additionalProperties: false
+    TaskSchemaResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [create, update, split]
+          description: >
+            One JSON Schema (2020-12) per write shape, keyed by the write it
+            describes. The bodies themselves are the `TaskCreateInput`,
+            `TaskUpdateInput` and `TaskSplitInput` components; what is served
+            here is those shapes rendered as schema documents, with a worked
+            example attached to each.
+          properties:
+            create:
+              type: object
+              description: The shape of `POST /projects/{project_slug}/tasks`.
+            update:
+              type: object
+              description: The shape of `PATCH /tasks/{id}`.
+            split:
+              type: object
+              description: The shape of `POST /tasks/{id}/split`.
+          additionalProperties: false
       additionalProperties: false
     RepoCredential:
       type: object
@@ -5980,6 +6097,7 @@ components:
         - unsupported_image
         - stale_document
         - task_already_claimed
+        - task_not_yours
         - task_state_conflict
         - dependency_cycle
         - validation_error

@@ -12,6 +12,13 @@ defmodule RintoPMOWeb.ErrorJSON do
       {401, "The server was started without RINTO_TOKEN, so it can answer nothing."},
     human_actor_missing:
       {401, "This installation has no human actor. Run `mix rinto.actors.setup_human`."},
+    # Authenticated, and refused anyway. The only 403 in the catalog, and it is
+    # one on purpose: every other refusal here is about the request or the state
+    # of a thing, while this one is about who is asking. Told apart from
+    # `task_already_claimed` because they answer differently -- losing a race
+    # means pick another task, and this means the id was wrong or the work was
+    # never yours to move.
+    task_not_yours: {403, "The task is assigned to someone else."},
     not_found: {404, "The requested resource was not found."},
     image_too_large: {413, "The image exceeds the size accepted for inline use."},
     unsupported_image: {415, "The file is not an image format that can be sent to a model."},
