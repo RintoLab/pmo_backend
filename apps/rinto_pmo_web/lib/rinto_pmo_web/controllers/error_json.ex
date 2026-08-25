@@ -58,6 +58,11 @@ defmodule RintoPMOWeb.ErrorJSON do
     invalid_difficulty: {422, "The task difficulty is invalid."},
     invalid_actual: {422, "The recorded actual duration is invalid."},
     task_not_splittable: {422, "The task cannot be split in its current state."},
+    # Scheduling a task ahead of work it waits for. Carries both ends and both
+    # days, because "which one do I move" is the next question either way.
+    dependency_out_of_order:
+      {422, "A task cannot be scheduled before the work it is waiting for."},
+    task_not_dependable: {422, "A summary node cannot take part in a dependency."},
     # Breaking a document down. The first three are the document being in no
     # state to be broken down, or nobody having said who would do it; the
     # fourth is somebody having clicked twice.

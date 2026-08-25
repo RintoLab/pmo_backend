@@ -26,6 +26,19 @@ defmodule RintoPMOWeb.Router do
     # looking at the actor list, and changed after seeing a few of the results.
     get "/settings", SettingController, :index
     put "/settings/:key", SettingController, :update
+    # What each week holds and what did not fit. Not nested under a project:
+    # a week's minutes are shared across every project, so packing one project
+    # alone would hand it the whole week. A per-project view filters this.
+    get "/schedule", ScheduleController, :index
+
+    # Which days are not what the weekend rule says. Statutory holidays and the
+    # weekends worked to make up for them are fetched daily and are read-only
+    # here; leave is the half a person writes, and is the reason this table
+    # would be worth having even if the importer never ran.
+    get "/calendar/days", CalendarController, :index
+    put "/calendar/days/:day/leave", CalendarController, :put_leave
+    delete "/calendar/days/:day/leave", CalendarController, :delete_leave
+
     get "/ai_models", AIModelController, :index
     post "/ai_models/refresh", AIModelController, :refresh
 
@@ -150,6 +163,14 @@ defmodule RintoPMOWeb.Router do
     # promoting a job to a cover drops its assignee and its clocks, which must
     # not be able to ride along with an edit of the title.
     post "/tasks/:id/split", TaskController, :split
+
+    # "This cannot start until that is done." Not a field on the task, because
+    # an edge belongs to neither end of itself; and not a `rinto://` reference
+    # in a body, because `links` rows are derivable from the text they were
+    # read out of and this one is a fact somebody asserted.
+    get "/tasks/:id/dependencies", TaskController, :dependencies
+    post "/tasks/:id/dependencies", TaskController, :add_dependency
+    delete "/tasks/:id/dependencies/:depends_on_id", TaskController, :remove_dependency
 
     # One endpoint per event rather than a settable `status`: the machine is
     # the API, so a client cannot invent a transition the domain refuses.

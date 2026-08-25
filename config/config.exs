@@ -42,7 +42,11 @@ config :rinto_pmo,
     links: RintoPMO.Links,
     # Embeddings and reranking. A service, not an actor -- see `RintoPMO.AI`.
     ai: RintoPMO.AI,
-    search: RintoPMO.Search
+    search: RintoPMO.Search,
+    # Fetched rather than vendored: a checked-in holiday file goes stale in
+    # silence, and a stale calendar reports the October holiday as seven
+    # working days with nothing anywhere complaining.
+    holidays: RintoPMO.Calendar.Holidays
   ]
 
 # The local inference service: embeddings and reranking.
@@ -286,7 +290,14 @@ config :rinto_pmo, Oban,
     # works right up until a pass is discarded and the chain ends for good.
     # This does nothing while that chain is healthy -- the worker's `unique`
     # makes it a no-op -- and restarts it when it is not.
-    {Oban.Plugins.Cron, crontab: [{"* * * * *", RintoPMO.Embeddings.Worker}]}
+    {Oban.Plugins.Cron,
+     crontab: [
+       {"* * * * *", RintoPMO.Embeddings.Worker},
+       # Daily, because the State Council amends its announcements: a year read
+       # once in January keeps whatever it happened to catch. Early morning so
+       # a change lands before anybody looks at a week.
+       {"17 3 * * *", RintoPMO.Calendar.Worker}
+     ]}
   ]
 
 config :rinto_pmo_web,

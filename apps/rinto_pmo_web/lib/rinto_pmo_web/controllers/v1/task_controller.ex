@@ -60,6 +60,44 @@ defmodule RintoPMOWeb.V1.TaskController do
   end
 
   @doc """
+  What a task is waiting for, and what is waiting for it.
+
+  Both directions in one response: "can I start this" and "what breaks if I
+  move it" are the two questions asked of an edge, and a client that had to
+  make two calls to see both would draw half a graph.
+  """
+  def dependencies(conn, %{"id" => id}) do
+    context = tasks_context()
+    task = context.get_task!(id)
+
+    render(conn, :dependencies,
+      depends_on: context.list_dependencies(task),
+      dependents: context.list_dependents(task)
+    )
+  end
+
+  def add_dependency(conn, %{"id" => id} = params) do
+    context = tasks_context()
+    task = context.get_task!(id)
+
+    with {:ok, _edge} <- context.add_dependency(task, Map.get(params, "depends_on_id")) do
+      render(conn, :dependencies,
+        depends_on: context.list_dependencies(task),
+        dependents: context.list_dependents(task)
+      )
+    end
+  end
+
+  def remove_dependency(conn, %{"id" => id, "depends_on_id" => depends_on_id}) do
+    context = tasks_context()
+    task = context.get_task!(id)
+
+    with :ok <- context.remove_dependency(task, depends_on_id) do
+      send_resp(conn, :no_content, "")
+    end
+  end
+
+  @doc """
   Hands a task to an actor, overriding whoever held it.
   """
   def assign(conn, %{"id" => id} = params) do

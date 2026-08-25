@@ -1609,6 +1609,130 @@ defmodule RintoPMO.TasksTest do
     end
   end
 
+  describe "estimate ceiling" do
+    test "refuses an estimate larger than a working day" do
+      project = insert(:project)
+      ceiling = Task.estimate_ceiling()
+
+      assert {:error, :invalid_estimate, %{field: "pessimistic", reason: reason}} =
+               Tasks.create_task(project, %{
+                 "title" => "A week of work in one row",
+                 "estimate" => %{
+                   "optimistic" => 60,
+                   "likely" => 120,
+                   "pessimistic" => ceiling + 1
+                 }
+               })
+
+      assert reason =~ "at most #{ceiling}"
+      assert reason =~ "split"
+    end
+
+    test "accepts an estimate that is exactly a working day" do
+      project = insert(:project)
+      ceiling = Task.estimate_ceiling()
+
+      assert {:ok, task} =
+               Tasks.create_task(project, %{
+                 "title" => "A full day",
+                 "estimate" => %{
+                   "optimistic" => ceiling,
+                   "likely" => ceiling,
+                   "pessimistic" => ceiling
+                 }
+               })
+
+      assert Task.expected(task) == ceiling
+    end
+  end
+
+  describe "scheduling" do
+    test "planned_start_on is an ordinary edit, and null is the backlog" do
+      project = insert(:project)
+      day = ~D[2026-09-07]
+
+      assert {:ok, task} = Tasks.create_task(project, %{"title" => "Planned"})
+      assert task.planned_start_on == nil
+      assert task.priority == 3
+
+      assert {:ok, task} =
+               Tasks.update_task(task, %{"planned_start_on" => day, "priority" => 1})
+
+      assert task.planned_start_on == day
+      assert task.priority == 1
+
+      assert {:ok, task} = Tasks.update_task(task, %{"planned_start_on" => nil})
+      assert task.planned_start_on == nil
+    end
+
+    test "refuses a priority outside the five levels" do
+      project = insert(:project)
+
+      assert {:error, changeset} = Tasks.create_task(project, %{"title" => "X", "priority" => 6})
+      assert %{priority: ["is invalid"]} = errors_on(changeset)
+    end
+
+    test "a summary node cannot be scheduled" do
+      project = insert(:project)
+      cover = insert(:summary_task, project: project)
+
+      assert {:error, changeset} =
+               Tasks.update_task(cover, %{"planned_start_on" => ~D[2026-09-07]})
+
+      assert %{planned_start_on: ["a summary node cannot be scheduled"]} = errors_on(changeset)
+    end
+
+    test "splitting a job into a cover drops its schedule but keeps its priority" do
+      project = insert(:project)
+
+      task =
+        insert(:task,
+          project: project,
+          planned_start_on: ~D[2026-09-07],
+          priority: 1
+        )
+
+      assert {:ok, %Task{children: [_child]}} =
+               Tasks.split_task(task, [%{"title" => "The actual work"}])
+
+      cover = Tasks.get_task!(task.id)
+      assert cover.kind == :summary
+      assert cover.planned_start_on == nil
+      assert cover.priority == 1
+    end
+
+    test "a cover reports the earliest day under it and counts what is unplanned" do
+      project = insert(:project)
+      cover = insert(:summary_task, project: project)
+
+      insert(:task, project: project, parent_id: cover.id, planned_start_on: ~D[2026-09-14])
+      insert(:task, project: project, parent_id: cover.id, planned_start_on: ~D[2026-09-07])
+      insert(:task, project: project, parent_id: cover.id, planned_start_on: nil)
+
+      rolled =
+        project
+        |> Tasks.list_tasks(%{})
+        |> Enum.find(&(&1.id == cover.id))
+
+      assert rolled.planned_start_on == ~D[2026-09-07]
+      assert rolled.unscheduled_tasks == 1
+    end
+
+    test "a cover with nothing planned under it reports no day at all" do
+      project = insert(:project)
+      cover = insert(:summary_task, project: project)
+      insert(:task, project: project, parent_id: cover.id, planned_start_on: nil)
+
+      rolled =
+        project
+        |> Tasks.list_tasks(%{})
+        |> Enum.find(&(&1.id == cover.id))
+
+      assert rolled.planned_start_on == nil
+      assert rolled.unscheduled_tasks == 1
+    end
+  end
+
   defp ids(tasks), do: Enum.map(tasks, & &1.id)
 
   defp status_of(project, %Task{id: id}) do

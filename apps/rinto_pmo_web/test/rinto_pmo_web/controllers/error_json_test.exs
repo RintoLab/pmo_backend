@@ -80,6 +80,11 @@ defmodule RintoPMOWeb.ErrorJSONTest do
        %{field: "actual_minutes", reason: "must be a non-negative whole number of minutes"}},
     task_not_splittable:
       {422, "The task cannot be split in its current state.", %{current_status: "done"}},
+    dependency_out_of_order:
+      {422, "A task cannot be scheduled before the work it is waiting for.",
+       %{depends_on_id: "task-2", depends_on_planned_start_on: "2026-09-14"}},
+    task_not_dependable:
+      {422, "A summary node cannot take part in a dependency.", %{kind: "summary"}},
     document_not_formal:
       {422, "The document has to be adopted, and not already used, for this.", %{status: "draft"}},
     decomposition_exists:

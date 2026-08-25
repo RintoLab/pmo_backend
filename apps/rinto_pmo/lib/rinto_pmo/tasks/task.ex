@@ -42,7 +42,7 @@ defmodule RintoPMO.Tasks.Task do
       leaves, because a childless cover is a node that can neither be worked
       nor roll anything up -- a dead row in the middle of the tree.
 
-  ## Estimates are three-point, in minutes
+  ## Estimates are three-point, in minutes, and capped at a day
 
   `optimistic` / `likely` / `pessimistic`, all three or none: a half-given
   three-point estimate has no expected value, so it is not a smaller estimate
@@ -51,6 +51,40 @@ defmodule RintoPMO.Tasks.Task do
   Minutes because a breakdown sums, and integers sum exactly. Any coarser unit
   would force this domain to decide how long a working day is, which is not its
   business.
+
+  None of the three may exceed `estimate_ceiling/0`, one working day. That is
+  not a limit on ambition, it is what makes `RintoPMO.Schedule` total: since no
+  work item is larger than a day, no work item can fail to fit in some week,
+  and the packer never needs a branch for the task that never lands anywhere.
+  A task that wants more than a day is one that was not broken down far enough,
+  and `split_changeset/1` is the answer to that.
+
+  ## Scheduling is one column, and it is also the act
+
+  `planned_start_on` says the earliest day the task may be worked. It does not
+  say where it lands -- `RintoPMO.Schedule` decides that by filling each
+  workday's capacity in priority order, so a task can start later than this
+  day, and can spill across days when the day it landed in was already partly
+  full.
+
+  Null is the backlog. There is no `:backlog` status, and there must not be
+  one: "which slot of the plan is this in" is a many-valued question -- this
+  week, three weeks out, nowhere -- and a status enum could hold only two of
+  those answers. It is the same rule as `kind` above. Position is not progress.
+
+  An iteration is a week, and it is not stored anywhere: it is an argument to
+  the packer, not a row. Nothing about it is scoped to a project either,
+  because one person's week spans every project they are working in.
+
+  `priority` is 1 (highest) to 5, defaulting to 3, and never null: "no opinion"
+  is "normal". It decides who gets cut when a week is over-filled, so it sorts
+  ahead of everything else -- work carried over from last week has no claim to
+  jump the queue.
+
+  A `:summary` row holds no `planned_start_on`, for exactly the reason it holds
+  no assignee: a week is a claim on somebody's time, and a cover has no
+  somebody. It keeps its `priority` -- how much a chunk matters does not change
+  by learning that it is three jobs rather than one.
 
   A `:summary` row stores none of it, like everything else that measures work.
   Its estimate is the sum over its descendants, computed on read by
@@ -95,6 +129,12 @@ defmodule RintoPMO.Tasks.Task do
   @statuses [:open, :in_progress, :done, :cancelled]
   @live_statuses [:open, :in_progress]
   @difficulties [1, 2, 3, 5, 8, 13, 21]
+  @priorities [1, 2, 3, 4, 5]
+
+  # One working day, in minutes. The ceiling on a three-point estimate, and the
+  # reason `RintoPMO.Schedule` never has to special-case a task that cannot fit
+  # anywhere: no work item is larger than a day.
+  @estimate_ceiling 480
 
   # The event table, read as "from this status, this event lands there".
   # Anything absent is a `task_state_conflict`; there is no silent no-op,
@@ -117,6 +157,16 @@ defmodule RintoPMO.Tasks.Task do
     field :description, :string
     field :status, Ecto.Enum, values: @statuses, default: :open
     field :due_on, :date
+
+    # The earliest day this task may be worked, and at the same time the whole
+    # of "put it in that iteration". Null is the backlog. Where it actually
+    # lands is `RintoPMO.Schedule`'s answer, not this column's. A cover holds
+    # none, like everything else that lays claim to somebody's time.
+    field :planned_start_on, :date
+
+    # 1 highest, 3 normal. Not null: "no opinion" is "normal", and unlike an
+    # estimate a missing priority says nothing worth counting.
+    field :priority, :integer, default: 3
     field :estimate_optimistic, :integer
     field :estimate_likely, :integer
     field :estimate_pessimistic, :integer
@@ -144,6 +194,12 @@ defmodule RintoPMO.Tasks.Task do
     # `unmeasured_tasks` counts descendants with no `actual_minutes`.
     field :unrated_tasks, :integer, virtual: true
     field :unmeasured_tasks, :integer, virtual: true
+
+    # How many work descendants under a cover are still in the backlog -- no
+    # `planned_start_on`, so no week will ever consider them. A cover whose
+    # span said "starts in week 12" while half of it was unplanned would be
+    # reading as a schedule when it is a fragment of one.
+    field :unscheduled_tasks, :integer, virtual: true
     field :assigned_at, :utc_datetime_usec
     field :started_at, :utc_datetime_usec
     field :completed_at, :utc_datetime_usec
@@ -189,6 +245,22 @@ defmodule RintoPMO.Tasks.Task do
   """
   @spec difficulties() :: [pos_integer()]
   def difficulties, do: @difficulties
+
+  @doc """
+  The priority levels a task can carry, highest first.
+  """
+  @spec priorities() :: [pos_integer()]
+  def priorities, do: @priorities
+
+  @doc """
+  The largest a single three-point estimate may be, in minutes.
+
+  One working day. A work item bigger than this was not broken down far
+  enough, and `RintoPMO.Tasks.split_task/2` is the answer to that rather than
+  a wider day.
+  """
+  @spec estimate_ceiling() :: pos_integer()
+  def estimate_ceiling, do: @estimate_ceiling
 
   @doc """
   The PERT expected value of a three-point estimate, in minutes.
@@ -266,10 +338,13 @@ defmodule RintoPMO.Tasks.Task do
       :estimate_likely,
       :estimate_pessimistic,
       :difficulty,
-      :actual_minutes
+      :actual_minutes,
+      :planned_start_on,
+      :priority
     ])
-    |> validate_required([:title, :kind])
+    |> validate_required([:title, :kind, :priority])
     |> validate_length(:title, min: 1, max: 255)
+    |> validate_inclusion(:priority, @priorities)
     |> reject_work_on_summary()
     |> put_assigned_at()
     |> foreign_key_constraint(:project_id)
@@ -279,6 +354,10 @@ defmodule RintoPMO.Tasks.Task do
     |> check_constraint(:kind,
       name: :tasks_summary_holds_no_work_check,
       message: "a summary node cannot hold work"
+    )
+    |> check_constraint(:priority,
+      name: :tasks_priority_check,
+      message: "is invalid"
     )
   end
 
@@ -290,6 +369,12 @@ defmodule RintoPMO.Tasks.Task do
     # goes the same way: the chunk is worth what its parts are worth, and a
     # guess made before anyone knew what the parts were is not that. Difficulty
     # and actual duration are work measurements too, and leave with them.
+    #
+    # `planned_start_on` leaves for the same reason as the assignee: the chunk
+    # is worked in whatever weeks its children are worked in, and a cover that
+    # kept its own slot would be claiming time that the children now claim.
+    # `priority` stays -- how much the chunk matters did not change by learning
+    # that it is three jobs rather than one.
     change(task,
       kind: :summary,
       status: :open,
@@ -297,6 +382,7 @@ defmodule RintoPMO.Tasks.Task do
       assigned_at: nil,
       started_at: nil,
       completed_at: nil,
+      planned_start_on: nil,
       estimate_optimistic: nil,
       estimate_likely: nil,
       estimate_pessimistic: nil,
@@ -363,17 +449,24 @@ defmodule RintoPMO.Tasks.Task do
   defp apply_event(chset, :reopen, _attrs),
     do: change(chset, status: :open, started_at: nil, completed_at: nil, actual_minutes: nil)
 
+  # A cover holds no assignee and no schedule, which are the same rule twice: an
+  # iteration is a claim on somebody's time, and a cover has no somebody.
   defp reject_work_on_summary(chset) do
     case fetch_field!(chset, :kind) do
-      :summary -> validate_assignee_absent(chset)
-      :work -> chset
+      :summary ->
+        chset
+        |> validate_absent(:assignee_id, "a summary node cannot be assigned")
+        |> validate_absent(:planned_start_on, "a summary node cannot be scheduled")
+
+      :work ->
+        chset
     end
   end
 
-  defp validate_assignee_absent(chset) do
-    case fetch_field(chset, :assignee_id) do
+  defp validate_absent(chset, field, message) do
+    case fetch_field(chset, field) do
       {_source, nil} -> chset
-      _present -> add_error(chset, :assignee_id, "a summary node cannot be assigned")
+      _present -> add_error(chset, field, message)
     end
   end
 

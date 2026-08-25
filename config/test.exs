@@ -35,7 +35,8 @@ config :rinto_pmo, :injectors,
   reference_resolver: RintoPMO.References.ResolverMock,
   links: RintoPMO.LinksMock,
   ai: RintoPMO.AIMock,
-  search: RintoPMO.SearchMock
+  search: RintoPMO.SearchMock,
+  holidays: RintoPMO.Calendar.HolidaysMock
 
 # Uploads land in a scratch directory: tests write real files, and the project
 # tree should not collect them.
