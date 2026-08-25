@@ -19,7 +19,10 @@ defmodule RintoPMO.Application do
       RintoPMO.Agent.PiSession.Supervisor,
       RintoPMO.Conversations.Recorder.Supervisor,
       RintoPMO.Documents.Session.Supervisor,
-      RintoPMO.Agent.ModelCatalog
+      RintoPMO.Agent.ModelCatalog,
+      # The dependency edges, held in memory so the cycle check never queries.
+      # After the Repo, because it loads from it on start.
+      RintoPMO.Tasks.DependencyGraph
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: RintoPMO.Supervisor)

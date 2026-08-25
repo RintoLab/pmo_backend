@@ -20,6 +20,23 @@ defmodule RintoPMOWeb.V1.TaskJSON do
     %{data: data(task), children: Enum.map(task.children, &data/1)}
   end
 
+  @doc """
+  Both ends of a task's dependency edges.
+
+  `depends_on` is what it waits for; `dependents` is what waits for it. A
+  prerequisite that is `done` or `cancelled` still appears -- the edge is
+  still a true statement about the work -- but holds nothing up, which the
+  reader can see from its `status`.
+  """
+  def dependencies(%{depends_on: depends_on, dependents: dependents}) do
+    %{
+      data: %{
+        depends_on: Enum.map(depends_on, &data/1),
+        dependents: Enum.map(dependents, &data/1)
+      }
+    }
+  end
+
   def stats(%{stats: stats}) do
     %{
       data: %{
@@ -44,6 +61,11 @@ defmodule RintoPMOWeb.V1.TaskJSON do
   On a `:summary` row, `status` and `estimate` are the rollup over its
   children, not the inert columns underneath them, and `unestimated_tasks`
   counts the work descendants that sum had to leave out.
+
+  `planned_start_on` is the day the task was selected into a week, and null
+  means the backlog. It is not where the task lands -- that is the board's
+  answer, not a column. On a `:summary` row it is the earliest one underneath,
+  and `unscheduled_tasks` counts the jobs in the chunk that have none.
   """
   def data(%Task{} = task) do
     %{
@@ -63,6 +85,9 @@ defmodule RintoPMOWeb.V1.TaskJSON do
       unrated_tasks: task.unrated_tasks,
       actual_minutes: task.actual_minutes,
       unmeasured_tasks: task.unmeasured_tasks,
+      planned_start_on: task.planned_start_on,
+      unscheduled_tasks: task.unscheduled_tasks,
+      priority: task.priority,
       assigned_at: task.assigned_at,
       started_at: task.started_at,
       completed_at: task.completed_at,

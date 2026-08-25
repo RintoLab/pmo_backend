@@ -44,6 +44,9 @@ defmodule RintoPMO.Documents do
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Markdown
   alias RintoPMO.Documents.Notifier
+  alias RintoPMO.Documents.Revisions
+  alias RintoPMO.Links
+  alias RintoPMO.References.Guard
   alias RintoPMO.Settings
   alias RintoPMO.Utils
 
@@ -60,18 +63,12 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def list_documents(filter) when is_map(filter) do
-    latest_revision_query =
-      from revision in DocumentRevision,
-        where: revision.document_id == parent_as(:document).id,
-        order_by: [desc: revision.id],
-        limit: 1
-
     Document
     |> from(as: :document)
     |> where([document], is_nil(document.archived_at))
     |> filter_documents(filter)
-    |> join(:inner_lateral, [document: _document], revision in subquery(latest_revision_query),
-      on: true
+    |> join(:inner, [document: document], revision in subquery(Revisions.latest()),
+      on: revision.document_id == document.id
     )
     |> order_by([_document, revision], desc: revision.id)
     |> select([document, revision], {document, revision})
@@ -118,21 +115,32 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def create_document(attrs) do
-    with {:ok, attrs} <- put_default_project(attrs),
+    with :ok <- Guard.check(attr(attrs, :markdown, nil)),
+         {:ok, attrs} <- put_default_project(attrs),
          {:ok, author_id} <- document_author(attrs),
          {:ok, attrs} <- split_markdown(attrs, author_id) do
-      %Document{}
-      |> Document.creation_changeset(attrs)
-      |> Repo.insert()
-      |> case do
-        {:ok, %Document{revisions: [revision]} = document} ->
-          {:ok, %{document | latest_revision: revision}}
-
-        {:error, %Changeset{} = changeset} ->
-          {:error, changeset}
-      end
+      Repo.transact(&insert_document(&1, attrs))
     end
     |> unwrap_error()
+  end
+
+  # Creation does not go through `insert_revision/4` -- the first revision and
+  # its blocks are nested into the document's own changeset -- so it needs its
+  # own call into the index. Without this, a document created with references
+  # in its body would have none of them indexed until something else happened
+  # to save it.
+  defp insert_document(repo, attrs) do
+    %Document{}
+    |> Document.creation_changeset(attrs)
+    |> repo.insert()
+    |> case do
+      {:ok, %Document{revisions: [revision]} = document} ->
+        Links.sync_document(repo, revision)
+        {:ok, %{document | latest_revision: revision}}
+
+      {:error, %Changeset{} = changeset} ->
+        {:error, changeset}
+    end
   end
 
   @doc """
@@ -148,6 +156,11 @@ defmodule RintoPMO.Documents do
 
   @doc """
   Idempotently archives a document.
+
+  Nothing else has to happen. Search leaves archived content out by joining to
+  this flag rather than by reading a copy of it, so putting a document away
+  takes it out of results the moment this row is written -- there is no
+  projection to bring back into line, and nothing that could be forgotten.
   """
   @impl true
   def archive_document(%Document{} = document) do
@@ -397,6 +410,26 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def create_revision(%Document{} = document, attrs) do
+    with :ok <- Guard.check_all(block_op_contents(attrs)) do
+      insert_new_revision(document, attrs)
+    end
+    |> unwrap_error()
+  end
+
+  # Every body a revision carries, checked before any of it is written: a
+  # caller told about the first bad address would fix it and be refused again
+  # for the second.
+  defp block_op_contents(attrs) do
+    attrs
+    |> attr(:block_ops, [])
+    |> List.wrap()
+    |> Enum.map(fn
+      operation when is_map(operation) -> attr(operation, :content, nil)
+      _other -> nil
+    end)
+  end
+
+  defp insert_new_revision(%Document{} = document, attrs) do
     Repo.transact(fn repo ->
       locked_document =
         Document
@@ -407,7 +440,6 @@ defmodule RintoPMO.Documents do
       parent = latest_revision!(repo, locked_document, preload_blocks?: true)
       insert_revision(repo, locked_document, parent, attrs)
     end)
-    |> unwrap_error()
   end
 
   @doc """
@@ -466,6 +498,12 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def propose_block(%Document{} = document, attrs) do
+    with :ok <- Guard.check(attr(attrs, :content, nil)) do
+      do_propose_block(document, attrs)
+    end
+  end
+
+  defp do_propose_block(%Document{} = document, attrs) do
     Repo.transact(fn repo ->
       locked_document =
         Document
@@ -498,6 +536,12 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def propose_title(%Document{} = document, attrs) do
+    with :ok <- Guard.check(attr(attrs, :content, nil)) do
+      do_propose_title(document, attrs)
+    end
+  end
+
+  defp do_propose_title(%Document{} = document, attrs) do
     Repo.transact(fn repo ->
       locked_document =
         Document
@@ -537,6 +581,12 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def propose_document(%Document{} = document, attrs) do
+    with :ok <- Guard.check(attr(attrs, :markdown, nil)) do
+      do_propose_document(document, attrs)
+    end
+  end
+
+  defp do_propose_document(%Document{} = document, attrs) do
     Repo.transact(fn repo ->
       locked_document =
         Document
@@ -1102,9 +1152,12 @@ defmodule RintoPMO.Documents do
       true ->
         case BlockOps.apply(parent.blocks, attr(attrs, :block_ops, [])) do
           {:ok, block_entries} ->
+            supersede(repo, parent)
+
             changeset
-            |> put_block_snapshots(block_entries)
+            |> put_block_snapshots(block_entries, parent.blocks)
             |> repo.insert()
+            |> index_revision(repo, parent)
 
           {:error, code, details} ->
             {:error, {code, details}}
@@ -1112,17 +1165,76 @@ defmodule RintoPMO.Documents do
     end
   end
 
-  defp put_block_snapshots(changeset, block_entries) do
+  # Before the insert, not after: `document_revisions_one_latest_per_document`
+  # permits one current revision per document at every moment rather than
+  # merely at commit, and a partial unique index cannot be deferred. Both
+  # statements are in the caller's transaction, so an insert that fails takes
+  # this back with it and the parent is the latest again.
+  defp supersede(repo, %DocumentRevision{id: id}) do
+    DocumentRevision
+    |> where([revision], revision.id == ^id)
+    |> repo.update_all(set: [is_latest: false])
+  end
+
+  # In the same transaction as the revision, because an index written afterwards
+  # has a window where the body says one thing and "who points at this?" says
+  # another. See `RintoPMO.Links`.
+  defp index_revision({:ok, %DocumentRevision{} = revision}, repo, parent) do
+    Links.sync_document(repo, revision)
+    retire_embeddings(repo, parent)
+    {:ok, revision}
+  end
+
+  defp index_revision(result, _repo, _parent), do: result
+
+  # Whatever the new revision needed has been carried onto its own rows, so the
+  # superseded ones are holding four kilobytes apiece to answer a question
+  # nobody asks: history is not searched. Clearing them also leaves exactly one
+  # snapshot of each block carrying a vector, which is what lets the embedding
+  # worker recognise its own backlog without qualifying every row.
+  defp retire_embeddings(repo, %DocumentRevision{id: id}) do
+    DocumentBlock
+    |> where([block], block.revision_id == ^id)
+    |> where([block], not is_nil(block.embedding))
+    |> repo.update_all(set: [embedding: nil])
+  end
+
+  @doc false
+  # Every block of a revision is written as a new row, including the ones nobody
+  # touched -- so a vector would be lost on all of them each time one changed,
+  # and nineteen blocks out of twenty would be re-embedded for nothing.
+  #
+  # They are not lost, because the previous revision's blocks are already in
+  # hand here: `BlockOps.apply/2` was just run against them. A block whose
+  # content is byte-for-byte what it was carries its vector forward; one that
+  # changed, or that did not exist before, starts null and the embedding worker
+  # picks it up.
+  #
+  # **The invalidation is structural.** Nothing compares anything at read time
+  # and nothing has to remember to clear a column, because a new row simply has
+  # no vector unless the text it holds is the text the vector was made from.
+  defp put_block_snapshots(changeset, block_entries, previous_blocks) do
+    previous = Map.new(previous_blocks, &{&1.block_id, &1})
+
     block_changesets =
       block_entries
       |> Enum.with_index()
       |> Enum.map(fn {entry, position} ->
-        %DocumentBlock{block_id: entry.block_id, position: position}
+        %DocumentBlock{
+          block_id: entry.block_id,
+          position: position,
+          embedding: carried_forward(previous[entry.block_id], entry.content)
+        }
         |> DocumentBlock.changeset(%{actor_id: entry.actor_id, content: entry.content})
       end)
 
     Changeset.put_assoc(changeset, :blocks, block_changesets)
   end
+
+  defp carried_forward(%DocumentBlock{content: content, embedding: embedding}, content),
+    do: embedding
+
+  defp carried_forward(_absent_or_changed, _content), do: nil
 
   defp latest_revision!(%Document{} = document, options) do
     latest_revision!(Repo, document, options)
@@ -1686,6 +1798,11 @@ defmodule RintoPMO.Documents do
   defp unwrap_error({:ok, value}), do: {:ok, value}
   defp unwrap_error({:error, %Changeset{} = changeset}), do: {:error, changeset}
   defp unwrap_error({:error, {code, details}}), do: {:error, code, details}
+
+  # Already in the shape `RintoPMOWeb.FallbackController` renders -- a refusal
+  # raised before this context wrapped anything, such as a body pointing at
+  # something that is not there.
+  defp unwrap_error({:error, code, details}), do: {:error, code, details}
 
   defp annotations, do: Utils.module(:annotations)
 

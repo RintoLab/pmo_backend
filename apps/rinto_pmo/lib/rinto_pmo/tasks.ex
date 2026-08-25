@@ -38,11 +38,27 @@ defmodule RintoPMO.Tasks do
   ## Estimates
 
   Three-point, in minutes, and never written as raw columns: `estimate` comes
-  in as one object so that "all three or none" and "optimistic <= likely <=
-  pessimistic" can be checked as one thing and refused as `invalid_estimate`.
+  in as one object so that "all three or none", "optimistic <= likely <=
+  pessimistic", and the one-working-day ceiling can be checked as one thing and
+  refused as `invalid_estimate`. The ceiling is what lets `RintoPMO.Schedule`
+  assume every work item fits in a day, so an estimate over it is a task to
+  split rather than a number to accept.
   A cover's estimate is the sum over its descendants, rolled up on read exactly
   like its status, and carries a count of the descendants it had to skip so a
   partial sum can never pass for a whole one.
+
+  ## Scheduling
+
+  `planned_start_on` is the day a task was selected into a week, and null is
+  the backlog. It is an ordinary edit here; what a week actually holds is
+  `RintoPMO.Schedule`'s question, not this module's, because the answer depends
+  on every other task competing for the same minutes across every project.
+
+  A cover carries no `planned_start_on` of its own. On read it is given the
+  earliest one under it, plus `unscheduled_tasks` -- how many jobs in the chunk
+  are still in the backlog -- for the same reason the estimate carries
+  `unestimated_tasks`: a span that quietly skipped the unplanned half would
+  read as a schedule while being a fragment of one.
 
   ## Counts
 
@@ -56,9 +72,13 @@ defmodule RintoPMO.Tasks do
   alias Ecto.Changeset
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Links
   alias RintoPMO.Projects.Project
+  alias RintoPMO.References.Guard
   alias RintoPMO.Settings
   alias RintoPMO.Tasks.Breakdown
+  alias RintoPMO.Tasks.Dependency
+  alias RintoPMO.Tasks.DependencyGraph
   alias RintoPMO.Tasks.EstimationWorker
   alias RintoPMO.Tasks.Notifier
   alias RintoPMO.Tasks.Task
@@ -167,6 +187,12 @@ defmodule RintoPMO.Tasks do
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
 
     @callback project_stats(Project.t()) :: stats()
+
+    @callback add_dependency(Task.t(), UUIDv7.t()) ::
+                {:ok, RintoPMO.Tasks.Dependency.t()} | {:error, Ecto.Changeset.t()} | refusal()
+    @callback remove_dependency(Task.t(), UUIDv7.t()) :: :ok
+    @callback list_dependencies(Task.t()) :: [Task.t()]
+    @callback list_dependents(Task.t()) :: [Task.t()]
   end
 
   @behaviour Behaviour
@@ -223,14 +249,13 @@ defmodule RintoPMO.Tasks do
   def create_task(%Project{} = project, attrs) do
     kind = kind_of(attrs)
 
-    with {:ok, attrs} <- put_estimate(attrs, kind),
+    with :ok <- Guard.check(description_of(attrs)),
+         {:ok, attrs} <- put_estimate(attrs, kind),
          {:ok, attrs} <- put_difficulty(attrs, kind),
-         {:ok, attrs} <- put_actual(attrs, kind) do
-      chset = Task.creation_changeset(%Task{project_id: project.id}, attrs)
-
-      with {:ok, chset} <- validate_parent(chset, project.id, nil) do
-        Repo.insert(chset)
-      end
+         {:ok, attrs} <- put_actual(attrs, kind),
+         chset = Task.creation_changeset(%Task{project_id: project.id}, attrs),
+         {:ok, chset} <- validate_parent(chset, project.id, nil) do
+      Repo.transact(&insert_task(&1, chset))
     end
   end
 
@@ -242,22 +267,39 @@ defmodule RintoPMO.Tasks do
   """
   @impl true
   def update_task(%Task{} = task, attrs) do
-    with {:ok, attrs} <- put_estimate(attrs, task.kind),
+    with :ok <- Guard.check(description_of(attrs)),
+         {:ok, attrs} <- put_estimate(attrs, task.kind),
          {:ok, attrs} <- put_difficulty(attrs, task.kind),
-         {:ok, attrs} <- put_actual(attrs, task.kind) do
-      chset = Task.changeset(task, attrs)
+         {:ok, attrs} <- put_actual(attrs, task.kind),
+         chset = Task.changeset(task, attrs),
+         {:ok, chset} <- validate_parent(chset, task.project_id, task.id),
+         :ok <- check_schedule_move(task, chset) do
+      Repo.transact(&apply_move(&1, chset, task.parent_id))
+    end
+  end
 
-      with {:ok, chset} <- validate_parent(chset, task.project_id, task.id) do
-        Repo.transact(&apply_move(&1, chset, task.parent_id))
-      end
+  # The transaction exists so the index is written with the task rather than
+  # after it -- see `RintoPMO.Links`. It is also where `create_task/2` and
+  # `update_task/2` each keep the rest of their one-atomic-act work.
+  defp description_of(attrs), do: Map.get(attrs, :description) || Map.get(attrs, "description")
+
+  defp insert_task(repo, chset) do
+    with {:ok, task} <- repo.insert(chset) do
+      index(repo, task)
+      {:ok, task}
     end
   end
 
   defp apply_move(repo, chset, old_parent_id) do
     with {:ok, updated} <- repo.update(chset) do
       demote_if_emptied(repo, old_parent_id, updated.parent_id)
+      index(repo, updated)
       {:ok, updated}
     end
+  end
+
+  defp index(repo, %Task{} = task) do
+    Links.sync(repo, "task", task.id, task.description)
   end
 
   @doc """
@@ -276,8 +318,14 @@ defmodule RintoPMO.Tasks do
   """
   @impl true
   def delete_task(%Task{} = task) do
-    Repo.transact(&remove(&1, task))
-    |> unwrap_refusal()
+    # The edges go with the row, in the database, by cascade -- which the
+    # application never sees, so the cache is told here. Forgetting to would
+    # only leave edges behind that refuse a later addition they should have
+    # allowed; see `RintoPMO.Tasks.DependencyGraph`.
+    with {:ok, deleted} <- unwrap_refusal(Repo.transact(&remove(&1, task))) do
+      :ok = DependencyGraph.forget_task(task.id)
+      {:ok, deleted}
+    end
   end
 
   defp remove(repo, %Task{} = task) do
@@ -289,6 +337,8 @@ defmodule RintoPMO.Tasks do
   end
 
   defp detach(repo, %Task{} = task) do
+    Links.purge(repo, "task", task.id)
+
     with {:ok, deleted} <- repo.delete(task) do
       demote_if_emptied(repo, task.parent_id, nil)
       {:ok, deleted}
@@ -1090,10 +1140,12 @@ defmodule RintoPMO.Tasks do
         | status: rolled |> Enum.map(& &1.status) |> Task.rollup(),
           unestimated_tasks: Enum.sum_by(rolled, &count_unestimated/1),
           unrated_tasks: Enum.sum_by(rolled, &count_unrated/1),
-          unmeasured_tasks: Enum.sum_by(rolled, &count_unmeasured/1)
+          unmeasured_tasks: Enum.sum_by(rolled, &count_unmeasured/1),
+          unscheduled_tasks: Enum.sum_by(rolled, &count_unscheduled/1)
       }
       |> put_summed_estimate(rolled)
       |> put_summed_actual(rolled)
+      |> put_earliest_planned_start(rolled)
     end
   end
 
@@ -1108,6 +1160,26 @@ defmodule RintoPMO.Tasks do
   defp count_unmeasured(%Task{kind: :summary} = task), do: task.unmeasured_tasks
   defp count_unmeasured(%Task{actual_minutes: nil}), do: 1
   defp count_unmeasured(%Task{}), do: 0
+
+  defp count_unscheduled(%Task{kind: :summary} = task), do: task.unscheduled_tasks
+  defp count_unscheduled(%Task{planned_start_on: nil}), do: 1
+  defp count_unscheduled(%Task{}), do: 0
+
+  # The earliest day any part of the chunk was selected for. A cover stores no
+  # `planned_start_on` of its own -- the column is forbidden on a summary row --
+  # so this is written onto the struct on read, the same way the status and the
+  # summed estimate are.
+  #
+  # There is deliberately no matching end. Where the work *lands*, and therefore
+  # when the chunk finishes, is `RintoPMO.Schedule`'s answer and depends on
+  # every other task competing for the same weeks; a max taken over selections
+  # would look like that answer without being it.
+  defp put_earliest_planned_start(%Task{} = task, rolled) do
+    case rolled |> Enum.map(& &1.planned_start_on) |> Enum.reject(&is_nil/1) do
+      [] -> task
+      days -> %{task | planned_start_on: Enum.min(days, Date)}
+    end
+  end
 
   # Summed over the descendants that actually carry one. A cover with nothing
   # estimated under it reports no estimate rather than zero: zero is a claim
@@ -1196,7 +1268,8 @@ defmodule RintoPMO.Tasks do
     estimate = stringify_keys(estimate)
 
     with {:ok, values} <- fetch_estimate_values(estimate),
-         :ok <- validate_estimate_order(values) do
+         :ok <- validate_estimate_order(values),
+         :ok <- validate_estimate_ceiling(values) do
       flat = Map.new(values, fn {field, value} -> {"estimate_" <> field, value} end)
       {:ok, Map.merge(attrs, flat)}
     end
@@ -1233,8 +1306,200 @@ defmodule RintoPMO.Tasks do
     end
   end
 
+  # Only the pessimistic leg is checked. `validate_estimate_order/1` has already
+  # run, so it is the largest of the three; capping the other two would restate
+  # the ordering rather than add to it.
+  #
+  # The ceiling is what makes `RintoPMO.Schedule` total: no work item is larger
+  # than a working day, so none can fail to fit in some week, and the packer
+  # needs no branch for the task that lands nowhere. A task that wants more than
+  # a day was not broken down far enough, which is what `split_task/2` is for.
+  defp validate_estimate_ceiling([_optimistic, _likely, {_, pessimistic}]) do
+    ceiling = Task.estimate_ceiling()
+
+    if pessimistic > ceiling do
+      estimate_error("pessimistic", "must be at most #{ceiling} minutes; split the task instead")
+    else
+      :ok
+    end
+  end
+
   defp estimate_error(field, reason) do
     {:error, :invalid_estimate, %{field: field, reason: reason}}
+  end
+
+  @doc """
+  Records that `task` cannot start until `depends_on_id` is done.
+
+  Refuses three things, each for a reason the database cannot see:
+
+    * `:dependency_cycle` -- the edge would close a loop. `:digraph` decides:
+      a graph opened `[:acyclic]` rejects the closing edge and hands back the
+      path it would have closed, so the refusal names the loop rather than
+      merely asserting one. The same code the WBS uses when a parent would sit
+      under its own child, and with the same `cycle` detail: one shape that
+      loops, one answer, whichever graph it was.
+    * `:dependency_out_of_order` -- the prerequisite is scheduled after the
+      work waiting on it, or is not scheduled at all while that work is.
+    * `:task_not_dependable` -- a summary node. A cover holds no work of its
+      own, so ordering it against work would be ordering a heading.
+  """
+  @spec add_dependency(Task.t(), UUIDv7.t()) ::
+          {:ok, Dependency.t()} | {:error, Changeset.t()} | Behaviour.refusal()
+  @impl Behaviour
+  def add_dependency(%Task{} = task, depends_on_id) do
+    with {:ok, prerequisite} <- fetch_dependable(task, depends_on_id),
+         :ok <- check_dependency_cycle(task, prerequisite),
+         :ok <- check_dependency_schedule(task, [prerequisite]) do
+      # The cache is written immediately after the row, in this process. A
+      # missing edge is the one kind of staleness that could let a real cycle
+      # through, so it is the one kind that is not allowed to depend on
+      # anything asynchronous.
+      with {:ok, edge} <-
+             %{task_id: task.id, depends_on_id: prerequisite.id}
+             |> Dependency.changeset()
+             |> Repo.insert() do
+        :ok = DependencyGraph.put(task.id, prerequisite.id)
+        {:ok, edge}
+      end
+    end
+  end
+
+  @doc """
+  Removes an edge. Absent is the same as removed.
+  """
+  @spec remove_dependency(Task.t(), UUIDv7.t()) :: :ok
+  @impl Behaviour
+  def remove_dependency(%Task{} = task, depends_on_id) do
+    Dependency
+    |> where([edge], edge.task_id == ^task.id and edge.depends_on_id == ^depends_on_id)
+    |> Repo.delete_all()
+
+    DependencyGraph.drop(task.id, depends_on_id)
+  end
+
+  @doc """
+  What `task` is waiting for.
+  """
+  @spec list_dependencies(Task.t()) :: [Task.t()]
+  @impl Behaviour
+  def list_dependencies(%Task{} = task) do
+    Task
+    |> join(:inner, [prerequisite], edge in Dependency, on: edge.depends_on_id == prerequisite.id)
+    |> where([_prerequisite, edge], edge.task_id == ^task.id)
+    |> order_by([prerequisite], asc: prerequisite.inserted_at)
+    |> Repo.all()
+  end
+
+  @doc """
+  What is waiting for `task`.
+  """
+  @spec list_dependents(Task.t()) :: [Task.t()]
+  @impl Behaviour
+  def list_dependents(%Task{} = task) do
+    Task
+    |> join(:inner, [waiting], edge in Dependency, on: edge.task_id == waiting.id)
+    |> where([_waiting, edge], edge.depends_on_id == ^task.id)
+    |> order_by([waiting], asc: waiting.inserted_at)
+    |> Repo.all()
+  end
+
+  defp fetch_dependable(%Task{kind: :summary} = task, _depends_on_id),
+    do: {:error, :task_not_dependable, %{id: task.id, kind: :summary}}
+
+  defp fetch_dependable(%Task{}, depends_on_id) do
+    case Repo.get(Task, depends_on_id) do
+      nil -> {:error, :task_not_found, %{depends_on_id: depends_on_id}}
+      %Task{kind: :summary} = cover -> {:error, :task_not_dependable, %{id: cover.id}}
+      %Task{} = prerequisite -> {:ok, prerequisite}
+    end
+  end
+
+  # "A depends on B" closes a loop exactly when B already depends on A, through
+  # any chain. So there is no graph to build and nothing to test for acyclicity:
+  # one reachability walk over `RintoPMO.Tasks.DependencyGraph`, in memory, no
+  # query. The walk returns the chain, so the refusal still names the loop.
+  #
+  # A task depending on itself is the same question with a chain of one, and is
+  # answered here rather than by the check constraint underneath, which is the
+  # backstop.
+  defp check_dependency_cycle(%Task{id: id}, %Task{id: id}),
+    do: {:error, :dependency_cycle, %{cycle: [id]}}
+
+  defp check_dependency_cycle(%Task{} = task, %Task{} = prerequisite) do
+    case DependencyGraph.path(task.id, prerequisite.id) do
+      nil -> :ok
+      chain -> {:error, :dependency_cycle, %{cycle: chain}}
+    end
+  end
+
+  # The rule the database cannot hold, because it spans rows: a prerequisite
+  # that is still live has to be selected into a week no later than the work
+  # waiting on it.
+  #
+  # "Still live" is the whole of it. A `:done` prerequisite constrains nothing,
+  # and neither does a `:cancelled` one -- freezing everything downstream of a
+  # dropped task would leave no way out except deleting an edge that is still a
+  # true statement about the work.
+  #
+  # Nothing is checked when the waiting task is unscheduled: a task in the
+  # backlog claims to happen at no particular time, so there is nothing for a
+  # prerequisite to be later than.
+  # The same rule, from the other two directions. Moving a task is moving one
+  # end of every edge it sits on, so both ends get checked: the work it waits
+  # for must not end up later than it, and the work waiting on it must not end
+  # up earlier.
+  #
+  # Only when the day actually changes. Editing a title must not be able to
+  # fail because of a conflict somebody else created.
+  defp check_schedule_move(%Task{} = task, chset) do
+    case Changeset.fetch_change(chset, :planned_start_on) do
+      :error ->
+        :ok
+
+      {:ok, day} ->
+        moved = %{task | planned_start_on: day}
+
+        with :ok <- check_dependency_schedule(moved, list_dependencies(task)) do
+          check_dependents_schedule(moved, list_dependents(task))
+        end
+    end
+  end
+
+  defp check_dependents_schedule(%Task{} = moved, dependents) do
+    Enum.reduce_while(dependents, :ok, fn dependent, :ok ->
+      case check_dependency_schedule(dependent, [moved]) do
+        :ok -> {:cont, :ok}
+        refusal -> {:halt, refusal}
+      end
+    end)
+  end
+
+  defp check_dependency_schedule(%Task{planned_start_on: nil}, _prerequisites), do: :ok
+
+  defp check_dependency_schedule(%Task{} = task, prerequisites) do
+    live = Task.live_statuses()
+
+    conflicting =
+      Enum.find(prerequisites, fn prerequisite ->
+        prerequisite.status in live and
+          (is_nil(prerequisite.planned_start_on) or
+             Date.after?(prerequisite.planned_start_on, task.planned_start_on))
+      end)
+
+    case conflicting do
+      nil ->
+        :ok
+
+      %Task{} = prerequisite ->
+        {:error, :dependency_out_of_order,
+         %{
+           task_id: task.id,
+           planned_start_on: task.planned_start_on,
+           depends_on_id: prerequisite.id,
+           depends_on_planned_start_on: prerequisite.planned_start_on
+         }}
+    end
   end
 
   defp stringify_keys(map) when is_map(map) do

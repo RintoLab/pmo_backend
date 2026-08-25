@@ -122,6 +122,12 @@ defmodule RintoPMO.Agent.TaskEstimator do
   trouble this kind of work hits. They must satisfy optimistic <= likely <= \
   pessimistic.
 
+  A task is expected to fit in #{RintoPMO.Tasks.Task.estimate_ceiling()} \
+  minutes -- one working day. Estimate honestly rather than to that number: if \
+  the work truly needs more, say so, because an over-large estimate is refused \
+  and the task gets split, which is the right outcome. Shrinking the numbers to \
+  fit would hide that.
+
   Use the history to calibrate. When the new work looks like something that \
   has been done, match that sample's actuals rather than a generic guess. \
   When history is empty, estimate from the task alone. Difficulty, when \

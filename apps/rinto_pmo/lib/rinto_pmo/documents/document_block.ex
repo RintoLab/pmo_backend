@@ -4,6 +4,21 @@ defmodule RintoPMO.Documents.DocumentBlock do
 
   `block_id` remains stable across revisions while the schema primary key
   identifies this particular snapshot.
+
+  ## The vector belongs to the snapshot, not to the block
+
+  `embedding` describes *this* row's `content`. A new revision writes a new row
+  for every block, and one whose content is unchanged has its vector carried
+  onto the new row -- see `RintoPMO.Documents.put_block_snapshots/3`. A row for
+  content that changed starts null, which is the whole of "this needs
+  embedding".
+
+  Superseded rows have theirs cleared as the next revision lands, so exactly
+  one snapshot of each block carries a vector: the current one. History is not
+  searched, and keeping four kilobytes per row to answer nothing is not worth
+  the storage.
+
+  Never cast from a caller.
   """
 
   use RintoPMO, :schema
@@ -17,6 +32,7 @@ defmodule RintoPMO.Documents.DocumentBlock do
     field :block_id, UUIDv7
     field :content, :string
     field :position, :integer
+    field :embedding, Pgvector.Ecto.Vector
 
     belongs_to :revision, DocumentRevision
     belongs_to :actor, Actor

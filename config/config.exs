@@ -31,8 +31,96 @@ config :rinto_pmo,
     # -- is testable without a model.
     title_generator: RintoPMO.Agent.TitleGenerator,
     wbs_generator: RintoPMO.Agent.WbsGenerator,
-    task_estimator: RintoPMO.Agent.TaskEstimator
+    task_estimator: RintoPMO.Agent.TaskEstimator,
+    # Reading what a `rinto://` reference points at. Only the read side is
+    # injected: parsing a reference is pure and belongs to every write path,
+    # and mocking it would let a document test lie about what it stored.
+    reference_resolver: RintoPMO.References.Resolver,
+    # Only the read side of the reference index. `sync/5` and `purge/3` stay out
+    # of the injector on purpose: they are part of writing correctly, and a mock
+    # in their place would let a document test pass over an index nothing wrote.
+    links: RintoPMO.Links,
+    # Embeddings and reranking. A service, not an actor -- see `RintoPMO.AI`.
+    ai: RintoPMO.AI,
+    search: RintoPMO.Search,
+    # Fetched rather than vendored: a checked-in holiday file goes stale in
+    # silence, and a stale calendar reports the October holiday as seven
+    # working days with nothing anywhere complaining.
+    holidays: RintoPMO.Calendar.Holidays
   ]
+
+# The local inference service: embeddings and reranking.
+#
+# Not pi. pi is a coding assistant that holds a conversation, and neither of
+# these is a conversation -- they are single-shot calls whose whole job is to
+# turn text into numbers. They also have no actor behind them: `title_actor`
+# and the rest name *who* is answering, and nobody is answering here. So this
+# is configured as a service address rather than through `RintoPMO.Settings`.
+#
+# `token` is deliberately absent from this file. It is a credential, and
+# credentials are read at runtime -- see `config/runtime.exs`, and
+# `config/dev.secret.exs` for a developer's own copy.
+config :rinto_pmo, :ai,
+  base_url: "https://ai.kenton.wang/v1",
+  embedding_uri: "/embeddings",
+  rerank_uri: "/rerank",
+  score_uri: "/score",
+  # `"qwen3"` is the name this deployment serves under, not the model. Two
+  # different models answer to it, one per endpoint:
+  #
+  #   * `/embeddings` -- Qwen3-Embedding-0.6B, whose 1024 dimensions are what
+  #     every `embedding` column is declared as. Changing it means rewriting
+  #     those columns, so it is not a setting to flip casually.
+  #   * `/rerank` -- Qwen3-Reranker-0.6B, a separate model in that family
+  #     rather than the embedding model scoring pairs.
+  #
+  # Three keys rather than one because they are free to diverge, and one day
+  # will: the two sit at 0.6B, and 4B is materially better on Chinese content
+  # (C-MTEB retrieval 71.0 -> 77.0, reranking 71.3 -> 75.9). Do not read the
+  # shared name as a shared model -- `GET /v1/models` reports one entry, which
+  # is the gateway answering for whichever instance it routed to.
+  embedding_model: "qwen3",
+  rerank_model: "qwen3",
+  score_model: "qwen3",
+  # On the query side only -- Qwen3-Embedding is trained with an instruction
+  # there and none on the document side. Wording is a tuning knob, not a
+  # contract, which is why it is here rather than in the code. Qwen measure a
+  # 1-5% retrieval drop from leaving it out, and advise writing it in English
+  # even for other-language content, which is why this English sentence sits in
+  # front of Chinese queries.
+  #
+  # The reranker takes an instruction of its own and is currently given none,
+  # so it falls back to its default -- a *web search* task description, which
+  # is not what this is. Worth fixing when the reranker is worth tuning: at
+  # 0.6B it scores 5.41 on FollowIR, so it barely follows one.
+  query_instruction:
+    "Given a search query, retrieve relevant passages from a project's documents, tasks and discussions",
+  # Wall clock for one call. These are single-shot transformations, not a model
+  # thinking, so a slow one is a service in trouble rather than one working.
+  timeout: 30_000,
+  token: nil
+
+# `vector` is not a type Postgrex knows natively -- it comes with the pgvector
+# extension -- so the repo is given a type module that includes it. Set here
+# rather than per environment: it is a property of the schema, not of a
+# deployment.
+config :rinto_pmo, RintoPMO.Repo, types: RintoPMO.PostgrexTypes
+
+config :rinto_pmo, RintoPMO.Links,
+  # Characters of a source's body carried in a backlink row. Shorter than a
+  # hover card's: a backlink panel is a list of many, and a preview long enough
+  # to read in isolation makes the list unscannable.
+  max_excerpt_chars: 120
+
+config :rinto_pmo, RintoPMO.References.Resolver,
+  # References resolved in one request. A body carries as many as its author
+  # wrote, so the ceiling is on the request rather than on the document -- a
+  # client rendering a long page is expected to ask in batches.
+  max_references: 200,
+  # Characters of a target's body carried back for a preview. Enough to tell
+  # two similar things apart in a hover card, never enough to be a substitute
+  # for opening the thing.
+  max_excerpt_chars: 200
 
 config :rinto_pmo, RintoPMO.Attachments,
   # Where uploaded image bytes live. Override per environment; a release should
@@ -129,9 +217,52 @@ config :rinto_pmo, RintoPMO.OSProcess,
   # Unbounded by default: cutting a line is lossy, so it is opt-in per child.
   max_line_bytes: :infinity
 
+config :rinto_pmo, RintoPMO.Search,
+  # Candidates pulled by cosine distance before reranking. Measured rather than
+  # guessed: across three queries on this system's own content, the best result
+  # after reranking sat at cosine rank 27, 25 and 56 -- so twenty would have
+  # missed all three. Reranking a hundred costs about 100ms more than twenty,
+  # so depth is nearly free and shallowness is not.
+  #
+  # The number also happens to be the one Qwen publishes its own reranker
+  # figures on: every score in the Qwen3-Reranker table is measured over the
+  # top-100 candidates retrieved by Qwen3-Embedding-0.6B, which is this exact
+  # pairing. A local measurement and the model's published setup agreeing is
+  # worth more than either alone, and it means the published numbers describe
+  # a configuration we are actually running.
+  #
+  # Overridable per request -- see `RintoPMO.Search.search/2` on why the depth
+  # is the number worth varying.
+  recall_limit: 100,
+  # The ceiling on a caller's own `recall_limit`. A safety valve rather than a
+  # measurement: every candidate is one forward pass through the reranker and
+  # one document in a single HTTP request, and a thousand blocks at a few
+  # kilobytes apiece is already a multi-megabyte body. Refused rather than
+  # clamped, so a caller comparing depths knows which depth it actually got.
+  max_recall_limit: 1000,
+  # Results handed back after reranking.
+  result_limit: 20,
+  # Characters of a hit's text carried back. Enough to see why it matched.
+  max_excerpt_chars: 300
+
+config :rinto_pmo, RintoPMO.Embeddings.Worker,
+  # Rows embedded per source per pass. Also the signal for "there is more":
+  # a full batch means come straight back rather than wait out the interval.
+  batch_size: 100,
+  # Seconds before the next pass when there was nothing much to do. The gap
+  # between writing something and being able to find it, in other words --
+  # short because it costs nothing, since a pass over an empty backlog is seven
+  # indexed queries returning nothing.
+  interval_seconds: 15
+
 config :rinto_pmo, Oban,
   repo: RintoPMO.Repo,
-  queues: [default: 10],
+  queues: [
+    default: 10,
+    # Width one: two passes at once would hand the same rows to the inference
+    # service twice. `unique` on the worker keeps them from piling up as well.
+    embeddings: 1
+  ],
   plugins: [
     # Both workers that ask a model anything deduplicate over `:incomplete`,
     # which assumes a job cannot sit in `executing` forever. A node that dies
@@ -153,7 +284,20 @@ config :rinto_pmo, Oban,
     # which is what pruning does. A day is long enough that a client polling a
     # job id always finds it, and short enough that the table does not grow
     # without bound.
-    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24}
+    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24},
+
+    # The embedding pass keeps itself going by enqueueing the next one, which
+    # works right up until a pass is discarded and the chain ends for good.
+    # This does nothing while that chain is healthy -- the worker's `unique`
+    # makes it a no-op -- and restarts it when it is not.
+    {Oban.Plugins.Cron,
+     crontab: [
+       {"* * * * *", RintoPMO.Embeddings.Worker},
+       # Daily, because the State Council amends its announcements: a year read
+       # once in January keeps whatever it happened to catch. Early morning so
+       # a change lands before anybody looks at a week.
+       {"17 3 * * *", RintoPMO.Calendar.Worker}
+     ]}
   ]
 
 config :rinto_pmo_web,

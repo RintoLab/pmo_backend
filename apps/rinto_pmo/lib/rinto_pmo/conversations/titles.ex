@@ -147,8 +147,17 @@ defmodule RintoPMO.Conversations.Titles do
     # `updated_at` is left alone on purpose: the conversation list is ordered by
     # it, and a title arriving must not shuffle a three-week-old topic to the
     # top of somebody's list.
+    #
+    # `embedding` is cleared by hand here because this path does not go through
+    # a changeset, so `RintoPMO.Embeddings.invalidate/2` never sees it. A topic
+    # whose title arrives is a topic whose findable text just changed.
     case Repo.update_all(query,
-           set: [title: title, title_source: :auto, title_generated_at: DateTime.utc_now()]
+           set: [
+             title: title,
+             title_source: :auto,
+             title_generated_at: DateTime.utc_now(),
+             embedding: nil
+           ]
          ) do
       {1, [conversation]} -> {:ok, conversation}
       {0, _none} -> :stale

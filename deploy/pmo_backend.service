@@ -35,7 +35,8 @@ WorkingDirectory=/apps/pmo_backend
 ; r-nacos config can override this without touching the unit.
 Environment=PATH=/home/deploy/.local/share/pi-node/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-; Written by the deploy from r-nacos, root-owned and 600. systemd parses this
+; Written by the deploy from r-nacos, root:deploy 640 -- systemd reads it as
+; root, and `deploy.sh` reads the same file to run migrations. systemd parses this
 ; format itself, which is the point: a value with a space, a quote or a percent
 ; sign in it needs no escaping on the way in, and `systemctl show` reports the
 ; path rather than the values.

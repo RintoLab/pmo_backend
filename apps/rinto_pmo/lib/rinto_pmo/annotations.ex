@@ -8,6 +8,8 @@ defmodule RintoPMO.Annotations do
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Links
+  alias RintoPMO.References.Guard
 
   defmodule Behaviour do
     @moduledoc false
@@ -80,9 +82,14 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def create_annotation(%Document{} = document, attrs) do
-    %Annotation{document_id: document.id}
-    |> Annotation.changeset(attrs)
-    |> Repo.insert()
+    with :ok <- Guard.check(content_of(attrs)) do
+      Repo.transact(fn repo ->
+        %Annotation{document_id: document.id}
+        |> Annotation.changeset(attrs)
+        |> repo.insert()
+        |> index(repo)
+      end)
+    end
   end
 
   @doc """
@@ -90,9 +97,14 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def update_annotation(%Annotation{} = annotation, attrs) do
-    annotation
-    |> Annotation.update_changeset(attrs)
-    |> Repo.update()
+    with :ok <- Guard.check(content_of(attrs)) do
+      Repo.transact(fn repo ->
+        annotation
+        |> Annotation.update_changeset(attrs)
+        |> repo.update()
+        |> index(repo)
+      end)
+    end
   end
 
   @doc """
@@ -100,7 +112,12 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def delete_annotation(%Annotation{} = annotation) do
-    Repo.delete(annotation)
+    Repo.transact(fn repo ->
+      # Before the delete, not after: the database cascades the replies away,
+      # and their index rows have to be read out while they still exist.
+      Links.purge_annotation(repo, annotation)
+      repo.delete(annotation)
+    end)
   end
 
   @doc """
@@ -148,19 +165,22 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def create_reply(%Annotation{} = annotation, attrs) do
-    Repo.transact(fn repo ->
-      locked =
-        Annotation
-        |> where([candidate], candidate.id == ^annotation.id)
-        |> lock("FOR UPDATE")
-        |> repo.one!()
+    with :ok <- Guard.check(content_of(attrs)) do
+      Repo.transact(fn repo ->
+        locked =
+          Annotation
+          |> where([candidate], candidate.id == ^annotation.id)
+          |> lock("FOR UPDATE")
+          |> repo.one!()
 
-      position = next_reply_position(repo, locked.id)
+        position = next_reply_position(repo, locked.id)
 
-      %AnnotationReply{annotation_id: locked.id, position: position}
-      |> AnnotationReply.changeset(attrs)
-      |> repo.insert()
-    end)
+        %AnnotationReply{annotation_id: locked.id, position: position}
+        |> AnnotationReply.changeset(attrs)
+        |> repo.insert()
+        |> index_reply(repo)
+      end)
+    end
   end
 
   @doc """
@@ -168,9 +188,14 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def update_reply(%AnnotationReply{} = reply, attrs) do
-    reply
-    |> AnnotationReply.update_changeset(attrs)
-    |> Repo.update()
+    with :ok <- Guard.check(content_of(attrs)) do
+      Repo.transact(fn repo ->
+        reply
+        |> AnnotationReply.update_changeset(attrs)
+        |> repo.update()
+        |> index_reply(repo)
+      end)
+    end
   end
 
   @doc """
@@ -178,7 +203,14 @@ defmodule RintoPMO.Annotations do
   """
   @impl true
   def delete_reply(%AnnotationReply{} = reply) do
-    Repo.delete(reply)
+    Repo.transact(fn repo ->
+      with {:ok, deleted} <- repo.delete(reply) do
+        # After the delete, not before: the annotation is re-projected as its
+        # own text plus its replies, and this one must already be gone from it.
+        Links.purge(repo, "annotation_reply", reply.id)
+        {:ok, deleted}
+      end
+    end)
   end
 
   @doc """
@@ -191,6 +223,24 @@ defmodule RintoPMO.Annotations do
     |> where([reply], reply.id == ^id)
     |> Repo.one!()
   end
+
+  # In the same transaction as the write, so that the body and "who points at
+  # this?" never disagree, not even briefly. See `RintoPMO.Links`.
+  defp index({:ok, %Annotation{} = annotation}, repo) do
+    Links.sync_annotation(repo, annotation)
+    {:ok, annotation}
+  end
+
+  defp index(result, _repo), do: result
+
+  defp index_reply({:ok, %AnnotationReply{} = reply}, repo) do
+    Links.sync_reply(repo, reply)
+    {:ok, reply}
+  end
+
+  defp index_reply(result, _repo), do: result
+
+  defp content_of(attrs), do: Map.get(attrs, :content) || Map.get(attrs, "content")
 
   defp filter_annotations(query, filter) do
     Enum.reduce(filter, query, fn

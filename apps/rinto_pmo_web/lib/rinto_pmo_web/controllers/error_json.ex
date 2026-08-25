@@ -58,6 +58,11 @@ defmodule RintoPMOWeb.ErrorJSON do
     invalid_difficulty: {422, "The task difficulty is invalid."},
     invalid_actual: {422, "The recorded actual duration is invalid."},
     task_not_splittable: {422, "The task cannot be split in its current state."},
+    # Scheduling a task ahead of work it waits for. Carries both ends and both
+    # days, because "which one do I move" is the next question either way.
+    dependency_out_of_order:
+      {422, "A task cannot be scheduled before the work it is waiting for."},
+    task_not_dependable: {422, "A summary node cannot take part in a dependency."},
     # Breaking a document down. The first three are the document being in no
     # state to be broken down, or nobody having said who would do it; the
     # fourth is somebody having clicked twice.
@@ -77,8 +82,38 @@ defmodule RintoPMOWeb.ErrorJSON do
     task_before_chunk:
       {422, "A task heading stands above the first chunk heading, so it belongs to nothing."},
     corrupt_image: {422, "The image header could not be read."},
+    # Asked to resolve more references than one request carries. Refused rather
+    # than truncated: a caller handed back half its links would render the rest
+    # as broken, which reads as data loss instead of a limit.
+    too_many_references: {422, "Too many references in one request. Ask in smaller batches."},
+    # Asked to search a kind of thing nothing is indexed under. Said rather than
+    # answered with an empty list: the question could never have found anything,
+    # which is a mistake in the request rather than a result.
+    unsearchable_type: {422, "Nothing of that kind is indexed for search."},
+    # A body pointing at something that is not there. The offending addresses
+    # come back in `details.uris` so that whoever wrote them can fix those
+    # rather than re-read the whole document.
+    # An empty query embeds to a vector like any other string, and that vector
+    # has neighbours -- so the alternative to refusing is a list ordered by
+    # nothing, which looks like an answer. Browsing is a different endpoint.
+    blank_query: {422, "A search needs something to search for."},
+    # Asked to rerank more candidates than one request carries. Refused rather
+    # than clamped: the point of naming a depth is to compare it against
+    # another, and a caller quietly given a different one draws the wrong
+    # conclusion from the results.
+    recall_limit_too_large:
+      {422, "Too many candidates to rerank in one request. Ask for a smaller recall_limit."},
+    unresolvable_references:
+      {422, "The body points at things that do not exist. Check the rinto:// addresses."},
     internal_server_error: {500, "An internal server error occurred."},
     agent_unavailable: {503, "The agent runtime could not be started."},
+    # Searching without the service that does the searching. Told apart from
+    # `ai_unavailable` for the same reason `token_not_configured` is told apart
+    # from `unauthorized`: this one is an installation nobody finished
+    # configuring, and no amount of retrying will change it.
+    ai_not_configured:
+      {503, "The server was started without RINTO_AI_TOKEN, so it cannot search."},
+    ai_unavailable: {503, "The inference service could not be reached."},
     attachment_unwritable: {500, "The attachment could not be stored."},
     attachment_unreadable: {500, "The attachment bytes are missing or unreadable."}
   }

@@ -80,6 +80,11 @@ defmodule RintoPMOWeb.ErrorJSONTest do
        %{field: "actual_minutes", reason: "must be a non-negative whole number of minutes"}},
     task_not_splittable:
       {422, "The task cannot be split in its current state.", %{current_status: "done"}},
+    dependency_out_of_order:
+      {422, "A task cannot be scheduled before the work it is waiting for.",
+       %{depends_on_id: "task-2", depends_on_planned_start_on: "2026-09-14"}},
+    task_not_dependable:
+      {422, "A summary node cannot take part in a dependency.", %{kind: "summary"}},
     document_not_formal:
       {422, "The document has to be adopted, and not already used, for this.", %{status: "draft"}},
     decomposition_exists:
@@ -101,9 +106,25 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     task_before_chunk:
       {422, "A task heading stands above the first chunk heading, so it belongs to nothing.", %{}},
     corrupt_image: {422, "The image header could not be read.", %{}},
+    too_many_references:
+      {422, "Too many references in one request. Ask in smaller batches.",
+       %{max: 200, given: 201}},
+    unsearchable_type:
+      {422, "Nothing of that kind is indexed for search.",
+       %{type: "proposal", searchable: ["block", "task"]}},
+    blank_query: {422, "A search needs something to search for.", %{}},
+    recall_limit_too_large:
+      {422, "Too many candidates to rerank in one request. Ask for a smaller recall_limit.",
+       %{max: 1000, given: 5000}},
+    unresolvable_references:
+      {422, "The body points at things that do not exist. Check the rinto:// addresses.",
+       %{uris: ["rinto://task/01936f2a-1c4e-7c3a-9f1b-2d4e6a8b0c1d"]}},
     internal_server_error: {500, "An internal server error occurred.", %{}},
     agent_unavailable:
       {503, "The agent runtime could not be started.", %{reason: ":pi_not_found"}},
+    ai_not_configured:
+      {503, "The server was started without RINTO_AI_TOKEN, so it cannot search.", %{}},
+    ai_unavailable: {503, "The inference service could not be reached.", %{status: 502}},
     session_limit_reached:
       {409, "Every running agent session is waiting on a person. Close one to make room.", %{}},
     attachment_unwritable: {500, "The attachment could not be stored.", %{reason: "enospc"}},

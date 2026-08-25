@@ -49,6 +49,18 @@ while IFS= read -r line || [ -n "${line}" ]; do
   export "${line%%=*}=${line#*=}"
 done < "${env_file}"
 
+# Optional by design -- an installation without the inference service is a
+# legitimate one -- and therefore the only variable whose absence nothing else
+# would ever mention: the release starts, migrates, passes its health check, and
+# then computes no vectors at all. An installation that lost the token by
+# accident looks exactly the same, and only whoever reads this log can tell the
+# two apart, so this says it rather than deciding.
+if [ -z "${RINTO_AI_TOKEN:-}" ]; then
+  say "note: RINTO_AI_TOKEN is not set in the r-nacos config"
+  echo "nothing will be embedded, and GET /search will answer 503 ai_not_configured"
+  echo "adding it later needs no backfill: rows with no vector are the queue"
+fi
+
 say "verifying what arrived"
 cd "${staging}"
 sha256sum -c release.tar.gz.sha256
