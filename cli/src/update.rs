@@ -291,7 +291,12 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     padded.extend_from_slice(&bit_len.to_be_bytes());
 
     let mut hash = INITIAL;
-    for chunk in padded.chunks_exact(64) {
+
+    // `[u8; 64]` rather than `&[u8]`, so the block size is in the type: the
+    // padding above makes the length a multiple of 64, and this is how that
+    // is said to the compiler. The remainder is empty for the same reason.
+    let (blocks, _empty) = padded.as_chunks::<64>();
+    for chunk in blocks {
         let mut words = [0u32; 64];
         for (index, word) in words.iter_mut().take(16).enumerate() {
             let offset = index * 4;
