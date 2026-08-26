@@ -117,6 +117,34 @@ defmodule RintoPMOWeb.V1.TaskController do
     )
   end
 
+  @doc """
+  Every edge at once, so a chart can draw arrows without a request per bar.
+
+  Two ids each and nothing else: the tasks themselves came from the list this
+  is drawn beside, and repeating them here would double the payload to say
+  what the client already has.
+
+  With `project_id`, every edge with either end in that project -- not only
+  the ones with both. An edge reaching outside is a real constraint on the
+  work being drawn, and hiding it would show a chart as unconstrained while
+  the task waits on something.
+  """
+  def edges(conn, params) do
+    with {:ok, project_id} <- edge_project(params) do
+      render(conn, :edges, edges: tasks_context().list_edges(project_id))
+    end
+  end
+
+  defp edge_project(params) do
+    case Map.get(params, "project_id") do
+      nil ->
+        {:ok, nil}
+
+      value ->
+        with {:ok, filter} <- uuid_filter(value, %{}, :id, "project_id"), do: {:ok, filter.id}
+    end
+  end
+
   def add_dependency(conn, %{"id" => id} = params) do
     context = tasks_context()
     task = context.get_task!(id)

@@ -199,6 +199,42 @@ defmodule RintoPMO.TasksTest do
     end
   end
 
+  describe "list_edges/1" do
+    test "answers every edge as a pair of ids" do
+      first = insert(:task)
+      second = insert(:task)
+      third = insert(:task)
+
+      {:ok, _} = Tasks.add_dependency(second, first.id)
+      {:ok, _} = Tasks.add_dependency(third, second.id)
+
+      assert [
+               %{task_id: second.id, depends_on_id: first.id},
+               %{task_id: third.id, depends_on_id: second.id}
+             ] == Tasks.list_edges()
+    end
+
+    # An edge reaching out of the project is a real constraint on the work
+    # being drawn, so it is answered rather than hidden.
+    test "a project's edges include the ones with only one end in it" do
+      mine = insert(:project)
+      inside = insert(:task, project: mine)
+      also_inside = insert(:task, project: mine)
+      outside = insert(:task, project: insert(:project))
+      elsewhere = insert(:task, project: insert(:project))
+
+      {:ok, _} = Tasks.add_dependency(also_inside, inside.id)
+      {:ok, _} = Tasks.add_dependency(inside, outside.id)
+      {:ok, _} = Tasks.add_dependency(elsewhere, outside.id)
+
+      edges = Tasks.list_edges(mine.id)
+
+      assert length(edges) == 2
+      assert %{task_id: inside.id, depends_on_id: outside.id} in edges
+      refute %{task_id: elsewhere.id, depends_on_id: outside.id} in edges
+    end
+  end
+
   describe "assign_task/2" do
     test "assigns and stamps the handoff" do
       task = insert(:task)

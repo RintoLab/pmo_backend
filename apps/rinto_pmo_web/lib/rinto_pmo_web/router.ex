@@ -44,6 +44,11 @@ defmodule RintoPMOWeb.Router do
     # the numbers have been collected.
     get "/calibration", CalibrationController, :index
 
+    # Every dependency edge at once. `/tasks/:id/dependencies` answers about
+    # one task, which is a request per bar for anything drawing arrows; this
+    # is the same facts in one call, as bare pairs of ids.
+    get "/dependencies", TaskController, :edges
+
     # Which days are not what the weekend rule says. Statutory holidays and the
     # weekends worked to make up for them are fetched daily and are read-only
     # here; leave is the half a person writes, and is the reason this table

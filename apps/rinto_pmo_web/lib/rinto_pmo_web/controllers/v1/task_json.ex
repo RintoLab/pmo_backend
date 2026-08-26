@@ -37,6 +37,17 @@ defmodule RintoPMOWeb.V1.TaskJSON do
     }
   end
 
+  @doc """
+  Every edge, as two ids.
+
+  Nothing about the tasks themselves: this is drawn beside a list that already
+  carries them, and repeating a task per edge it appears in would send the
+  same rows several times over to say what the client has in hand.
+  """
+  def edges(%{edges: edges}) do
+    %{data: Enum.map(edges, &%{task_id: &1.task_id, depends_on_id: &1.depends_on_id})}
+  end
+
   def stats(%{stats: stats}) do
     %{
       data: %{

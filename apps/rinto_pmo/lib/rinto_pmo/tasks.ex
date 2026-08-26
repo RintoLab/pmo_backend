@@ -207,6 +207,8 @@ defmodule RintoPMO.Tasks do
     @callback remove_dependency(Task.t(), UUIDv7.t()) :: :ok
     @callback list_dependencies(Task.t()) :: [Task.t()]
     @callback list_dependents(Task.t()) :: [Task.t()]
+    @callback list_edges(UUIDv7.t() | nil) ::
+                [%{task_id: UUIDv7.t(), depends_on_id: UUIDv7.t()}]
   end
 
   @behaviour Behaviour
@@ -1491,6 +1493,43 @@ defmodule RintoPMO.Tasks do
     |> join(:inner, [prerequisite], edge in Dependency, on: edge.depends_on_id == prerequisite.id)
     |> where([_prerequisite, edge], edge.task_id == ^task.id)
     |> order_by([prerequisite], asc: prerequisite.inserted_at)
+    |> Repo.all()
+  end
+
+  @doc """
+  Every edge at once, for drawing rather than for asking about one task.
+
+  A chart that wanted arrows had to call `list_dependencies/1` per task, which
+  is a request per bar. The edges are two ids each; there is no reason for the
+  round trips.
+
+  Scoped to a project, this answers every edge with **either** end in it, not
+  only the ones with both. A dependency reaching outside the project is a real
+  constraint on the work being drawn, and leaving it out would produce a chart
+  that looks unconstrained while the task waits on something. The client can
+  see which id it does not have, and say so.
+
+  Ordered by the edge's own id, so a repeated call draws the same picture.
+  """
+  @spec list_edges(UUIDv7.t() | nil) :: [%{task_id: UUIDv7.t(), depends_on_id: UUIDv7.t()}]
+  @impl Behaviour
+  def list_edges(project_id \\ nil) do
+    Dependency
+    |> join(:inner, [edge], waiting in Task, on: waiting.id == edge.task_id)
+    |> join(:inner, [edge], prerequisite in Task, on: prerequisite.id == edge.depends_on_id)
+    |> then(fn query ->
+      if project_id do
+        where(
+          query,
+          [_edge, waiting, prerequisite],
+          waiting.project_id == ^project_id or prerequisite.project_id == ^project_id
+        )
+      else
+        query
+      end
+    end)
+    |> order_by([edge], asc: edge.id)
+    |> select([edge], %{task_id: edge.task_id, depends_on_id: edge.depends_on_id})
     |> Repo.all()
   end
 

@@ -2425,6 +2425,51 @@ paths:
                 $ref: "#/components/schemas/HistoryResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+  /dependencies:
+    get:
+      tags: [Tasks]
+      operationId: listDependencyEdges
+      summary: Every dependency edge at once
+      description: >
+        The same facts as `GET /tasks/{id}/dependencies`, for every task in one
+        call. That one answers about a single task, which is a request per bar
+        for anything drawing arrows on a chart.
+
+
+        Two ids per edge and nothing else. The tasks themselves come from the
+        list this is drawn beside; repeating a task once per edge it appears in
+        would send the same rows several times over to say what the client
+        already has.
+
+
+        With `project_id`, every edge with **either** end in that project, not
+        only the ones with both -- dependencies are not scoped to a project,
+        and an edge reaching outside is a real constraint on the work being
+        drawn. Hiding it would present the chart as unconstrained while the
+        task waits on something. A client that does not recognise one of the
+        ids can say so, which is the honest rendering.
+
+
+        Every edge is here, including ones whose prerequisite is already `done`
+        or `cancelled`: the edge is still a true statement about the work, and
+        the client can see from the task's own status that it holds nothing up.
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Only edges with at least one end in this project.
+      responses:
+        "200":
+          description: Edges, oldest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskEdgeListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /calibration:
     get:
       tags: [Schedule]
@@ -5100,6 +5145,29 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ScheduleWeek"
+      additionalProperties: false
+    TaskEdgeListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskEdge"
+      additionalProperties: false
+    TaskEdge:
+      type: object
+      required: [task_id, depends_on_id]
+      description: >
+        "`task_id` cannot start until `depends_on_id` is done." An arrow, in
+        the direction the work waits.
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        depends_on_id:
+          type: string
+          format: uuid
       additionalProperties: false
     CalibrationResponse:
       type: object

@@ -79,6 +79,39 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
     end
   end
 
+  describe "edges" do
+    test "answers every edge as bare pairs of ids", %{conn: conn} do
+      first = insert(:task)
+      second = insert(:task)
+      waiting_id = second.id
+      prerequisite_id = first.id
+
+      expect(TasksMock, :list_edges, fn nil ->
+        [%{task_id: second.id, depends_on_id: first.id}]
+      end)
+
+      conn = get(conn, ~p"/api/v1/dependencies")
+
+      assert [%{"task_id" => ^waiting_id, "depends_on_id" => ^prerequisite_id}] =
+               json_response(conn, 200)["data"]
+    end
+
+    test "passes the project through, and refuses one it cannot read", %{conn: conn} do
+      project = insert(:project)
+      project_id = project.id
+
+      expect(TasksMock, :list_edges, fn ^project_id -> [] end)
+
+      assert conn
+             |> get(~p"/api/v1/dependencies?project_id=#{project.id}")
+             |> json_response(200)
+             |> Map.fetch!("data") == []
+
+      assert %{"details" => %{"project_id" => ["is invalid"]}} =
+               conn |> get(~p"/api/v1/dependencies?project_id=nope") |> json_response(400)
+    end
+  end
+
   describe "index across every project" do
     test "asks the context for the whole pool, with no project at all", %{conn: conn} do
       task = insert(:task)
