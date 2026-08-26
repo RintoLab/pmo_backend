@@ -109,8 +109,31 @@ fn string<'a>(value: &'a Value, field: &str, fallback: &'a str) -> &'a str {
 
 #[cfg(test)]
 mod tests {
-    use super::{detail, summary};
+    use super::{detail, list, show, summary, ShowArgs};
+    use crate::testing::{client, Reply, StubServer};
     use serde_json::json;
+
+    #[test]
+    fn projects_are_listed_and_shown_by_slug() {
+        let server = StubServer::start(vec![
+            Reply::json(200, json!({"data": []})),
+            Reply::json(200, json!({"data": {"slug": "pmo", "name": "Rinto PMO"}})),
+        ]);
+        let client = client(&server);
+
+        list(&client).unwrap();
+        show(
+            &client,
+            ShowArgs {
+                slug: "pmo".to_string(),
+            },
+        )
+        .unwrap();
+
+        let requests = server.requests();
+        assert_eq!(requests[0].target, "/api/v1/projects");
+        assert_eq!(requests[1].target, "/api/v1/projects/pmo");
+    }
 
     #[test]
     fn summary_is_compact_and_addressable_by_slug() {

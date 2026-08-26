@@ -32,8 +32,8 @@ pub enum TaskCommand {
     Split(SplitArgs),
     /// Move an assigned open task to in_progress
     Start(TaskIdArgs),
-    /// Move an in_progress task to done
-    Complete(TaskIdArgs),
+    /// Move an in_progress task to done, optionally recording what it took
+    Complete(CompleteArgs),
     /// Cancel outstanding work while retaining its record
     Cancel(TaskIdArgs),
     /// Return a done or cancelled task to open
@@ -140,6 +140,16 @@ pub struct SplitArgs {
     input: Option<PathBuf>,
 }
 
+#[derive(Args)]
+pub struct CompleteArgs {
+    /// Task id
+    task_id: String,
+
+    /// How long the work actually took, in minutes; omit to leave it as it is
+    #[arg(long, value_name = "MINUTES")]
+    actual_minutes: Option<u32>,
+}
+
 pub fn run(command: TaskCommand) -> Result<()> {
     let config = Config::load()?;
     let client = &Client::new(config.api(), config.token()?)?;
@@ -156,7 +166,7 @@ pub fn run(command: TaskCommand) -> Result<()> {
         TaskCommand::Release(args) => release(client, args),
         TaskCommand::Split(args) => split(client, args),
         TaskCommand::Start(args) => transition(client, args, "start", "started"),
-        TaskCommand::Complete(args) => transition(client, args, "complete", "completed"),
+        TaskCommand::Complete(args) => complete(client, args),
         TaskCommand::Cancel(args) => transition(client, args, "cancel", "cancelled"),
         TaskCommand::Reopen(args) => transition(client, args, "reopen", "reopened"),
         TaskCommand::Delete(args) => delete(client, args),
@@ -359,6 +369,27 @@ fn split(client: &Client, args: SplitArgs) -> Result<()> {
     Ok(())
 }
 
+/// Finishing and saying what it took are one act.
+///
+/// The number is the only thing an executor produces that this system consumes
+/// -- it is what a later estimate is calibrated against -- and requiring a JSON
+/// file and a second call to record it is how it ends up never being recorded.
+/// Absent leaves whatever was already stored, so a caller that does not know
+/// simply does not say.
+fn complete(client: &Client, args: CompleteArgs) -> Result<()> {
+    let path = format!("/tasks/{}/complete", args.task_id);
+    let task = client::data(client.post(&path, complete_body(args.actual_minutes))?)?;
+    print_result("completed", &task);
+    Ok(())
+}
+
+fn complete_body(actual_minutes: Option<u32>) -> Value {
+    match actual_minutes {
+        Some(minutes) => json!({"actual_minutes": minutes}),
+        None => json!({}),
+    }
+}
+
 fn transition(client: &Client, args: TaskIdArgs, event: &str, past_tense: &str) -> Result<()> {
     let path = format!("/tasks/{}/{event}", args.task_id);
     let task = client::data(client.post(&path, json!({}))?)?;
@@ -485,8 +516,16 @@ fn nullable_string<'a>(value: &'a Value, field: &str) -> &'a str {
 
 #[cfg(test)]
 mod tests {
-    use super::{list_query, select_shape, task_detail, task_summary, ListArgs};
+    use super::{complete_body, list_query, select_shape, task_detail, task_summary, ListArgs};
     use serde_json::json;
+
+    /// An empty body means "leave what is stored", which is not the same as
+    /// sending null -- somebody may have recorded the minutes already.
+    #[test]
+    fn completing_without_a_duration_says_nothing_about_one() {
+        assert_eq!(complete_body(None), json!({}));
+        assert_eq!(complete_body(Some(90)), json!({"actual_minutes": 90}));
+    }
 
     #[test]
     fn a_named_shape_is_printed_on_its_own() {
@@ -603,6 +642,331 @@ mod tests {
             task_summary(&task),
             "task-id  work/open  assignee=none  Implement login"
         );
+    }
+
+    /// What each command actually puts on the wire.
+    ///
+    /// These are the tests the CLI did not have: every command below was
+    /// reachable only by running the binary against a live server, so a wrong
+    /// path or a body the API does not accept was something a person found out
+    /// in production. The stub server is real HTTP -- see `crate::testing`.
+    mod api {
+        use super::super::{
+            assign, claim, complete, create, delete, list, release, schema, split, stats,
+            transition, update, AssignArgs, CompleteArgs, CreateArgs, ListArgs, ProjectArgs,
+            SchemaArgs, SplitArgs, TaskIdArgs, UpdateArgs,
+        };
+        use crate::config::Config;
+        use crate::testing::{client, json_file, Reply, StubServer};
+        use serde_json::json;
+
+        fn task_reply() -> Reply {
+            Reply::json(200, json!({"data": {"id": "task-id", "status": "open"}}))
+        }
+
+        fn task_id(id: &str) -> TaskIdArgs {
+            TaskIdArgs {
+                task_id: id.to_string(),
+            }
+        }
+
+        fn empty_list_args(project: &str) -> ListArgs {
+            ListArgs {
+                project_slug: project.to_string(),
+                kind: None,
+                status: None,
+                parent_id: None,
+                assignee_id: None,
+                mine: false,
+                document_id: None,
+                live: None,
+                overdue: None,
+            }
+        }
+
+        /// The §4.1 fix, seen from the wire: `--mine` resolves the configured
+        /// human and nothing else asks about an actor.
+        #[test]
+        fn mine_filters_by_the_configured_actor() {
+            let server = StubServer::start(vec![Reply::json(200, json!({"data": []}))]);
+            let config = Config::for_test(server.base_url(), Some("human-id"), None);
+            let args = ListArgs {
+                mine: true,
+                live: Some(true),
+                ..empty_list_args("demo")
+            };
+
+            list(&client(&server), &config, args).unwrap();
+
+            assert_eq!(
+                server.only_request()[0].target,
+                "/api/v1/projects/demo/tasks?assignee_id=human-id&live=true"
+            );
+        }
+
+        /// The environment with no `actor_id` at all -- an unfiltered list has
+        /// to reach the server rather than fail before it.
+        #[test]
+        fn a_plain_list_works_without_a_configured_actor() {
+            let server = StubServer::start(vec![Reply::json(200, json!({"data": []}))]);
+            let config = Config::for_test(server.base_url(), None, Some("conversation-id"));
+
+            list(&client(&server), &config, empty_list_args("demo")).unwrap();
+
+            assert_eq!(
+                server.only_request()[0].target,
+                "/api/v1/projects/demo/tasks"
+            );
+        }
+
+        #[test]
+        fn stats_are_scoped_to_a_project() {
+            let server = StubServer::start(vec![Reply::json(200, json!({"data": {"total": 0}}))]);
+
+            stats(
+                &client(&server),
+                ProjectArgs {
+                    project_slug: "demo".to_string(),
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                server.only_request()[0].target,
+                "/api/v1/projects/demo/tasks/stats"
+            );
+        }
+
+        #[test]
+        fn the_schema_is_fetched_rather_than_printed_from_here() {
+            let server = StubServer::start(vec![Reply::json(
+                200,
+                json!({"data": {"create": {"title": "TaskCreateInput"}}}),
+            )]);
+
+            schema(
+                &client(&server),
+                SchemaArgs {
+                    shape: Some("create".to_string()),
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].method, "GET");
+            assert_eq!(requests[0].target, "/api/v1/tasks/schema");
+        }
+
+        #[test]
+        fn create_posts_the_file_under_the_project() {
+            let server = StubServer::start(vec![Reply::json(201, json!({"data": {"id": "new"}}))]);
+            let input = json_file(json!({"title": "Wire it up", "priority": 2}));
+
+            create(
+                &client(&server),
+                CreateArgs {
+                    project_slug: "demo".to_string(),
+                    input,
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].method, "POST");
+            assert_eq!(requests[0].target, "/api/v1/projects/demo/tasks");
+            assert_eq!(
+                requests[0].json(),
+                json!({"title": "Wire it up", "priority": 2})
+            );
+        }
+
+        #[test]
+        fn update_patches_the_task_itself() {
+            let server = StubServer::start(vec![task_reply()]);
+            let input = json_file(json!({"planned_start_on": null}));
+
+            update(
+                &client(&server),
+                UpdateArgs {
+                    task_id: "task-id".to_string(),
+                    input,
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].method, "PATCH");
+            assert_eq!(requests[0].target, "/api/v1/tasks/task-id");
+            assert_eq!(requests[0].json(), json!({"planned_start_on": null}));
+        }
+
+        /// Claiming names nobody: the server credits the token's owner, and a
+        /// body carrying an actor would be the client deciding instead.
+        #[test]
+        fn claim_sends_an_empty_body_and_assign_names_a_target() {
+            let server = StubServer::start(vec![task_reply(), task_reply(), task_reply()]);
+            let client = client(&server);
+
+            claim(&client, task_id("task-id")).unwrap();
+            release(&client, task_id("task-id")).unwrap();
+            assign(
+                &client,
+                AssignArgs {
+                    task_id: "task-id".to_string(),
+                    actor_id: "other-actor".to_string(),
+                },
+            )
+            .unwrap();
+
+            let requests = server.requests();
+            assert_eq!(requests[0].target, "/api/v1/tasks/task-id/claim");
+            assert_eq!(requests[0].json(), json!({}));
+            assert_eq!(requests[1].target, "/api/v1/tasks/task-id/release");
+            assert_eq!(requests[2].target, "/api/v1/tasks/task-id/assign");
+            assert_eq!(requests[2].json(), json!({"actor_id": "other-actor"}));
+        }
+
+        #[test]
+        fn every_event_posts_to_its_own_endpoint() {
+            let server = StubServer::start(vec![task_reply(), task_reply(), task_reply()]);
+            let client = client(&server);
+
+            transition(&client, task_id("task-id"), "start", "started").unwrap();
+            transition(&client, task_id("task-id"), "cancel", "cancelled").unwrap();
+            transition(&client, task_id("task-id"), "reopen", "reopened").unwrap();
+
+            let requests = server.requests();
+            let targets: Vec<&str> = requests
+                .iter()
+                .map(|request| request.target.as_str())
+                .collect();
+
+            assert_eq!(
+                targets,
+                vec![
+                    "/api/v1/tasks/task-id/start",
+                    "/api/v1/tasks/task-id/cancel",
+                    "/api/v1/tasks/task-id/reopen"
+                ]
+            );
+        }
+
+        #[test]
+        fn completing_carries_the_recorded_minutes_when_there_are_any() {
+            let server = StubServer::start(vec![task_reply(), task_reply()]);
+            let client = client(&server);
+
+            complete(
+                &client,
+                CompleteArgs {
+                    task_id: "task-id".to_string(),
+                    actual_minutes: Some(90),
+                },
+            )
+            .unwrap();
+            complete(
+                &client,
+                CompleteArgs {
+                    task_id: "task-id".to_string(),
+                    actual_minutes: None,
+                },
+            )
+            .unwrap();
+
+            let requests = server.requests();
+            assert_eq!(requests[0].target, "/api/v1/tasks/task-id/complete");
+            assert_eq!(requests[0].json(), json!({"actual_minutes": 90}));
+            assert_eq!(requests[1].json(), json!({}));
+        }
+
+        #[test]
+        fn split_sends_the_children_or_nothing_at_all() {
+            let server = StubServer::start(vec![
+                Reply::json(
+                    200,
+                    json!({"data": {"id": "task-id"}, "children": [{"id": "child", "title": "One"}]}),
+                ),
+                Reply::json(200, json!({"data": {"id": "task-id"}, "children": []})),
+            ]);
+            let client = client(&server);
+
+            split(
+                &client,
+                SplitArgs {
+                    task_id: "task-id".to_string(),
+                    input: Some(json_file(json!({"children": [{"title": "One"}]}))),
+                },
+            )
+            .unwrap();
+            split(
+                &client,
+                SplitArgs {
+                    task_id: "task-id".to_string(),
+                    input: None,
+                },
+            )
+            .unwrap();
+
+            let requests = server.requests();
+            assert_eq!(requests[0].target, "/api/v1/tasks/task-id/split");
+            assert_eq!(requests[0].json(), json!({"children": [{"title": "One"}]}));
+            assert_eq!(requests[1].json(), json!({}));
+        }
+
+        #[test]
+        fn delete_uses_the_method_rather_than_a_body() {
+            let server = StubServer::start(vec![Reply::empty(204)]);
+
+            delete(&client(&server), task_id("task-id")).unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].method, "DELETE");
+            assert_eq!(requests[0].target, "/api/v1/tasks/task-id");
+            assert!(requests[0].body.is_empty());
+        }
+
+        /// A refusal reaches the caller as the server wrote it. `start` is the
+        /// one that can answer 403, and the agent skills route on that code.
+        #[test]
+        fn a_refused_start_reports_the_servers_own_code() {
+            let server = StubServer::start(vec![Reply::json(
+                403,
+                json!({
+                    "error": "task_not_yours",
+                    "message": "This task belongs to somebody else.",
+                    "details": {"assignee_id": "other-actor"}
+                }),
+            )]);
+
+            let error =
+                transition(&client(&server), task_id("task-id"), "start", "started").unwrap_err();
+
+            assert!(error.to_string().contains("403 (task_not_yours)"));
+            assert!(error.to_string().contains("assignee_id: other-actor"));
+        }
+
+        /// An input file that is not JSON must fail before anything is sent:
+        /// a half-written body reaching the API is how a task gets created
+        /// with a title nobody meant.
+        #[test]
+        fn a_malformed_input_file_never_reaches_the_server() {
+            let server = StubServer::start(vec![task_reply()]);
+            let path =
+                std::env::temp_dir().join(format!("rinto-cli-bad-{}.json", std::process::id()));
+            std::fs::write(&path, "{not json").unwrap();
+
+            let error = create(
+                &client(&server),
+                CreateArgs {
+                    project_slug: "demo".to_string(),
+                    input: path,
+                },
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("is not valid JSON"));
+            assert!(server.requests().is_empty());
+        }
     }
 
     #[test]

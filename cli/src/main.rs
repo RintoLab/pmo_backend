@@ -21,6 +21,11 @@ mod skill;
 mod task;
 mod update;
 
+// A real HTTP server for the tests that exercise the wire. Test-only, so it
+// costs the shipped binary nothing.
+#[cfg(test)]
+mod testing;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]

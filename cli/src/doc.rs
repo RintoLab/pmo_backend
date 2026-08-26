@@ -730,6 +730,312 @@ mod tests {
         }
     }
 
+    /// What each document command puts on the wire, against a real socket.
+    ///
+    /// The four working-copy commands especially: they were added to stop a
+    /// topic silently overwriting its own proposal, and until now nothing
+    /// checked that they ask the endpoints that show it what it has standing.
+    mod api {
+        use super::super::{
+            contentions, create, proposals, propose, rebase, working, ContentionsArgs, CreateArgs,
+            ProposalsArgs, ProposeArgs, RebaseArgs, ShowArgs,
+        };
+        use crate::config::Config;
+        use crate::testing::{client, Reply, StubServer};
+        use serde_json::json;
+
+        const TOPIC: &str = "conversation-id";
+
+        fn inside_a_topic(server: &StubServer) -> Config {
+            Config::for_test(server.base_url(), Some("human-id"), Some(TOPIC))
+        }
+
+        fn outside_a_topic(server: &StubServer) -> Config {
+            Config::for_test(server.base_url(), Some("human-id"), None)
+        }
+
+        fn markdown_file(text: &str) -> std::path::PathBuf {
+            let path = std::env::temp_dir().join(format!(
+                "rinto-cli-doc-{}-{}.md",
+                std::process::id(),
+                text.len()
+            ));
+            std::fs::write(&path, text).unwrap();
+            path
+        }
+
+        fn show_args(working: bool) -> ShowArgs {
+            ShowArgs {
+                document_id: "doc-1".to_string(),
+                with_block_ids: false,
+                working,
+            }
+        }
+
+        #[test]
+        fn the_working_copy_is_read_through_the_topics_own_endpoint() {
+            let server = StubServer::start(vec![Reply::json(
+                200,
+                json!({"data": [{"block_id": "b1", "content": "text", "proposed": false}]}),
+            )]);
+
+            working(&client(&server), &inside_a_topic(&server), show_args(true)).unwrap();
+
+            assert_eq!(
+                server.only_request()[0].target,
+                "/api/v1/documents/doc-1/conversations/conversation-id/blocks"
+            );
+        }
+
+        /// Outside a topic there is no working copy to read, and the refusal
+        /// has to happen here rather than as a URL with an empty segment.
+        #[test]
+        fn a_working_copy_outside_a_topic_never_reaches_the_server() {
+            let server = StubServer::start(vec![Reply::json(200, json!({"data": []}))]);
+
+            let error =
+                working(&client(&server), &outside_a_topic(&server), show_args(true)).unwrap_err();
+
+            assert!(error.to_string().contains("belongs to a topic"));
+            assert!(server.requests().is_empty());
+        }
+
+        #[test]
+        fn a_whole_document_proposal_names_its_topic_and_scope() {
+            let server = StubServer::start(vec![Reply::json(
+                200,
+                json!({"data": {"id": "proposal-1", "scope": "document"}, "live_proposals": 1}),
+            )]);
+
+            propose(
+                &client(&server),
+                &inside_a_topic(&server),
+                ProposeArgs {
+                    document_id: "doc-1".to_string(),
+                    body: Some(markdown_file("# New\n\nBody.")),
+                    block: None,
+                    title: None,
+                    change_summary: Some("tighten the intro".to_string()),
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].target, "/api/v1/documents/doc-1/proposals");
+            assert_eq!(
+                requests[0].json(),
+                json!({
+                    "conversation_id": TOPIC,
+                    "scope": "document",
+                    "content": "# New\n\nBody.",
+                    "change_summary": "tighten the intro"
+                })
+            );
+        }
+
+        #[test]
+        fn a_block_proposal_carries_the_block_it_replaces() {
+            let server = StubServer::start(vec![Reply::json(
+                200,
+                json!({"data": {"id": "proposal-1", "scope": "block"}}),
+            )]);
+
+            propose(
+                &client(&server),
+                &inside_a_topic(&server),
+                ProposeArgs {
+                    document_id: "doc-1".to_string(),
+                    body: Some(markdown_file("Rewritten block.")),
+                    block: Some("block-1".to_string()),
+                    title: None,
+                    change_summary: None,
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].json()["scope"], json!("block"));
+            assert_eq!(requests[0].json()["block_id"], json!("block-1"));
+        }
+
+        /// A title never travels inside a body, so `--title` sends the title
+        /// itself as the content of a `title`-scoped proposal.
+        #[test]
+        fn a_title_proposal_sends_the_title_as_its_content() {
+            let server = StubServer::start(vec![Reply::json(
+                200,
+                json!({"data": {"id": "proposal-1", "scope": "title"}}),
+            )]);
+
+            propose(
+                &client(&server),
+                &inside_a_topic(&server),
+                ProposeArgs {
+                    document_id: "doc-1".to_string(),
+                    body: None,
+                    block: None,
+                    title: Some("A better name".to_string()),
+                    change_summary: None,
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(
+                requests[0].json(),
+                json!({
+                    "conversation_id": TOPIC,
+                    "scope": "title",
+                    "content": "A better name"
+                })
+            );
+        }
+
+        #[test]
+        fn mine_filters_proposals_by_the_topic_and_status_is_never_defaulted() {
+            let server = StubServer::start(vec![
+                Reply::json(200, json!({"data": []})),
+                Reply::json(200, json!({"data": []})),
+            ]);
+            let client = client(&server);
+            let config = inside_a_topic(&server);
+
+            proposals(
+                &client,
+                &config,
+                ProposalsArgs {
+                    document_id: "doc-1".to_string(),
+                    mine: true,
+                    status: Some("live".to_string()),
+                    block: None,
+                },
+            )
+            .unwrap();
+
+            proposals(
+                &client,
+                &config,
+                ProposalsArgs {
+                    document_id: "doc-1".to_string(),
+                    mine: false,
+                    status: None,
+                    block: None,
+                },
+            )
+            .unwrap();
+
+            let requests = server.requests();
+            assert_eq!(
+                requests[0].target,
+                "/api/v1/documents/doc-1/proposals?conversation_id=conversation-id&status=live"
+            );
+            assert_eq!(requests[1].target, "/api/v1/documents/doc-1/proposals");
+        }
+
+        #[test]
+        fn contentions_need_no_topic_of_their_own() {
+            let server = StubServer::start(vec![Reply::json(200, json!({"data": []}))]);
+
+            contentions(
+                &client(&server),
+                ContentionsArgs {
+                    document_id: "doc-1".to_string(),
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                server.only_request()[0].target,
+                "/api/v1/documents/doc-1/contentions"
+            );
+        }
+
+        #[test]
+        fn rebase_posts_to_the_proposal_it_carries_forward() {
+            let server = StubServer::start(vec![Reply::json(
+                200,
+                json!({"data": {
+                    "id": "proposal-1",
+                    "scope": "document",
+                    "status": "live",
+                    "base_revision_id": "revision-2"
+                }}),
+            )]);
+
+            rebase(
+                &client(&server),
+                RebaseArgs {
+                    document_id: "doc-1".to_string(),
+                    proposal_id: "proposal-1".to_string(),
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(
+                requests[0].target,
+                "/api/v1/documents/doc-1/proposals/proposal-1/rebase"
+            );
+            assert_eq!(requests[0].json(), json!({}));
+        }
+
+        /// Authorship is derived, never asserted: inside a topic the body names
+        /// the topic, outside one it names the configured human.
+        #[test]
+        fn a_new_document_is_attributed_by_where_it_was_written() {
+            let server = StubServer::start(vec![
+                Reply::json(201, json!({"data": {"id": "doc-1"}})),
+                Reply::json(201, json!({"data": {"id": "doc-2"}})),
+            ]);
+            let client = client(&server);
+
+            let args = |title: &str| CreateArgs {
+                title: title.to_string(),
+                body: markdown_file("# Heading\n\nBody."),
+                project_id: Some("project-1".to_string()),
+                change_summary: None,
+                dry_run: false,
+            };
+
+            create(&client, &inside_a_topic(&server), args("From a topic")).unwrap();
+            create(&client, &outside_a_topic(&server), args("From a person")).unwrap();
+
+            let requests = server.requests();
+            assert_eq!(requests[0].target, "/api/v1/documents");
+            assert_eq!(requests[0].json()["conversation_id"], json!(TOPIC));
+            assert_eq!(requests[0].json()["actor_id"], json!(null));
+            assert_eq!(requests[1].json()["actor_id"], json!("human-id"));
+            assert_eq!(requests[1].json()["conversation_id"], json!(null));
+        }
+
+        /// The preview asks the server how the body splits, and creates
+        /// nothing -- the whole point of `--dry-run`.
+        #[test]
+        fn a_dry_run_previews_the_split_and_creates_nothing() {
+            let server = StubServer::start(vec![Reply::json(
+                200,
+                json!({"data": [{"content": "# Heading"}, {"content": "Body."}]}),
+            )]);
+
+            create(
+                &client(&server),
+                &inside_a_topic(&server),
+                CreateArgs {
+                    title: "Preview".to_string(),
+                    body: markdown_file("# Heading\n\nBody."),
+                    project_id: None,
+                    change_summary: None,
+                    dry_run: true,
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].target, "/api/v1/documents/preview_blocks");
+            assert_eq!(requests[0].json()["markdown"], json!("# Heading\n\nBody."));
+        }
+    }
+
     // Absent means "every state", not "the adopted ones" -- a draft somebody is
     // looking for has to be findable without knowing to ask.
     #[test]
