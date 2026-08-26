@@ -107,6 +107,10 @@ rinto-pmo task show <task-id>
 - `parent_id`：它在工作分解中的位置
 - `due_on`、`estimate`：期限和估算
 - `assignee_id`：确实是当前 actor
+- `priority`、`planned_start_on`：它在计划里的位置。
+  `planned_start_on: none (backlog)` 表示这条活不在任何一周里——**你正在计划之外干活**，
+  这本身不一定错（用户点名的活照做），但要知道自己在做什么
+- `difficulty`：Fibonacci 故事点，是对工作的评级，不是工时；工时看 `estimate`
 
 `start` / `complete` / `release` 现在由服务端强制这一条：不是持有人就返回
 `403 task_not_yours`，`details.assignee_id` 会告诉你它属于谁。

@@ -472,36 +472,57 @@ fn task_summary(task: &Value) -> String {
     )
 }
 
+/// Every field the API answers with, because this is where a caller goes to
+/// find out what it just claimed.
+///
+/// The scheduling columns are here for a reason: `task list --sort plan` and
+/// `schedule` will send an agent to a task, and reading that task back without
+/// its priority, the week it was selected for, or what it was rated is reading
+/// a different task than the plan was talking about.
 fn task_detail(task: &Value) -> String {
     let mut output = String::new();
     let fields = [
-        ("id", string(task, "id", "?")),
-        ("title", string(task, "title", "(untitled)")),
-        ("project_id", string(task, "project_id", "?")),
-        ("kind", string(task, "kind", "?")),
-        ("status", string(task, "status", "?")),
-        ("assignee_id", nullable_string(task, "assignee_id")),
-        ("parent_id", nullable_string(task, "parent_id")),
-        ("document_id", nullable_string(task, "document_id")),
-        ("due_on", nullable_string(task, "due_on")),
-        ("assigned_at", nullable_string(task, "assigned_at")),
-        ("started_at", nullable_string(task, "started_at")),
-        ("completed_at", nullable_string(task, "completed_at")),
-        ("inserted_at", nullable_string(task, "inserted_at")),
-        ("updated_at", nullable_string(task, "updated_at")),
+        ("id", text(task, "id", "?")),
+        ("title", text(task, "title", "(untitled)")),
+        ("project_id", text(task, "project_id", "?")),
+        ("kind", text(task, "kind", "?")),
+        ("status", text(task, "status", "?")),
+        ("assignee_id", text(task, "assignee_id", "none")),
+        ("parent_id", text(task, "parent_id", "none")),
+        ("document_id", text(task, "document_id", "none")),
+        ("due_on", text(task, "due_on", "none")),
+        ("priority", number(task, "priority")),
+        // Null here is the backlog, not a missing value, so it is said in
+        // words rather than left as "none" among the other nulls.
+        ("planned_start_on", planned(task)),
+        ("first_planned_on", text(task, "first_planned_on", "none")),
+        ("assigned_at", text(task, "assigned_at", "none")),
+        ("started_at", text(task, "started_at", "none")),
+        ("completed_at", text(task, "completed_at", "none")),
+        ("inserted_at", text(task, "inserted_at", "none")),
+        ("updated_at", text(task, "updated_at", "none")),
+        ("estimate", estimate(task)),
+        ("difficulty", number(task, "difficulty")),
+        ("actual_minutes", number(task, "actual_minutes")),
     ];
 
     for (label, value) in fields {
         let _ = writeln!(output, "{label}: {value}");
     }
 
-    let unestimated_tasks = task
-        .get("unestimated_tasks")
-        .filter(|value| !value.is_null())
-        .map(Value::to_string)
-        .unwrap_or_else(|| "none".to_string());
-    let _ = writeln!(output, "estimate: {}", estimate(task));
-    let _ = writeln!(output, "unestimated_tasks: {unestimated_tasks}");
+    // Only a cover carries these, and only a cover's reader can act on them.
+    // Four lines of "none" on every job would bury the fields above.
+    for (label, field) in [
+        ("unestimated_tasks", "unestimated_tasks"),
+        ("unrated_tasks", "unrated_tasks"),
+        ("unmeasured_tasks", "unmeasured_tasks"),
+        ("unscheduled_tasks", "unscheduled_tasks"),
+    ] {
+        if let Some(count) = task.get(field).and_then(Value::as_i64) {
+            let _ = writeln!(output, "{label}: {count}");
+        }
+    }
+
     let description = task
         .get("description")
         .and_then(Value::as_str)
@@ -509,6 +530,26 @@ fn task_detail(task: &Value) -> String {
         .unwrap_or("none");
     let _ = writeln!(output, "description:\n{description}");
     output
+}
+
+/// The same as `string/3`, owned, so that one detail table can hold both the
+/// fields that are read off the JSON and the ones that are computed.
+fn text(task: &Value, field: &str, fallback: &str) -> String {
+    string(task, field, fallback).to_string()
+}
+
+fn number(task: &Value, field: &str) -> String {
+    task.get(field)
+        .and_then(Value::as_i64)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn planned(task: &Value) -> String {
+    match task.get("planned_start_on").and_then(Value::as_str) {
+        Some(day) => day.to_string(),
+        None => "none (backlog)".to_string(),
+    }
 }
 
 fn estimate(task: &Value) -> String {
@@ -1055,5 +1096,63 @@ mod tests {
 
         assert!(detail.contains("document_id: document-id"));
         assert!(detail.contains("description:\nFollow the login spec"));
+    }
+
+    /// `task list --sort plan` and `schedule` both send a caller to a task by
+    /// its place in the plan. Reading it back without that place would be
+    /// reading a different task than the plan was talking about.
+    #[test]
+    fn detail_shows_where_the_task_sits_in_the_plan() {
+        let task = json!({
+            "id": "task-id",
+            "kind": "work",
+            "status": "in_progress",
+            "priority": 1,
+            "planned_start_on": "2026-09-07",
+            "first_planned_on": "2026-08-17",
+            "difficulty": 5,
+            "actual_minutes": 180,
+            "estimate": {"optimistic": 60, "likely": 120, "pessimistic": 240, "expected": 130}
+        });
+        let detail = task_detail(&task);
+
+        assert!(detail.contains("priority: 1"));
+        assert!(detail.contains("planned_start_on: 2026-09-07"));
+        assert!(detail.contains("first_planned_on: 2026-08-17"));
+        assert!(detail.contains("difficulty: 5"));
+        assert!(detail.contains("actual_minutes: 180"));
+        assert!(detail.contains("expected=130"));
+    }
+
+    /// An unplanned task is in the backlog, which is a fact about it rather
+    /// than a field nobody filled in.
+    #[test]
+    fn detail_says_the_backlog_in_words_and_hides_a_covers_counts_on_a_job() {
+        let detail = task_detail(&json!({"kind": "work", "planned_start_on": null}));
+
+        assert!(detail.contains("planned_start_on: none (backlog)"));
+        assert!(detail.contains("difficulty: none"));
+        refute_contains(&detail, "unestimated_tasks");
+        refute_contains(&detail, "unscheduled_tasks");
+    }
+
+    #[test]
+    fn detail_shows_a_covers_rollup_counts() {
+        let detail = task_detail(&json!({
+            "kind": "summary",
+            "unestimated_tasks": 2,
+            "unrated_tasks": 1,
+            "unmeasured_tasks": 3,
+            "unscheduled_tasks": 0
+        }));
+
+        assert!(detail.contains("unestimated_tasks: 2"));
+        assert!(detail.contains("unrated_tasks: 1"));
+        assert!(detail.contains("unmeasured_tasks: 3"));
+        assert!(detail.contains("unscheduled_tasks: 0"));
+    }
+
+    fn refute_contains(haystack: &str, needle: &str) {
+        assert!(!haystack.contains(needle), "did not expect {needle:?}");
     }
 }
