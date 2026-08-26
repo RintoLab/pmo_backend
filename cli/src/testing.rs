@@ -143,16 +143,28 @@ pub fn client(server: &StubServer) -> crate::client::Client {
 /// behind: a few bytes in a temp directory costs less than a cleanup that runs
 /// while another test is still reading the file.
 pub fn json_file(value: serde_json::Value) -> std::path::PathBuf {
+    input_file("json", &value.to_string())
+}
+
+/// The same, for the commands that read Markdown.
+pub fn text_file(text: &str) -> std::path::PathBuf {
+    input_file("md", text)
+}
+
+/// The counter is what makes the name unique. Naming a temp file after its
+/// own contents looks tidy and is a race: two tests writing the same bytes
+/// share a path, and one truncates the file while the other is reading it.
+fn input_file(extension: &str, contents: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     let path = std::env::temp_dir().join(format!(
-        "rinto-cli-test-{}-{}.json",
+        "rinto-cli-test-{}-{}.{extension}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
 
-    std::fs::write(&path, value.to_string()).expect("could not write the test input file");
+    std::fs::write(&path, contents).expect("could not write the test input file");
     path
 }
 

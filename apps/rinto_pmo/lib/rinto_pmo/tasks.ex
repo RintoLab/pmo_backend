@@ -75,6 +75,7 @@ defmodule RintoPMO.Tasks do
   alias RintoPMO.Links
   alias RintoPMO.Projects.Project
   alias RintoPMO.References.Guard
+  alias RintoPMO.Schedule
   alias RintoPMO.Settings
   alias RintoPMO.Tasks.Breakdown
   alias RintoPMO.Tasks.Dependency
@@ -117,8 +118,20 @@ defmodule RintoPMO.Tasks do
             optional(:document_id) => UUIDv7.t(),
             optional(:parent_id) => UUIDv7.t() | nil,
             optional(:live) => boolean(),
-            optional(:overdue) => boolean()
+            optional(:overdue) => boolean(),
+            optional(:priority) => pos_integer(),
+            optional(:scheduled) => boolean(),
+            optional(:sort) => sort()
           }
+
+    @typedoc """
+    Which order a list comes back in.
+
+    `:oldest` is a backlog read from the front. `:plan` is the order the packer
+    fills a week in -- priority, then the day the task was selected for, then
+    age -- so the first row is the one the plan would reach next.
+    """
+    @type sort :: :oldest | :plan
 
     @type estimate :: %{
             optimistic: non_neg_integer(),
@@ -154,6 +167,7 @@ defmodule RintoPMO.Tasks do
     @type refusal :: {:error, atom()} | {:error, atom(), map()}
 
     @callback list_tasks(Project.t(), filter()) :: [Task.t()]
+    @callback list_tasks(filter()) :: [Task.t()]
     @callback get_task!(UUIDv7.t()) :: Task.t()
     @callback create_task(Project.t(), map()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
@@ -217,6 +231,29 @@ defmodule RintoPMO.Tasks do
     project.id
     |> project_tasks()
     |> filter_tasks(filter)
+    |> sort_tasks(filter)
+  end
+
+  @doc """
+  Lists every project's tasks at once.
+
+  The pool a person pulls from is not a project's. Capacity is one pool across
+  everything they are working on -- `RintoPMO.Schedule` says so and refuses to
+  filter by project for that reason -- so "what is there to pick up" and "what
+  is the most worth starting" are questions about all of it. Answering them by
+  listing each project in turn makes the client sort the union itself, using
+  whatever order it invented, which is exactly the rule it should not own.
+
+  Everything is read and rolled up together, which is what a rollup needs
+  anyway: a cover's status comes from children a `WHERE` clause might have
+  excluded. These lists are unpaginated by design, and the corpus is one
+  person's plan.
+  """
+  @impl true
+  def list_tasks(filter) when is_map(filter) do
+    all_tasks()
+    |> filter_tasks(filter)
+    |> sort_tasks(filter)
   end
 
   @doc """
@@ -1138,9 +1175,21 @@ defmodule RintoPMO.Tasks do
   # ---------------------------------------------------------------- rollup
 
   defp project_tasks(project_id) do
+    Task
+    |> where([task], task.project_id == ^project_id)
+    |> rolled_up()
+  end
+
+  # No project at all. A parent is always in the same project as its child --
+  # `validate_parent/3` enforces it -- so rolling the whole table up at once
+  # gives every cover the same children it would have had project by project.
+  defp all_tasks do
+    rolled_up(Task)
+  end
+
+  defp rolled_up(query) do
     tasks =
-      Task
-      |> where([task], task.project_id == ^project_id)
+      query
       |> order_by([task], asc: task.id)
       |> Repo.all()
 
@@ -1254,9 +1303,26 @@ defmodule RintoPMO.Tasks do
         {:parent_id, parent_id} -> task.parent_id == parent_id
         {:live, live} -> task.status in live_statuses == live
         {:overdue, overdue} -> overdue?(task, live_statuses, today) == overdue
+        {:priority, priority} -> task.priority == priority
+        {:scheduled, scheduled} -> not is_nil(task.planned_start_on) == scheduled
         {_other, _value} -> true
       end)
     end)
+  end
+
+  # `:sort` travels in the filter map because it comes off the same query
+  # string, but it selects nothing -- hence its own pass rather than a clause
+  # in `filter_tasks/2` that would have to answer `true` for every task.
+  #
+  # `:plan` is `RintoPMO.Schedule.order/1` itself rather than a copy of it.
+  # "Which of these should be done first" has one answer in this system, and a
+  # list that sorted by priority alone would disagree with the board over two
+  # tasks of equal priority selected for different days.
+  defp sort_tasks(tasks, filter) do
+    case Map.get(filter, :sort, :oldest) do
+      :plan -> Schedule.order(tasks)
+      _oldest -> tasks
+    end
   end
 
   defp overdue?(%Task{due_on: nil}, _live_statuses, _today), do: false

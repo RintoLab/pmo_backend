@@ -79,6 +79,70 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
     end
   end
 
+  describe "index across every project" do
+    test "asks the context for the whole pool, with no project at all", %{conn: conn} do
+      task = insert(:task)
+      task_id = task.id
+
+      expect(TasksMock, :list_tasks, fn %{} = filter ->
+        assert filter == %{}
+        [task]
+      end)
+
+      conn = get(conn, ~p"/api/v1/tasks")
+
+      assert [%{"id" => ^task_id}] = json_response(conn, 200)["data"]
+    end
+
+    # The question this endpoint exists for, spelled as a query: unclaimed,
+    # unfinished, in the order the board would reach it.
+    test "parses the scheduling filters and the plan order", %{conn: conn} do
+      expect(TasksMock, :list_tasks, fn filter ->
+        assert filter == %{
+                 assignee_id: nil,
+                 live: true,
+                 priority: 1,
+                 scheduled: false,
+                 sort: :plan
+               }
+
+        []
+      end)
+
+      conn =
+        get(
+          conn,
+          ~p"/api/v1/tasks?assignee_id=none&live=true&priority=1&scheduled=false&sort=plan"
+        )
+
+      assert json_response(conn, 200)["data"] == []
+    end
+
+    test "the same filters work on one project", %{conn: conn} do
+      project = expect_project()
+
+      expect(TasksMock, :list_tasks, fn ^project, filter ->
+        assert filter == %{scheduled: true, sort: :plan}
+        []
+      end)
+
+      conn = get(conn, ~p"/api/v1/projects/#{project.slug}/tasks?scheduled=true&sort=plan")
+
+      assert json_response(conn, 200)["data"] == []
+    end
+
+    test "rejects a priority off the scale and an unknown sort", %{conn: conn} do
+      assert %{"details" => %{"priority" => ["is invalid"]}} =
+               conn |> get(~p"/api/v1/tasks?priority=9") |> json_response(400)
+
+      assert %{"details" => %{"priority" => ["is invalid"]}} =
+               conn |> get(~p"/api/v1/tasks?priority=high") |> json_response(400)
+
+      assert %{"details" => %{"sort" => ["is invalid"]}} =
+               conn |> get(~p"/api/v1/tasks?sort=priority") |> json_response(400)
+    end
+  end
+
   describe "create" do
     test "passes a three-point estimate through", %{conn: conn} do
       project = expect_project()

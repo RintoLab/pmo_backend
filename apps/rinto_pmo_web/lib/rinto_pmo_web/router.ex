@@ -150,6 +150,12 @@ defmodule RintoPMOWeb.Router do
     # `resources` so that `schema` is not read as an id.
     get "/tasks/schema", TaskController, :schema
 
+    # The pool, across every project. Capacity is one person's and spans all of
+    # them -- `/schedule` says so by refusing to filter by project -- so "what
+    # is there to pick up" is not a per-project question, and answering it by
+    # walking the projects would leave the client to invent the merge order.
+    get "/tasks", TaskController, :index
+
     # Delete is not the opposite of create here -- `cancel` is what records
     # that work was dropped. This is for rows that should never have existed,
     # such as a breakdown an agent got wrong. Emptying a cover of its last

@@ -10,7 +10,14 @@ defmodule RintoPMOWeb.V1.TaskController do
 
   @statuses Map.new(Task.statuses(), &{Atom.to_string(&1), &1})
   @kinds Map.new(Task.kinds(), &{Atom.to_string(&1), &1})
+  @priorities Task.priorities()
   @estimation_kinds %{"difficulty" => :difficulty, "time" => :time}
+
+  # `plan` is the board's own order -- priority, then the day the task was
+  # selected for, then age. Named for what it answers ("what would the plan do
+  # next") rather than for the columns it sorts on, which are three and would
+  # make a parameter nobody could remember.
+  @sorts %{"oldest" => :oldest, "plan" => :plan}
 
   # The status machine is exposed one endpoint per event rather than as a
   # settable field. `PATCH {status: "done"}` would let a client invent
@@ -23,6 +30,23 @@ defmodule RintoPMOWeb.V1.TaskController do
     with {:ok, filter} <- task_filter(params) do
       tasks = tasks_context().list_tasks(project, filter)
       render(conn, :index, tasks: tasks)
+    end
+  end
+
+  @doc """
+  The same list, across every project.
+
+  A person's capacity is one pool spanning everything they work on -- which is
+  why `RintoPMO.Schedule` refuses to filter by project -- so "what is there to
+  pick up" is not a question about one. Answering it by listing each project in
+  turn would leave the client to merge and sort the union, inventing an order
+  the system already has one of.
+
+  Same filters as the project-scoped list, and the same rendering.
+  """
+  def index(conn, params) do
+    with {:ok, filter} <- task_filter(params) do
+      render(conn, :index, tasks: tasks_context().list_tasks(filter))
     end
   end
 
@@ -289,8 +313,31 @@ defmodule RintoPMOWeb.V1.TaskController do
          {:ok, filter} <- assignee_filter(params, filter),
          {:ok, filter} <- parent_filter(params, filter),
          {:ok, filter} <- document_filter(params, filter),
-         {:ok, filter} <- boolean_filter(params, filter, "live", :live) do
-      boolean_filter(params, filter, "overdue", :overdue)
+         {:ok, filter} <- boolean_filter(params, filter, "live", :live),
+         {:ok, filter} <- boolean_filter(params, filter, "overdue", :overdue),
+         {:ok, filter} <- priority_filter(params, filter),
+         {:ok, filter} <- boolean_filter(params, filter, "scheduled", :scheduled) do
+      enum_filter(params, filter, "sort", :sort, @sorts)
+    end
+  end
+
+  # `scheduled=false` is the backlog, and it is a filter rather than a status
+  # for the reason there is no `:backlog` status: which slot of the plan a task
+  # sits in is a many-valued question, and the column that answers it is
+  # `planned_start_on`.
+  defp priority_filter(params, filter) do
+    case Map.get(params, "priority") do
+      nil ->
+        {:ok, filter}
+
+      value ->
+        case Integer.parse(value) do
+          {priority, ""} when priority in @priorities ->
+            {:ok, Map.put(filter, :priority, priority)}
+
+          _invalid ->
+            {:error, :bad_request, %{"priority" => ["is invalid"]}}
+        end
     end
   end
 

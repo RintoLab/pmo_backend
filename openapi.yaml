@@ -495,71 +495,16 @@ paths:
         nodes come back with their rolled-up status. Every filter combines with
         the others.
       parameters:
-        - name: kind
-          in: query
-          required: false
-          description: >
-            Filter to real work or to summary nodes. The claimable pool is
-            `kind=work&assignee_id=none&live=true` -- without `kind`, covers
-            come back too, and nobody can pick one up.
-          schema:
-            $ref: "#/components/schemas/TaskKind"
-        - name: status
-          in: query
-          required: false
-          description: >
-            Filter by exactly one status. On summary nodes this matches the
-            rollup, not the stored column.
-          schema:
-            $ref: "#/components/schemas/TaskStatus"
-        - name: parent_id
-          in: query
-          required: false
-          description: >
-            Filter by position in the tree. Use `none` for the roots -- the top
-            level of the WBS.
-          schema:
-            oneOf:
-              - type: string
-                format: uuid
-              - type: string
-                enum: [none]
-        - name: assignee_id
-          in: query
-          required: false
-          description: >
-            Filter by owner. Use `none` for the claimable pool -- it has to be
-            spelled, because an absent parameter already means "no filter".
-          schema:
-            oneOf:
-              - type: string
-                format: uuid
-              - type: string
-                enum: [none]
-        - name: document_id
-          in: query
-          required: false
-          description: Filter by the document a task implements against.
-          schema:
-            type: string
-            format: uuid
-        - name: live
-          in: query
-          required: false
-          description: >
-            When true, only outstanding work (`open`, `in_progress`); when
-            false, only `done` and `cancelled`.
-          schema:
-            type: boolean
-        - name: overdue
-          in: query
-          required: false
-          description: >
-            When true, only outstanding tasks whose `due_on` has passed. A task
-            delivered late was late; it is not still late, so finished work is
-            never overdue.
-          schema:
-            type: boolean
+        - $ref: "#/components/parameters/TaskKindFilter"
+        - $ref: "#/components/parameters/TaskStatusFilter"
+        - $ref: "#/components/parameters/TaskParentFilter"
+        - $ref: "#/components/parameters/TaskAssigneeFilter"
+        - $ref: "#/components/parameters/TaskDocumentFilter"
+        - $ref: "#/components/parameters/TaskLiveFilter"
+        - $ref: "#/components/parameters/TaskOverdueFilter"
+        - $ref: "#/components/parameters/TaskPriorityFilter"
+        - $ref: "#/components/parameters/TaskScheduledFilter"
+        - $ref: "#/components/parameters/TaskSortFilter"
       responses:
         "200":
           description: Task list
@@ -1981,6 +1926,51 @@ paths:
       responses:
         "204":
           description: Rediscovery has been requested
+  /tasks:
+    get:
+      tags: [Tasks]
+      operationId: listAllTasks
+      summary: List every project's tasks as one pool
+      description: >
+        The same list as `GET /projects/{project_slug}/tasks`, over everything
+        rather than one project, with the same filters and the same rendering.
+
+
+        It exists because the pool a person pulls from is not a project's. A
+        week's minutes are one pool spanning every project they work in --
+        which is why `GET /schedule` refuses to filter by project -- so "what
+        is there to pick up" and "what is most worth starting" are questions
+        about all of it. Asking them project by project would leave the client
+        to merge and sort the union using an order it invented.
+
+
+        Two queries worth knowing. The claimable pool in the order the board
+        would reach it: `?kind=work&assignee_id=none&live=true&sort=plan`. What
+        is not in any plan at all, most important first:
+        `?live=true&scheduled=false&sort=plan`.
+
+
+        Unpaginated, like every list here.
+      parameters:
+        - $ref: "#/components/parameters/TaskKindFilter"
+        - $ref: "#/components/parameters/TaskStatusFilter"
+        - $ref: "#/components/parameters/TaskParentFilter"
+        - $ref: "#/components/parameters/TaskAssigneeFilter"
+        - $ref: "#/components/parameters/TaskDocumentFilter"
+        - $ref: "#/components/parameters/TaskLiveFilter"
+        - $ref: "#/components/parameters/TaskOverdueFilter"
+        - $ref: "#/components/parameters/TaskPriorityFilter"
+        - $ref: "#/components/parameters/TaskScheduledFilter"
+        - $ref: "#/components/parameters/TaskSortFilter"
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /tasks/schema:
     get:
       tags: [Tasks]
@@ -3053,6 +3043,115 @@ components:
           schema:
             $ref: "#/components/schemas/AnnotationReplyUpdateInput"
   parameters:
+    # The task filters are shared by `GET /tasks` and
+    # `GET /projects/{project_slug}/tasks`: the two lists differ only in what
+    # they read, and a filter that existed on one of them would be a trap.
+    TaskKindFilter:
+      name: kind
+      in: query
+      required: false
+      description: >
+        Filter to real work or to summary nodes. The claimable pool is
+        `kind=work&assignee_id=none&live=true` -- without `kind`, covers come
+        back too, and nobody can pick one up.
+      schema:
+        $ref: "#/components/schemas/TaskKind"
+    TaskStatusFilter:
+      name: status
+      in: query
+      required: false
+      description: >
+        Filter by exactly one status. On summary nodes this matches the
+        rollup, not the stored column.
+      schema:
+        $ref: "#/components/schemas/TaskStatus"
+    TaskParentFilter:
+      name: parent_id
+      in: query
+      required: false
+      description: >
+        Filter by position in the tree. Use `none` for the roots -- the top
+        level of the WBS.
+      schema:
+        oneOf:
+          - type: string
+            format: uuid
+          - type: string
+            enum: [none]
+    TaskAssigneeFilter:
+      name: assignee_id
+      in: query
+      required: false
+      description: >
+        Filter by owner. Use `none` for the claimable pool -- it has to be
+        spelled, because an absent parameter already means "no filter".
+      schema:
+        oneOf:
+          - type: string
+            format: uuid
+          - type: string
+            enum: [none]
+    TaskDocumentFilter:
+      name: document_id
+      in: query
+      required: false
+      description: Filter by the document a task implements against.
+      schema:
+        type: string
+        format: uuid
+    TaskLiveFilter:
+      name: live
+      in: query
+      required: false
+      description: >
+        When true, only outstanding work (`open`, `in_progress`); when false,
+        only `done` and `cancelled`.
+      schema:
+        type: boolean
+    TaskOverdueFilter:
+      name: overdue
+      in: query
+      required: false
+      description: >
+        When true, only outstanding tasks whose `due_on` has passed. A task
+        delivered late was late; it is not still late, so finished work is
+        never overdue.
+      schema:
+        type: boolean
+    TaskPriorityFilter:
+      name: priority
+      in: query
+      required: false
+      description: Filter to one priority level, 1 highest.
+      schema:
+        type: integer
+        enum: [1, 2, 3, 4, 5]
+    TaskScheduledFilter:
+      name: scheduled
+      in: query
+      required: false
+      description: >
+        When true, only work selected into a week; when false, the backlog.
+        This is the filter that answers "what is not in the plan", and it is a
+        filter rather than a status for the same reason there is no `backlog`
+        status: which slot of the plan a task sits in is a many-valued
+        question, and `planned_start_on` is the column that answers it.
+      schema:
+        type: boolean
+    TaskSortFilter:
+      name: sort
+      in: query
+      required: false
+      description: >
+        `oldest` (the default) is a backlog read from the front. `plan` is the
+        order `GET /schedule` fills a week in -- priority, then the day the
+        task was selected for, then age -- so the first row is the one the
+        plan would reach next. It is the packer's own ordering rather than a
+        second rule that agrees with it on the easy cases.
+      schema:
+        type: string
+        enum: [oldest, plan]
+        default: oldest
     SettingKey:
       name: key
       in: path

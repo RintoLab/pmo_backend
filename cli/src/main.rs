@@ -16,6 +16,7 @@ mod config;
 mod doc;
 mod error;
 mod project;
+mod schedule;
 mod search;
 mod skill;
 mod task;
@@ -49,6 +50,8 @@ enum Command {
     /// Find, claim, and update project tasks
     #[command(subcommand)]
     Task(task::TaskCommand),
+    /// Show what each week holds and what did not fit in it
+    Schedule(schedule::ScheduleArgs),
     /// Find things by meaning, and get back rinto:// addresses
     Search(search::SearchArgs),
     /// Install the agent skills this binary carries
@@ -66,6 +69,7 @@ fn main() {
         Command::Doc(command) => doc::run(command),
         Command::Project(command) => project::run(command),
         Command::Task(command) => task::run(command),
+        Command::Schedule(args) => schedule::run(args),
         Command::Search(args) => search::run(args),
         Command::Skill(command) => skill::run(command),
         Command::Update(args) => update::run(args),

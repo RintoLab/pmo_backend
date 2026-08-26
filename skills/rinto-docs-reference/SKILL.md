@@ -47,14 +47,42 @@ rinto-pmo project show <project-slug>
 rinto-pmo task list <project-slug> --kind work --assignee-id none --live true
 ```
 
+**不带 project slug 就是跨项目的整个任务池**，容量本来就是跨项目共享的：
+
+```sh
+rinto-pmo task list --kind work --assignee-id none --live true --sort plan
+```
+
+`--sort plan` 是排期板自己的顺序（优先级 → 排到的那天 → 建的时间），
+所以第一行就是计划下一步会做的那条。不加就是从旧到新。
+
 恢复工作时，先看当前 actor 已领取的任务：
 
 ```sh
 rinto-pmo task list <project-slug> --kind work --mine --live true
 ```
 
-列表按创建时间从旧到新。`summary` 是工作分解的汇总节点，不是可以领取和执行的工作，
+`summary` 是工作分解的汇总节点，不是可以领取和执行的工作，
 所以开发任务池必须带 `--kind work`。
+
+### 这条活在不在计划里
+
+```sh
+rinto-pmo schedule                          # 本周
+rinto-pmo schedule --from 2026-09-07 --to 2026-09-21
+```
+
+每周打出装进容量的任务、`overflow`（选进了这周但没装下）和 `blocked`
+（在等一条没装下的前置）。**一条任务如果压根不在这张表里，说明它没被排进任何一周**
+——那是 backlog，做它是「在计划之外干活」，不是推进计划。
+
+真要找 backlog 里最该捞的一条：
+
+```sh
+rinto-pmo task list --kind work --live true --scheduled false --sort plan
+```
+
+用户明确指名的任务照做，不必先查计划；上面这些是**自己挑活**时用的。
 
 如果用户已经给了 task id，不必先列项目，直接读取：
 
@@ -204,6 +232,7 @@ rinto-pmo task release <task-id>
 rinto-pmo project --help
 rinto-pmo task --help
 rinto-pmo task <command> --help
+rinto-pmo schedule --help
 rinto-pmo doc --help
 rinto-pmo search --help
 ```

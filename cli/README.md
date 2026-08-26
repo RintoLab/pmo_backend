@@ -68,12 +68,23 @@ different things:
 | `config` | `init`, `show` |
 | `project` | `list`, `show` -- repositories, directory names, default branches |
 | `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `split`, `start`, `complete`, `cancel`, `reopen`, `delete` |
+| `schedule` | one command; what each week holds and what did not fit in it |
 | `doc` | `create`, `show`, `list`, `propose`, `proposals`, `contentions`, `rebase` |
 | `search` | one command; finds things by meaning and answers with `rinto://` addresses |
 | `skill` | `list`, `install`, `sync` |
 | `update` | self-update from the Gitea package registry |
 
-Three things are worth knowing before writing anything:
+Four things are worth knowing before writing anything:
+
+**The pool is not a project's.** `task list` takes a project slug, and without
+one it lists every project at once -- which is the right question, because
+capacity is one pool spanning everything a person works on. `--sort plan` puts
+it in the board's own order (priority, then the day it was selected for, then
+age), so the first row is what the plan would reach next. `--scheduled false`
+is the backlog: work that is in no week at all. `rinto-pmo schedule` shows the
+other side of it -- what each week holds, what overflowed, and what is blocked
+waiting on something that overflowed.
+
 
 **Ask what a task write looks like; do not guess.** `task create`, `task update`
 and `task split` each read a JSON file, and `task schema [create|update|split]`

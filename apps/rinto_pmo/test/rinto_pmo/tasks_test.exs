@@ -125,6 +125,78 @@ defmodule RintoPMO.TasksTest do
       assert [late.id] == ids(Tasks.list_tasks(project, %{overdue: true}))
       assert length(Tasks.list_tasks(project, %{overdue: false})) == 3
     end
+
+    test "filters by priority and by whether the task is in the backlog" do
+      project = insert(:project)
+      monday = ~D[2026-09-07]
+
+      urgent = insert(:task, project: project, priority: 1, planned_start_on: monday)
+      backlog = insert(:task, project: project, priority: 1)
+      insert(:task, project: project, priority: 4, planned_start_on: monday)
+
+      assert [urgent.id, backlog.id] == ids(Tasks.list_tasks(project, %{priority: 1}))
+      assert [backlog.id] == ids(Tasks.list_tasks(project, %{scheduled: false}))
+
+      assert [urgent.id] ==
+               ids(Tasks.list_tasks(project, %{scheduled: true, priority: 1}))
+    end
+
+    # The point of the option: it is the packer's rule, not a second one that
+    # happens to agree on the easy cases.
+    test "sorting by plan is the order the board fills a week in" do
+      project = insert(:project)
+
+      later = insert(:task, project: project, priority: 2, planned_start_on: ~D[2026-09-09])
+      sooner = insert(:task, project: project, priority: 2, planned_start_on: ~D[2026-09-07])
+      first = insert(:task, project: project, priority: 1, planned_start_on: ~D[2026-09-11])
+      backlog = insert(:task, project: project, priority: 3)
+
+      assert [later.id, sooner.id, first.id, backlog.id] == ids(Tasks.list_tasks(project, %{}))
+
+      assert [first.id, sooner.id, later.id, backlog.id] ==
+               ids(Tasks.list_tasks(project, %{sort: :plan}))
+    end
+  end
+
+  describe "list_tasks/1" do
+    test "reads every project's tasks as one pool" do
+      first = insert(:project)
+      second = insert(:project)
+      here = insert(:task, project: first)
+      there = insert(:task, project: second)
+
+      assert [here.id, there.id] == ids(Tasks.list_tasks(%{}))
+    end
+
+    # The question the endpoint exists for: what is there to pick up, in the
+    # order the plan would reach it, across everything being worked on.
+    test "answers the claimable pool in plan order" do
+      first = insert(:project)
+      second = insert(:project)
+      actor = insert(:actor)
+
+      insert(:task, project: first, assignee: actor)
+      insert(:task, project: first, status: :done)
+      normal = insert(:task, project: first, priority: 3, planned_start_on: ~D[2026-09-07])
+      urgent = insert(:task, project: second, priority: 1, planned_start_on: ~D[2026-09-09])
+
+      assert [urgent.id, normal.id] ==
+               ids(Tasks.list_tasks(%{assignee_id: nil, live: true, sort: :plan}))
+    end
+
+    # A cover's status is rolled up from children, and the whole table is read
+    # at once, so a summary must not lose its rollup by crossing a project.
+    test "rolls a cover up the same way the project-scoped list does" do
+      project = insert(:project)
+      insert(:task, project: insert(:project))
+      cover = insert(:task, project: project, kind: :summary)
+      insert(:task, project: project, parent: cover, status: :done)
+      insert(:task, project: project, parent: cover, status: :in_progress)
+
+      listed = Enum.find(Tasks.list_tasks(%{}), &(&1.id == cover.id))
+
+      assert listed.status == :in_progress
+    end
   end
 
   describe "assign_task/2" do

@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 
 #[derive(Subcommand)]
 pub enum TaskCommand {
-    /// List a project's tasks, oldest first
+    /// List tasks, one project's or every project's, oldest first
     List(ListArgs),
     /// Show all fields of one task
     Show(TaskIdArgs),
@@ -56,8 +56,8 @@ pub struct TaskIdArgs {
 
 #[derive(Args)]
 pub struct ListArgs {
-    /// Project slug
-    project_slug: String,
+    /// Project slug; omit to list every project's tasks as one pool
+    project_slug: Option<String>,
 
     /// Only work or summary nodes
     #[arg(long, value_name = "work|summary")]
@@ -90,6 +90,18 @@ pub struct ListArgs {
     /// true for overdue outstanding work
     #[arg(long, value_name = "BOOL")]
     overdue: Option<bool>,
+
+    /// Only work at this priority, 1 highest
+    #[arg(long, value_name = "1-5")]
+    priority: Option<u8>,
+
+    /// true for work selected into a week, false for the backlog
+    #[arg(long, value_name = "BOOL")]
+    scheduled: Option<bool>,
+
+    /// `plan` is the order the board fills a week in; `oldest` is the default
+    #[arg(long, value_name = "oldest|plan")]
+    sort: Option<String>,
 }
 
 #[derive(Args)]
@@ -187,7 +199,13 @@ fn list(client: &Client, config: &Config, args: ListArgs) -> Result<()> {
     } else {
         None
     };
-    let path = format!("/projects/{}/tasks", args.project_slug);
+    // No slug is the whole pool. A person's capacity spans every project they
+    // work in, so "what is there to pick up" is a question about all of them,
+    // and asking it project by project would leave the merge order here.
+    let path = match args.project_slug.as_deref() {
+        Some(project_slug) => format!("/projects/{project_slug}/tasks"),
+        None => "/tasks".to_string(),
+    };
     let query = list_query(&args, mine);
     let query_refs: Vec<(&str, &str)> = query
         .iter()
@@ -234,6 +252,16 @@ fn list_query(args: &ListArgs, mine: Option<&str>) -> Vec<(String, String)> {
         args.overdue
             .map(|value| if value { "true" } else { "false" }),
     );
+    if let Some(priority) = args.priority {
+        query.push(("priority".to_string(), priority.to_string()));
+    }
+    push_query(
+        &mut query,
+        "scheduled",
+        args.scheduled
+            .map(|value| if value { "true" } else { "false" }),
+    );
+    push_query(&mut query, "sort", args.sort.as_deref());
     query
 }
 
@@ -554,18 +582,38 @@ mod tests {
         assert!(error.to_string().contains("create, split, update"));
     }
 
+    /// Every filter off, so a test names only what it is about.
+    fn no_filters() -> ListArgs {
+        ListArgs {
+            project_slug: Some("demo".to_string()),
+            kind: None,
+            status: None,
+            parent_id: None,
+            assignee_id: None,
+            mine: false,
+            document_id: None,
+            live: None,
+            overdue: None,
+            priority: None,
+            scheduled: None,
+            sort: None,
+        }
+    }
+
     #[test]
     fn list_passes_every_filter_using_the_api_names() {
         let args = ListArgs {
-            project_slug: "demo".to_string(),
             kind: Some("work".to_string()),
             status: Some("open".to_string()),
             parent_id: Some("none".to_string()),
             assignee_id: Some("none".to_string()),
-            mine: false,
             document_id: Some("doc-id".to_string()),
             live: Some(true),
             overdue: Some(false),
+            priority: Some(2),
+            scheduled: Some(false),
+            sort: Some("plan".to_string()),
+            ..no_filters()
         };
 
         assert_eq!(
@@ -578,6 +626,9 @@ mod tests {
                 ("document_id".to_string(), "doc-id".to_string()),
                 ("live".to_string(), "true".to_string()),
                 ("overdue".to_string(), "false".to_string()),
+                ("priority".to_string(), "2".to_string()),
+                ("scheduled".to_string(), "false".to_string()),
+                ("sort".to_string(), "plan".to_string()),
             ]
         );
     }
@@ -587,15 +638,8 @@ mod tests {
     #[test]
     fn a_list_without_mine_asks_about_no_actor() {
         let args = ListArgs {
-            project_slug: "demo".to_string(),
-            kind: None,
             status: Some("open".to_string()),
-            parent_id: None,
-            assignee_id: None,
-            mine: false,
-            document_id: None,
-            live: None,
-            overdue: None,
+            ..no_filters()
         };
 
         assert_eq!(
@@ -607,15 +651,10 @@ mod tests {
     #[test]
     fn mine_uses_the_configured_human_actor() {
         let args = ListArgs {
-            project_slug: "demo".to_string(),
             kind: Some("work".to_string()),
-            status: None,
-            parent_id: None,
-            assignee_id: None,
             mine: true,
-            document_id: None,
             live: Some(true),
-            overdue: None,
+            ..no_filters()
         };
 
         assert_eq!(
@@ -670,17 +709,10 @@ mod tests {
             }
         }
 
-        fn empty_list_args(project: &str) -> ListArgs {
+        fn empty_list_args(project: Option<&str>) -> ListArgs {
             ListArgs {
-                project_slug: project.to_string(),
-                kind: None,
-                status: None,
-                parent_id: None,
-                assignee_id: None,
-                mine: false,
-                document_id: None,
-                live: None,
-                overdue: None,
+                project_slug: project.map(str::to_string),
+                ..super::no_filters()
             }
         }
 
@@ -693,7 +725,7 @@ mod tests {
             let args = ListArgs {
                 mine: true,
                 live: Some(true),
-                ..empty_list_args("demo")
+                ..empty_list_args(Some("demo"))
             };
 
             list(&client(&server), &config, args).unwrap();
@@ -704,6 +736,45 @@ mod tests {
             );
         }
 
+        /// No slug is the pool across every project, which is where "what can
+        /// I pick up" is answered -- capacity spans all of them.
+        #[test]
+        fn no_project_asks_the_cross_project_endpoint() {
+            let server = StubServer::start(vec![Reply::json(200, json!({"data": []}))]);
+            let config = Config::for_test(server.base_url(), None, None);
+            let args = ListArgs {
+                assignee_id: Some("none".to_string()),
+                live: Some(true),
+                sort: Some("plan".to_string()),
+                ..empty_list_args(None)
+            };
+
+            list(&client(&server), &config, args).unwrap();
+
+            assert_eq!(
+                server.only_request()[0].target,
+                "/api/v1/tasks?assignee_id=none&live=true&sort=plan"
+            );
+        }
+
+        #[test]
+        fn the_backlog_is_a_filter_rather_than_a_status() {
+            let server = StubServer::start(vec![Reply::json(200, json!({"data": []}))]);
+            let config = Config::for_test(server.base_url(), None, None);
+            let args = ListArgs {
+                scheduled: Some(false),
+                priority: Some(1),
+                ..empty_list_args(None)
+            };
+
+            list(&client(&server), &config, args).unwrap();
+
+            assert_eq!(
+                server.only_request()[0].target,
+                "/api/v1/tasks?priority=1&scheduled=false"
+            );
+        }
+
         /// The environment with no `actor_id` at all -- an unfiltered list has
         /// to reach the server rather than fail before it.
         #[test]
@@ -711,7 +782,7 @@ mod tests {
             let server = StubServer::start(vec![Reply::json(200, json!({"data": []}))]);
             let config = Config::for_test(server.base_url(), None, Some("conversation-id"));
 
-            list(&client(&server), &config, empty_list_args("demo")).unwrap();
+            list(&client(&server), &config, empty_list_args(Some("demo"))).unwrap();
 
             assert_eq!(
                 server.only_request()[0].target,

@@ -754,15 +754,7 @@ mod tests {
             Config::for_test(server.base_url(), Some("human-id"), None)
         }
 
-        fn markdown_file(text: &str) -> std::path::PathBuf {
-            let path = std::env::temp_dir().join(format!(
-                "rinto-cli-doc-{}-{}.md",
-                std::process::id(),
-                text.len()
-            ));
-            std::fs::write(&path, text).unwrap();
-            path
-        }
+        use crate::testing::text_file as markdown_file;
 
         fn show_args(working: bool) -> ShowArgs {
             ShowArgs {
