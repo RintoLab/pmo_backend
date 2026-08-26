@@ -2425,6 +2425,83 @@ paths:
                 $ref: "#/components/schemas/HistoryResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+  /calibration:
+    get:
+      tags: [Schedule]
+      operationId: getCalibration
+      summary: What the estimates turned out to be worth
+      description: >
+        The loop that lets an estimate be checked against what happened. This
+        API has collected three-point estimates, Fibonacci story points and
+        recorded durations from the beginning and never put them next to each
+        other; an estimator that is never checked is a habit rather than an
+        estimator.
+
+
+        Two groupings in one response, because they answer the same question
+        from two sides and a client making two calls could show two windows
+        that disagree. `weeks` asks whether the week-to-week arithmetic is
+        holding; `difficulty` asks whether the story-point ladder means
+        anything -- what a 5 has actually cost.
+
+
+        Tasks are counted in the week they were **finished**. Velocity is work
+        delivered per week, and when something started says nothing about when
+        it landed. Only delivered work counts: cancelled tasks have no
+        `completed_at` by design, and time spent on something that was dropped
+        is not what a finished estimate cost. Summary nodes are excluded --
+        their estimate and their actual are sums over their children, so
+        counting them beside the children counts the same work twice.
+
+
+        **The minutes are summed over `comparable` tasks only** -- the ones
+        carrying both an estimate and a recorded duration. A sum of estimates
+        over every finished task beside a sum of durations over every finished
+        task is two totals over two different populations, and their ratio
+        means nothing. `unestimated` and `unmeasured` count what was left out,
+        which is how a reader knows how much of the comparison to believe.
+
+
+        No ratio is computed here, for the same reason: one number without its
+        sample size is, at a handful of tasks a week, the difference between a
+        signal and a coincidence.
+
+
+        Empty weeks come back as zeroes rather than being left out -- a gap is
+        a fact about the plan, and closing it up would draw four productive
+        weeks where there were two. All seven story-point rungs come back for
+        the same reason.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Start of the window. Defaults to twelve weeks before `to`.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: End of the window. Defaults to today.
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Only this project's finished work.
+      responses:
+        "200":
+          description: Finished work by week, and by story point
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalibrationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /calendar/days:
     get:
       tags: [Calendar]
@@ -5023,6 +5100,98 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ScheduleWeek"
+      additionalProperties: false
+    CalibrationResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [weeks, difficulty]
+          properties:
+            weeks:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalibrationWeek"
+            difficulty:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalibrationRung"
+          additionalProperties: false
+      additionalProperties: false
+    CalibrationWeek:
+      type: object
+      required:
+        [
+          week,
+          completed,
+          comparable,
+          expected_minutes,
+          actual_minutes,
+          unestimated,
+          unmeasured,
+        ]
+      properties:
+        week:
+          type: string
+          format: date
+          description: The Monday of the week the work was finished in.
+        completed:
+          type: integer
+          minimum: 0
+          description: Work items delivered in this week.
+        comparable:
+          type: integer
+          minimum: 0
+          description: >
+            How many of them carry both an estimate and a recorded duration --
+            the population the two sums below are taken over. Read the sums
+            against this number, never against `completed`.
+        expected_minutes:
+          type: integer
+          minimum: 0
+          description: PERT expected values, summed over the comparable tasks. Zero when there are none.
+        actual_minutes:
+          type: integer
+          minimum: 0
+          description: Recorded durations, summed over the same tasks.
+        unestimated:
+          type: integer
+          minimum: 0
+          description: Delivered work that carried no estimate.
+        unmeasured:
+          type: integer
+          minimum: 0
+          description: Delivered work whose duration nobody recorded.
+      additionalProperties: false
+    CalibrationRung:
+      type: object
+      required: [difficulty, tasks, measured, median_actual_minutes]
+      properties:
+        difficulty:
+          type: integer
+          enum: [1, 2, 3, 5, 8, 13, 21]
+        tasks:
+          type: integer
+          minimum: 0
+          description: Delivered work rated with this story point in the window.
+        measured:
+          type: integer
+          minimum: 0
+          description: How many of them had a duration recorded.
+        median_actual_minutes:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            The middle recorded duration at this rung, or null when nothing at
+            it was ever measured -- which is not the same as a rung that is
+            genuinely quick.
+
+
+            The middle value rather than the average: with a handful of tasks
+            per rung, one that ran three days moves a mean somewhere no task
+            ever was, and the result reads as knowledge.
       additionalProperties: false
     HistoryResponse:
       type: object

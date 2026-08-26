@@ -54,6 +54,8 @@ enum Command {
     Schedule(schedule::ScheduleArgs),
     /// Show what was actually worked, beside what was planned for it
     History(schedule::HistoryArgs),
+    /// Show what the estimates turned out to be worth, by week and by story point
+    Calibration(schedule::CalibrationArgs),
     /// Find things by meaning, and get back rinto:// addresses
     Search(search::SearchArgs),
     /// Install the agent skills this binary carries
@@ -73,6 +75,7 @@ fn main() {
         Command::Task(command) => task::run(command),
         Command::Schedule(args) => schedule::run(args),
         Command::History(args) => schedule::run_history(args),
+        Command::Calibration(args) => schedule::run_calibration(args),
         Command::Search(args) => search::run(args),
         Command::Skill(command) => skill::run(command),
         Command::Update(args) => update::run(args),

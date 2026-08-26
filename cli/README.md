@@ -70,6 +70,7 @@ different things:
 | `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `split`, `start`, `complete`, `cancel`, `reopen`, `delete` |
 | `schedule` | one command; what each week holds and what did not fit in it |
 | `history` | one command; what was actually worked, with the plan beside it |
+| `calibration` | one command; what the estimates turned out to be worth |
 | `doc` | `create`, `show`, `list`, `propose`, `proposals`, `contentions`, `rebase` |
 | `search` | one command; finds things by meaning and answers with `rinto://` addresses |
 | `skill` | `list`, `install`, `sync` |

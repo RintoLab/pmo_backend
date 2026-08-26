@@ -38,6 +38,12 @@ defmodule RintoPMOWeb.Router do
     # about arithmetic, and nothing about the past is computed that way.
     get "/history", ScheduleController, :history
 
+    # The same record read as arithmetic: what the estimates turned out to be
+    # worth, by week and by story point. It is the only loop that lets the
+    # estimator be checked against anything, and it was missing for as long as
+    # the numbers have been collected.
+    get "/calibration", CalibrationController, :index
+
     # Which days are not what the weekend rule says. Statutory holidays and the
     # weekends worked to make up for them are fetched daily and are read-only
     # here; leave is the half a person writes, and is the reason this table

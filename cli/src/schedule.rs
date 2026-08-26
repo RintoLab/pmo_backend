@@ -234,6 +234,100 @@ fn slip(record: &Value) -> String {
     }
 }
 
+/// What the estimates turned out to be worth.
+///
+/// Two tables, because there are two questions: is the week-to-week arithmetic
+/// holding, and is the story-point ladder meaning anything. Neither prints a
+/// ratio -- with a handful of tasks a week, one number without its sample size
+/// is the difference between a signal and a coincidence, so the counts are
+/// printed beside the minutes and the division is left to whoever is reading.
+#[derive(Args)]
+pub struct CalibrationArgs {
+    /// First day of the window; defaults to twelve weeks back
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    from: Option<String>,
+
+    /// Last day of the window; defaults to today
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    to: Option<String>,
+
+    /// Only this project's finished work
+    #[arg(long, value_name = "UUID")]
+    project_id: Option<String>,
+}
+
+pub fn run_calibration(args: CalibrationArgs) -> Result<()> {
+    let config = Config::load()?;
+    let client = Client::new(config.api(), config.token()?)?;
+
+    calibration(&client, args)
+}
+
+fn calibration(client: &Client, args: CalibrationArgs) -> Result<()> {
+    let mut query: Vec<(&str, &str)> = Vec::new();
+    if let Some(from) = args.from.as_deref() {
+        query.push(("from", from));
+    }
+    if let Some(to) = args.to.as_deref() {
+        query.push(("to", to));
+    }
+    if let Some(project_id) = args.project_id.as_deref() {
+        query.push(("project_id", project_id));
+    }
+
+    let data = client::data(client.get("/calibration", &query)?)?;
+    print!("{}", render_calibration(&data));
+    Ok(())
+}
+
+fn render_calibration(data: &Value) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "week        done  compared  planned/actual");
+
+    for week in array(data, "weeks") {
+        let _ = writeln!(
+            output,
+            "{}  {:>4}  {:>8}  {}m/{}m",
+            string(week, "week", "?"),
+            number(week, "completed"),
+            number(week, "comparable"),
+            number(week, "expected_minutes"),
+            number(week, "actual_minutes")
+        );
+
+        // Said per week rather than once at the bottom: a week whose sums came
+        // from two of nine finished tasks is not the same reading as one whose
+        // sums came from all nine, and a total would hide which was which.
+        let left_out = format!(
+            "{} unestimated, {} unmeasured",
+            number(week, "unestimated"),
+            number(week, "unmeasured")
+        );
+        if !left_out.starts_with("0 unestimated, 0 unmeasured") {
+            let _ = writeln!(output, "              left out: {left_out}");
+        }
+    }
+
+    let _ = writeln!(output, "\npoints  tasks  measured  median actual");
+    for rung in array(data, "difficulty") {
+        let _ = writeln!(
+            output,
+            "{:>6}  {:>5}  {:>8}  {}",
+            number(rung, "difficulty"),
+            number(rung, "tasks"),
+            number(rung, "measured"),
+            match rung.get("median_actual_minutes").and_then(Value::as_i64) {
+                // Not "0m". Nothing at this rung has been measured, which is
+                // the first thing to know before trusting a number from it.
+                None => "no data".to_string(),
+                Some(minutes) => format!("{minutes}m"),
+            }
+        );
+    }
+
+    output
+}
+
 fn array<'a>(value: &'a Value, field: &str) -> &'a [Value] {
     value
         .get(field)
@@ -325,6 +419,63 @@ mod history_tests {
         assert!(rendered.contains("2026-06-09 → open"));
         assert!(rendered.contains("?m planned / ?m actual"));
         assert!(rendered.contains("never planned"));
+    }
+
+    #[test]
+    fn the_calibration_window_travels_the_same_way() {
+        use super::{calibration, CalibrationArgs};
+
+        let server = StubServer::start(vec![Reply::json(
+            200,
+            json!({"data": {"weeks": [], "difficulty": []}}),
+        )]);
+
+        calibration(
+            &client(&server),
+            CalibrationArgs {
+                from: Some("2026-06-01".to_string()),
+                to: None,
+                project_id: Some("project-1".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            server.only_request()[0].target,
+            "/api/v1/calibration?from=2026-06-01&project_id=project-1"
+        );
+    }
+
+    #[test]
+    fn calibration_prints_the_counts_beside_the_minutes() {
+        use super::render_calibration;
+
+        let rendered = render_calibration(&json!({
+            "weeks": [
+                {
+                    "week": "2026-06-08", "completed": 4, "comparable": 2,
+                    "expected_minutes": 180, "actual_minutes": 240,
+                    "unestimated": 1, "unmeasured": 1
+                },
+                {
+                    "week": "2026-06-15", "completed": 0, "comparable": 0,
+                    "expected_minutes": 0, "actual_minutes": 0,
+                    "unestimated": 0, "unmeasured": 0
+                }
+            ],
+            "difficulty": [
+                {"difficulty": 5, "tasks": 3, "measured": 3, "median_actual_minutes": 90},
+                {"difficulty": 8, "tasks": 0, "measured": 0, "median_actual_minutes": null}
+            ]
+        }));
+
+        assert!(rendered.contains("2026-06-08     4         2  180m/240m"));
+        assert!(rendered.contains("left out: 1 unestimated, 1 unmeasured"));
+        // A week that left nothing out says nothing about it.
+        assert_eq!(rendered.matches("left out").count(), 1);
+        assert!(rendered.contains("     5      3         3  90m"));
+        // Never "0m": nothing at this rung was measured.
+        assert!(rendered.contains("no data"));
     }
 
     #[test]
