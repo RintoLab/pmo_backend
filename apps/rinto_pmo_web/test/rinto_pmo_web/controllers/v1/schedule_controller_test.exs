@@ -147,4 +147,73 @@ defmodule RintoPMOWeb.V1.ScheduleControllerTest do
       assert message =~ "at most 52 weeks"
     end
   end
+
+  describe "history" do
+    defp at(%Date{} = day), do: DateTime.new!(day, ~T[09:00:00.000000])
+
+    test "answers what the clocks recorded, with the plan beside it", %{conn: conn} do
+      task =
+        insert(:task,
+          status: :done,
+          planned_start_on: ~D[2026-06-08],
+          first_planned_on: ~D[2026-05-18],
+          started_at: at(~D[2026-06-09]),
+          completed_at: at(~D[2026-06-10]),
+          estimate_optimistic: 60,
+          estimate_likely: 120,
+          estimate_pessimistic: 240,
+          actual_minutes: 300
+        )
+
+      task_id = task.id
+
+      assert [
+               %{
+                 "task" => %{"id" => ^task_id, "first_planned_on" => "2026-05-18"},
+                 "started_on" => "2026-06-09",
+                 "completed_on" => "2026-06-10",
+                 "planned_on" => "2026-06-08",
+                 "first_planned_on" => "2026-05-18",
+                 "slip_weeks" => 3,
+                 "expected_minutes" => 130,
+                 "actual_minutes" => 300
+               }
+             ] =
+               conn
+               |> get(~p"/api/v1/history?from=2026-06-08&to=2026-06-14")
+               |> json_response(200)
+               |> Map.fetch!("data")
+    end
+
+    test "defaults to this week so far", %{conn: conn} do
+      insert(:task, status: :in_progress, started_at: DateTime.utc_now())
+
+      assert length(conn |> get(~p"/api/v1/history") |> json_response(200) |> Map.fetch!("data")) ==
+               1
+    end
+
+    # `GET /schedule` refuses to be scoped; this one does not, and the reason
+    # the two differ is worth a test rather than a comment alone.
+    test "narrows to one project when asked", %{conn: conn} do
+      mine = insert(:project)
+      here = insert(:task, project: mine, status: :done, started_at: at(~D[2026-06-10]))
+      insert(:task, status: :done, started_at: at(~D[2026-06-10]))
+
+      here_id = here.id
+
+      assert [%{"task" => %{"id" => ^here_id}}] =
+               conn
+               |> get(~p"/api/v1/history?from=2026-06-08&to=2026-06-14&project_id=#{mine.id}")
+               |> json_response(200)
+               |> Map.fetch!("data")
+    end
+
+    test "refuses a date and a project id it cannot read", %{conn: conn} do
+      assert %{"details" => %{"from" => ["must be an ISO 8601 date"]}} =
+               conn |> get(~p"/api/v1/history?from=last+june") |> json_response(400)
+
+      assert %{"details" => %{"project_id" => ["is invalid"]}} =
+               conn |> get(~p"/api/v1/history?project_id=nope") |> json_response(400)
+    end
+  end
 end

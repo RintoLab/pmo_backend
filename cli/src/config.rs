@@ -85,6 +85,19 @@ impl Config {
         })
     }
 
+    /// A configuration assembled in memory, for tests that drive a command
+    /// against a stub server. `load/0` reads an environment and a file, and a
+    /// test that had to arrange both would be testing those instead.
+    #[cfg(test)]
+    pub fn for_test(api: &str, actor_id: Option<&str>, conversation_id: Option<&str>) -> Self {
+        Self {
+            api: api.to_string(),
+            token: Some("test-actor-token".to_string()),
+            actor_id: actor_id.map(str::to_string),
+            conversation_id: conversation_id.map(str::to_string),
+        }
+    }
+
     pub fn api(&self) -> &str {
         &self.api
     }

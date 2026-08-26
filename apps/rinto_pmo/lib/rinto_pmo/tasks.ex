@@ -75,6 +75,7 @@ defmodule RintoPMO.Tasks do
   alias RintoPMO.Links
   alias RintoPMO.Projects.Project
   alias RintoPMO.References.Guard
+  alias RintoPMO.Schedule
   alias RintoPMO.Settings
   alias RintoPMO.Tasks.Breakdown
   alias RintoPMO.Tasks.Dependency
@@ -117,8 +118,20 @@ defmodule RintoPMO.Tasks do
             optional(:document_id) => UUIDv7.t(),
             optional(:parent_id) => UUIDv7.t() | nil,
             optional(:live) => boolean(),
-            optional(:overdue) => boolean()
+            optional(:overdue) => boolean(),
+            optional(:priority) => pos_integer(),
+            optional(:scheduled) => boolean(),
+            optional(:sort) => sort()
           }
+
+    @typedoc """
+    Which order a list comes back in.
+
+    `:oldest` is a backlog read from the front. `:plan` is the order the packer
+    fills a week in -- priority, then the day the task was selected for, then
+    age -- so the first row is the one the plan would reach next.
+    """
+    @type sort :: :oldest | :plan
 
     @type estimate :: %{
             optimistic: non_neg_integer(),
@@ -154,6 +167,7 @@ defmodule RintoPMO.Tasks do
     @type refusal :: {:error, atom()} | {:error, atom(), map()}
 
     @callback list_tasks(Project.t(), filter()) :: [Task.t()]
+    @callback list_tasks(filter()) :: [Task.t()]
     @callback get_task!(UUIDv7.t()) :: Task.t()
     @callback create_task(Project.t(), map()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
@@ -164,12 +178,12 @@ defmodule RintoPMO.Tasks do
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
     @callback claim_task(Task.t(), term()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-    @callback release_task(Task.t()) ::
+    @callback release_task(Task.t(), term()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
 
-    @callback transition_task(Task.t(), Task.event()) ::
+    @callback transition_task(Task.t(), Task.event(), term()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-    @callback transition_task(Task.t(), Task.event(), map()) ::
+    @callback transition_task(Task.t(), Task.event(), term(), map()) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
 
     @callback request_estimation(Task.t(), estimation_kind()) ::
@@ -193,6 +207,8 @@ defmodule RintoPMO.Tasks do
     @callback remove_dependency(Task.t(), UUIDv7.t()) :: :ok
     @callback list_dependencies(Task.t()) :: [Task.t()]
     @callback list_dependents(Task.t()) :: [Task.t()]
+    @callback list_edges(UUIDv7.t() | nil) ::
+                [%{task_id: UUIDv7.t(), depends_on_id: UUIDv7.t()}]
   end
 
   @behaviour Behaviour
@@ -217,6 +233,29 @@ defmodule RintoPMO.Tasks do
     project.id
     |> project_tasks()
     |> filter_tasks(filter)
+    |> sort_tasks(filter)
+  end
+
+  @doc """
+  Lists every project's tasks at once.
+
+  The pool a person pulls from is not a project's. Capacity is one pool across
+  everything they are working on -- `RintoPMO.Schedule` says so and refuses to
+  filter by project for that reason -- so "what is there to pick up" and "what
+  is the most worth starting" are questions about all of it. Answering them by
+  listing each project in turn makes the client sort the union itself, using
+  whatever order it invented, which is exactly the rule it should not own.
+
+  Everything is read and rolled up together, which is what a rollup needs
+  anyway: a cover's status comes from children a `WHERE` clause might have
+  excluded. These lists are unpaginated by design, and the corpus is one
+  person's plan.
+  """
+  @impl true
+  def list_tasks(filter) when is_map(filter) do
+    all_tasks()
+    |> filter_tasks(filter)
+    |> sort_tasks(filter)
   end
 
   @doc """
@@ -401,10 +440,15 @@ defmodule RintoPMO.Tasks do
   by someone else. A released `:in_progress` task keeps `started_at`, so the
   next actor inherits an honest record of how long it has been open rather
   than a clock reset to hide the handoff.
+
+  `actor_id` is who is letting go, and it has to be the actor holding the task
+  -- putting somebody else's work back in the pool is `assign_task/2`, which
+  says whose it becomes rather than leaving it to whoever looks next.
   """
   @impl true
-  def release_task(%Task{} = task) do
-    with :ok <- require_work(task) do
+  def release_task(%Task{} = task, actor_id) do
+    with :ok <- require_work(task),
+         :ok <- require_owner(task, actor_id) do
       task
       |> Task.assignment_changeset(nil)
       |> Repo.update()
@@ -412,24 +456,46 @@ defmodule RintoPMO.Tasks do
   end
 
   @doc """
-  Moves a task through the status machine.
+  Moves a task through the status machine, on behalf of `actor_id`.
 
   Refuses with `{:error, :task_state_conflict, details}` when the event does
   not apply to the current status, when the task is a summary node whose status
-  is not its own to move, or when `:start` is asked of a task nobody owns --
-  starting work with no owner is how a task ends up in progress with nobody on
-  it.
+  is not its own to move, or when `:start` or `:complete` is asked of a task
+  nobody owns -- working with no owner is how a task ends up in progress with
+  nobody on it.
+
+  ## Two of the four events belong to the assignee
+
+  `:start` and `:complete` are the acts of doing the work, so `actor_id` has to
+  be the actor the task is assigned to, and anyone else gets
+  `{:error, :task_not_yours, details}`. Until now this rule existed only as a
+  line in the executor's skill telling the agent to check `assignee_id` with
+  its own eyes; a rule that lives in a prompt is a suggestion, and this is the
+  same rule where it can be enforced.
+
+  `:cancel` and `:reopen` are deliberately left open. They decide whether work
+  happens at all rather than who does it, and dropping a piece of work somebody
+  else is holding is an ordinary planning act -- the whole point of `cancel`
+  keeping the record is that the decision was made from outside the work.
+
+  > #### One token, for now {: .info}
+  >
+  > `actor_id` comes from the token, so today it is always this installation's
+  > owner (see `RintoPMO.Actors`). That does not make the check idle: it is
+  > what stops work assigned to a *different* actor from being started or
+  > finished by the one holding the token. When tokens become per-actor, this
+  > rule needs no revisiting -- it is already asking the right question.
   """
   @impl true
-  def transition_task(%Task{} = task, event) when is_atom(event) do
-    transition_task(task, event, %{})
+  def transition_task(%Task{} = task, event, actor_id) when is_atom(event) do
+    transition_task(task, event, actor_id, %{})
   end
 
   @impl true
-  def transition_task(%Task{} = task, event, attrs) when is_map(attrs) do
+  def transition_task(%Task{} = task, event, actor_id, attrs) when is_map(attrs) do
     with :ok <- require_work(task),
          {:ok, _next} <- allowed_transition(task, event),
-         :ok <- require_assignee(task, event),
+         :ok <- require_owner(task, event, actor_id),
          {:ok, attrs} <- complete_attrs(event, attrs) do
       task
       |> Task.transition_changeset(event, attrs)
@@ -1111,9 +1177,21 @@ defmodule RintoPMO.Tasks do
   # ---------------------------------------------------------------- rollup
 
   defp project_tasks(project_id) do
+    Task
+    |> where([task], task.project_id == ^project_id)
+    |> rolled_up()
+  end
+
+  # No project at all. A parent is always in the same project as its child --
+  # `validate_parent/3` enforces it -- so rolling the whole table up at once
+  # gives every cover the same children it would have had project by project.
+  defp all_tasks do
+    rolled_up(Task)
+  end
+
+  defp rolled_up(query) do
     tasks =
-      Task
-      |> where([task], task.project_id == ^project_id)
+      query
       |> order_by([task], asc: task.id)
       |> Repo.all()
 
@@ -1174,10 +1252,20 @@ defmodule RintoPMO.Tasks do
   # when the chunk finishes, is `RintoPMO.Schedule`'s answer and depends on
   # every other task competing for the same weeks; a max taken over selections
   # would look like that answer without being it.
+  #
+  # `first_planned_on` rolls up the same way and has to: a cover whose current
+  # selection was rolled up while its baseline stayed null would report a chunk
+  # that has never slipped, which is the one thing the baseline exists to stop.
   defp put_earliest_planned_start(%Task{} = task, rolled) do
-    case rolled |> Enum.map(& &1.planned_start_on) |> Enum.reject(&is_nil/1) do
+    task
+    |> put_earliest(rolled, :planned_start_on)
+    |> put_earliest(rolled, :first_planned_on)
+  end
+
+  defp put_earliest(%Task{} = task, rolled, field) do
+    case rolled |> Enum.map(&Map.fetch!(&1, field)) |> Enum.reject(&is_nil/1) do
       [] -> task
-      days -> %{task | planned_start_on: Enum.min(days, Date)}
+      days -> Map.put(task, field, Enum.min(days, Date))
     end
   end
 
@@ -1227,9 +1315,26 @@ defmodule RintoPMO.Tasks do
         {:parent_id, parent_id} -> task.parent_id == parent_id
         {:live, live} -> task.status in live_statuses == live
         {:overdue, overdue} -> overdue?(task, live_statuses, today) == overdue
+        {:priority, priority} -> task.priority == priority
+        {:scheduled, scheduled} -> not is_nil(task.planned_start_on) == scheduled
         {_other, _value} -> true
       end)
     end)
+  end
+
+  # `:sort` travels in the filter map because it comes off the same query
+  # string, but it selects nothing -- hence its own pass rather than a clause
+  # in `filter_tasks/2` that would have to answer `true` for every task.
+  #
+  # `:plan` is `RintoPMO.Schedule.order/1` itself rather than a copy of it.
+  # "Which of these should be done first" has one answer in this system, and a
+  # list that sorted by priority alone would disagree with the board over two
+  # tasks of equal priority selected for different days.
+  defp sort_tasks(tasks, filter) do
+    case Map.get(filter, :sort, :oldest) do
+      :plan -> Schedule.order(tasks)
+      _oldest -> tasks
+    end
   end
 
   defp overdue?(%Task{due_on: nil}, _live_statuses, _today), do: false
@@ -1388,6 +1493,43 @@ defmodule RintoPMO.Tasks do
     |> join(:inner, [prerequisite], edge in Dependency, on: edge.depends_on_id == prerequisite.id)
     |> where([_prerequisite, edge], edge.task_id == ^task.id)
     |> order_by([prerequisite], asc: prerequisite.inserted_at)
+    |> Repo.all()
+  end
+
+  @doc """
+  Every edge at once, for drawing rather than for asking about one task.
+
+  A chart that wanted arrows had to call `list_dependencies/1` per task, which
+  is a request per bar. The edges are two ids each; there is no reason for the
+  round trips.
+
+  Scoped to a project, this answers every edge with **either** end in it, not
+  only the ones with both. A dependency reaching outside the project is a real
+  constraint on the work being drawn, and leaving it out would produce a chart
+  that looks unconstrained while the task waits on something. The client can
+  see which id it does not have, and say so.
+
+  Ordered by the edge's own id, so a repeated call draws the same picture.
+  """
+  @spec list_edges(UUIDv7.t() | nil) :: [%{task_id: UUIDv7.t(), depends_on_id: UUIDv7.t()}]
+  @impl Behaviour
+  def list_edges(project_id \\ nil) do
+    Dependency
+    |> join(:inner, [edge], waiting in Task, on: waiting.id == edge.task_id)
+    |> join(:inner, [edge], prerequisite in Task, on: prerequisite.id == edge.depends_on_id)
+    |> then(fn query ->
+      if project_id do
+        where(
+          query,
+          [_edge, waiting, prerequisite],
+          waiting.project_id == ^project_id or prerequisite.project_id == ^project_id
+        )
+      else
+        query
+      end
+    end)
+    |> order_by([edge], asc: edge.id)
+    |> select([edge], %{task_id: edge.task_id, depends_on_id: edge.depends_on_id})
     |> Repo.all()
   end
 
@@ -1681,11 +1823,31 @@ defmodule RintoPMO.Tasks do
     end
   end
 
-  defp require_assignee(%Task{status: status, assignee_id: nil}, :start) do
+  # The events that are the assignee's to make. See `transition_task/4` for why
+  # `:cancel` and `:reopen` are not among them.
+  @owned_events [:start, :complete]
+
+  defp require_owner(%Task{} = task, event, actor_id) when event in @owned_events do
+    require_owner(task, actor_id)
+  end
+
+  defp require_owner(%Task{}, _event, _actor_id), do: :ok
+
+  # Two refusals rather than one, because they have two different answers.
+  # Nobody holds it: claim it and carry on. Somebody else holds it: this was the
+  # wrong task, and no amount of re-reading state will change that -- which is
+  # also why the second is a 403 and the first a 409.
+  defp require_owner(%Task{status: status, assignee_id: nil}, _actor_id) do
     {:error, :task_state_conflict, %{status: status, reason: "task has no assignee"}}
   end
 
-  defp require_assignee(%Task{}, _event), do: :ok
+  defp require_owner(%Task{assignee_id: assignee_id}, actor_id)
+       when assignee_id == actor_id,
+       do: :ok
+
+  defp require_owner(%Task{assignee_id: assignee_id}, _actor_id) do
+    {:error, :task_not_yours, %{assignee_id: assignee_id}}
+  end
 
   defp validate_assignee(actor_id) do
     with {:ok, actor_id} <- cast_actor_id(actor_id),

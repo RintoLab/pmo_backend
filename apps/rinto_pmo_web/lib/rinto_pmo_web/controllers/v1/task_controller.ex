@@ -6,10 +6,18 @@ defmodule RintoPMOWeb.V1.TaskController do
   alias RintoPMO.Utils
   alias RintoPMOWeb.Plugs.ActorToken
   alias RintoPMOWeb.V1.JobJSON
+  alias RintoPMOWeb.V1.TaskSchemaJSON
 
   @statuses Map.new(Task.statuses(), &{Atom.to_string(&1), &1})
   @kinds Map.new(Task.kinds(), &{Atom.to_string(&1), &1})
+  @priorities Task.priorities()
   @estimation_kinds %{"difficulty" => :difficulty, "time" => :time}
+
+  # `plan` is the board's own order -- priority, then the day the task was
+  # selected for, then age. Named for what it answers ("what would the plan do
+  # next") rather than for the columns it sorts on, which are three and would
+  # make a parameter nobody could remember.
+  @sorts %{"oldest" => :oldest, "plan" => :plan}
 
   # The status machine is exposed one endpoint per event rather than as a
   # settable field. `PATCH {status: "done"}` would let a client invent
@@ -25,6 +33,23 @@ defmodule RintoPMOWeb.V1.TaskController do
     end
   end
 
+  @doc """
+  The same list, across every project.
+
+  A person's capacity is one pool spanning everything they work on -- which is
+  why `RintoPMO.Schedule` refuses to filter by project -- so "what is there to
+  pick up" is not a question about one. Answering it by listing each project in
+  turn would leave the client to merge and sort the union, inventing an order
+  the system already has one of.
+
+  Same filters as the project-scoped list, and the same rendering.
+  """
+  def index(conn, params) do
+    with {:ok, filter} <- task_filter(params) do
+      render(conn, :index, tasks: tasks_context().list_tasks(filter))
+    end
+  end
+
   def create(conn, %{"project_slug" => project_slug} = params) do
     project = get_project!(project_slug)
     attrs = Map.delete(params, "project_slug")
@@ -34,6 +59,22 @@ defmodule RintoPMOWeb.V1.TaskController do
       |> put_status(:created)
       |> render(:show, task: task)
     end
+  end
+
+  @doc """
+  What a task write has to look like.
+
+  It describes the API rather than any row, which is why it takes neither a
+  project nor an id and touches no context. It is served instead of being
+  written into the client because the enums and the estimate ceiling come off
+  `RintoPMO.Tasks.Task` as the request is answered: a CLI carrying its own
+  copy updates on its own schedule and would go on teaching last release's
+  rules to an agent with no way to notice.
+  """
+  def schema(conn, _params) do
+    conn
+    |> put_view(TaskSchemaJSON)
+    |> render(:show)
   end
 
   @doc """
@@ -74,6 +115,34 @@ defmodule RintoPMOWeb.V1.TaskController do
       depends_on: context.list_dependencies(task),
       dependents: context.list_dependents(task)
     )
+  end
+
+  @doc """
+  Every edge at once, so a chart can draw arrows without a request per bar.
+
+  Two ids each and nothing else: the tasks themselves came from the list this
+  is drawn beside, and repeating them here would double the payload to say
+  what the client already has.
+
+  With `project_id`, every edge with either end in that project -- not only
+  the ones with both. An edge reaching outside is a real constraint on the
+  work being drawn, and hiding it would show a chart as unconstrained while
+  the task waits on something.
+  """
+  def edges(conn, params) do
+    with {:ok, project_id} <- edge_project(params) do
+      render(conn, :edges, edges: tasks_context().list_edges(project_id))
+    end
+  end
+
+  defp edge_project(params) do
+    case Map.get(params, "project_id") do
+      nil ->
+        {:ok, nil}
+
+      value ->
+        with {:ok, filter} <- uuid_filter(value, %{}, :id, "project_id"), do: {:ok, filter.id}
+    end
   end
 
   def add_dependency(conn, %{"id" => id} = params) do
@@ -127,12 +196,16 @@ defmodule RintoPMOWeb.V1.TaskController do
 
   @doc """
   Puts a task back in the pool without touching its status.
+
+  The caller has to be holding it: letting go is the mirror of `claim`, so it
+  names nobody and refuses with `403` when the work is somebody else's. Taking
+  a task off another actor is `assign`, which says who gets it next.
   """
   def release(conn, %{"id" => id}) do
     context = tasks_context()
     task = context.get_task!(id)
 
-    with {:ok, task} <- context.release_task(task) do
+    with {:ok, task} <- context.release_task(task, ActorToken.current_actor!(conn).id) do
       render(conn, :show, task: task)
     end
   end
@@ -232,11 +305,16 @@ defmodule RintoPMOWeb.V1.TaskController do
     |> render(:show, job: Jobs.describe(job))
   end
 
+  # The token says who is doing this, the same way it does for `claim`. Two of
+  # the four events refuse when that is not the actor holding the task; the
+  # context owns which two, because a rule enforced here would be a rule the
+  # next caller could skip.
   defp transition(conn, id, event, attrs \\ %{}) do
     context = tasks_context()
     task = context.get_task!(id)
+    actor_id = ActorToken.current_actor!(conn).id
 
-    with {:ok, task} <- context.transition_task(task, event, attrs) do
+    with {:ok, task} <- context.transition_task(task, event, actor_id, attrs) do
       render(conn, :show, task: task)
     end
   end
@@ -263,8 +341,31 @@ defmodule RintoPMOWeb.V1.TaskController do
          {:ok, filter} <- assignee_filter(params, filter),
          {:ok, filter} <- parent_filter(params, filter),
          {:ok, filter} <- document_filter(params, filter),
-         {:ok, filter} <- boolean_filter(params, filter, "live", :live) do
-      boolean_filter(params, filter, "overdue", :overdue)
+         {:ok, filter} <- boolean_filter(params, filter, "live", :live),
+         {:ok, filter} <- boolean_filter(params, filter, "overdue", :overdue),
+         {:ok, filter} <- priority_filter(params, filter),
+         {:ok, filter} <- boolean_filter(params, filter, "scheduled", :scheduled) do
+      enum_filter(params, filter, "sort", :sort, @sorts)
+    end
+  end
+
+  # `scheduled=false` is the backlog, and it is a filter rather than a status
+  # for the reason there is no `:backlog` status: which slot of the plan a task
+  # sits in is a many-valued question, and the column that answers it is
+  # `planned_start_on`.
+  defp priority_filter(params, filter) do
+    case Map.get(params, "priority") do
+      nil ->
+        {:ok, filter}
+
+      value ->
+        case Integer.parse(value) do
+          {priority, ""} when priority in @priorities ->
+            {:ok, Map.put(filter, :priority, priority)}
+
+          _invalid ->
+            {:error, :bad_request, %{"priority" => ["is invalid"]}}
+        end
     end
   end
 

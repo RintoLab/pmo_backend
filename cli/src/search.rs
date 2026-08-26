@@ -59,6 +59,13 @@ pub fn run(args: SearchArgs) -> Result<()> {
     let config = Config::load()?;
     let client = Client::new(config.api(), config.token()?)?;
 
+    search(&client, args)
+}
+
+/// Takes the client rather than building one, so a test can point it at a
+/// server and see what this actually asks for. Seven optional parameters go
+/// into that query, and which of them reach the wire is the whole behaviour.
+fn search(client: &Client, args: SearchArgs) -> Result<()> {
     let limit = args.limit.map(|value| value.to_string());
     let recall_limit = args.recall_limit.map(|value| value.to_string());
     let mut query: Vec<(&str, &str)> = vec![("q", &args.query), ("type", &args.r#type)];
@@ -145,8 +152,62 @@ fn string<'a>(value: &'a Value, field: &str, fallback: &'a str) -> &'a str {
 
 #[cfg(test)]
 mod tests {
-    use super::render;
+    use super::{render, search, SearchArgs};
+    use crate::testing::{client, Reply, StubServer};
     use serde_json::json;
+
+    /// Every optional parameter is left out unless it was asked for, and the
+    /// two required ones are always there.
+    ///
+    /// The query is a sentence, so the encoding matters: `ureq` writes a space
+    /// as `+`, which Plug decodes back to a space. Pinned here because a
+    /// natural-language search that arrived with a literal `+` in it would
+    /// return nothing and look like a bad index.
+    #[test]
+    fn only_the_filters_that_were_given_reach_the_wire() {
+        let server = StubServer::start(vec![
+            Reply::json(200, json!({"data": []})),
+            Reply::json(200, json!({"data": []})),
+        ]);
+        let client = client(&server);
+
+        search(
+            &client,
+            SearchArgs {
+                query: "vector search".to_string(),
+                r#type: "task".to_string(),
+                project_id: None,
+                limit: None,
+                recall_limit: None,
+                include_archived: false,
+            },
+        )
+        .unwrap();
+
+        search(
+            &client,
+            SearchArgs {
+                query: "vector search".to_string(),
+                r#type: "block".to_string(),
+                project_id: Some("project-1".to_string()),
+                limit: Some(5),
+                recall_limit: Some(200),
+                include_archived: true,
+            },
+        )
+        .unwrap();
+
+        let requests = server.requests();
+        assert_eq!(
+            requests[0].target,
+            "/api/v1/search?q=vector+search&type=task"
+        );
+        assert_eq!(
+            requests[1].target,
+            "/api/v1/search?q=vector+search&type=block&project_id=project-1\
+             &limit=5&recall_limit=200&include_archived=true"
+        );
+    }
 
     #[test]
     fn the_uri_comes_first_because_it_is_the_part_that_gets_used() {

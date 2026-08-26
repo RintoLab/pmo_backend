@@ -31,6 +31,24 @@ defmodule RintoPMOWeb.Router do
     # alone would hand it the whole week. A per-project view filters this.
     get "/schedule", ScheduleController, :index
 
+    # The same subject read backwards: not a forecast but what the clocks
+    # recorded. A separate endpoint rather than a flag, because a client that
+    # could ask for both at once would get one shape carrying two kinds of
+    # claim. This one *can* be scoped to a project -- the refusal above is
+    # about arithmetic, and nothing about the past is computed that way.
+    get "/history", ScheduleController, :history
+
+    # The same record read as arithmetic: what the estimates turned out to be
+    # worth, by week and by story point. It is the only loop that lets the
+    # estimator be checked against anything, and it was missing for as long as
+    # the numbers have been collected.
+    get "/calibration", CalibrationController, :index
+
+    # Every dependency edge at once. `/tasks/:id/dependencies` answers about
+    # one task, which is a request per bar for anything drawing arrows; this
+    # is the same facts in one call, as bare pairs of ids.
+    get "/dependencies", TaskController, :edges
+
     # Which days are not what the weekend rule says. Statutory holidays and the
     # weekends worked to make up for them are fetched daily and are read-only
     # here; leave is the half a person writes, and is the reason this table
@@ -144,6 +162,17 @@ defmodule RintoPMOWeb.Router do
     # no matching "open" -- you cannot talk to a cold topic, so sending a
     # message is what heats one.
     post "/conversations/:id/close", ConversationController, :close
+
+    # What a write has to look like: the shapes `create`, `update` and `split`
+    # read. It belongs to no project and no task, and it sits ahead of
+    # `resources` so that `schema` is not read as an id.
+    get "/tasks/schema", TaskController, :schema
+
+    # The pool, across every project. Capacity is one person's and spans all of
+    # them -- `/schedule` says so by refusing to filter by project -- so "what
+    # is there to pick up" is not a per-project question, and answering it by
+    # walking the projects would leave the client to invent the merge order.
+    get "/tasks", TaskController, :index
 
     # Delete is not the opposite of create here -- `cancel` is what records
     # that work was dropped. This is for rows that should never have existed,

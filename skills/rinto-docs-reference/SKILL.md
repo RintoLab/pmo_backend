@@ -47,14 +47,42 @@ rinto-pmo project show <project-slug>
 rinto-pmo task list <project-slug> --kind work --assignee-id none --live true
 ```
 
+**不带 project slug 就是跨项目的整个任务池**，容量本来就是跨项目共享的：
+
+```sh
+rinto-pmo task list --kind work --assignee-id none --live true --sort plan
+```
+
+`--sort plan` 是排期板自己的顺序（优先级 → 排到的那天 → 建的时间），
+所以第一行就是计划下一步会做的那条。不加就是从旧到新。
+
 恢复工作时，先看当前 actor 已领取的任务：
 
 ```sh
 rinto-pmo task list <project-slug> --kind work --mine --live true
 ```
 
-列表按创建时间从旧到新。`summary` 是工作分解的汇总节点，不是可以领取和执行的工作，
+`summary` 是工作分解的汇总节点，不是可以领取和执行的工作，
 所以开发任务池必须带 `--kind work`。
+
+### 这条活在不在计划里
+
+```sh
+rinto-pmo schedule                          # 本周
+rinto-pmo schedule --from 2026-09-07 --to 2026-09-21
+```
+
+每周打出装进容量的任务、`overflow`（选进了这周但没装下）和 `blocked`
+（在等一条没装下的前置）。**一条任务如果压根不在这张表里，说明它没被排进任何一周**
+——那是 backlog，做它是「在计划之外干活」，不是推进计划。
+
+真要找 backlog 里最该捞的一条：
+
+```sh
+rinto-pmo task list --kind work --live true --scheduled false --sort plan
+```
+
+用户明确指名的任务照做，不必先查计划；上面这些是**自己挑活**时用的。
 
 如果用户已经给了 task id，不必先列项目，直接读取：
 
@@ -79,6 +107,15 @@ rinto-pmo task show <task-id>
 - `parent_id`：它在工作分解中的位置
 - `due_on`、`estimate`：期限和估算
 - `assignee_id`：确实是当前 actor
+- `priority`、`planned_start_on`：它在计划里的位置。
+  `planned_start_on: none (backlog)` 表示这条活不在任何一周里——**你正在计划之外干活**，
+  这本身不一定错（用户点名的活照做），但要知道自己在做什么
+- `difficulty`：Fibonacci 故事点，是对工作的评级，不是工时；工时看 `estimate`
+
+`start` / `complete` / `release` 现在由服务端强制这一条：不是持有人就返回
+`403 task_not_yours`，`details.assignee_id` 会告诉你它属于谁。
+这和 `task_already_claimed` 不同——那个是抢输了，换一条任务就行；`403` 表示这条活
+根本不归你，重试没有意义，要么去任务池领一条，要么是 task id 拿错了。
 
 ## 3. 读取实现依据
 
@@ -160,7 +197,12 @@ Rinto 的任务描述不会替代仓库约定。
 
 ```sh
 rinto-pmo task complete <task-id>
+rinto-pmo task complete <task-id> --actual-minutes 90
 ```
+
+第二种写法一并记下这条活实际花了多少分钟。**知道就写，不知道就用第一种**——
+不写是「保持原样」，不是清空，人后面可以补。这个数字是估算之外唯一被系统消费的
+产出：后续估算拿它校准。别拿它当工时报表，也别为了凑一个数去猜。
 
 如果确认无法继续、需要让别人接手，释放所有权：
 
@@ -171,12 +213,16 @@ rinto-pmo task release <task-id>
 `release` 不是取消任务；工作仍然存在，而且已经开始的状态和时间会保留。
 不要因为暂时遇到困难就 `cancel`。取消表示团队决定不再做这项工作，应由明确的项目决策触发。
 
+注意：`release` 之后这条任务就没有持有人了。如果后来又想把它做完，必须先重新
+`claim` —— 服务端不接受完成一条无人持有的任务。
+
 ## 状态纪律
 
 - 不要处理未领取的任务。
 - 不要对 `summary` 节点执行 claim/start/complete。
 - `open → start → in_progress → complete → done` 是正常路径。
 - claim 冲突后换任务，不自动重试。
+- 收到 `403 task_not_yours` 不要重试，也不要试图绕过：换一条自己领的任务。
 - 本地实现或测试失败时不要 complete。
 - 需要交接时 release，并向用户说明剩余问题。
 - 不要用 delete 代替 cancel；delete 只适合本不该存在的误建记录。
@@ -190,6 +236,7 @@ rinto-pmo task release <task-id>
 rinto-pmo project --help
 rinto-pmo task --help
 rinto-pmo task <command> --help
+rinto-pmo schedule --help
 rinto-pmo doc --help
 rinto-pmo search --help
 ```

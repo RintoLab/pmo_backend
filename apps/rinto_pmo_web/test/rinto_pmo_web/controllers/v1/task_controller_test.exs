@@ -79,6 +79,103 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
     end
   end
 
+  describe "edges" do
+    test "answers every edge as bare pairs of ids", %{conn: conn} do
+      first = insert(:task)
+      second = insert(:task)
+      waiting_id = second.id
+      prerequisite_id = first.id
+
+      expect(TasksMock, :list_edges, fn nil ->
+        [%{task_id: second.id, depends_on_id: first.id}]
+      end)
+
+      conn = get(conn, ~p"/api/v1/dependencies")
+
+      assert [%{"task_id" => ^waiting_id, "depends_on_id" => ^prerequisite_id}] =
+               json_response(conn, 200)["data"]
+    end
+
+    test "passes the project through, and refuses one it cannot read", %{conn: conn} do
+      project = insert(:project)
+      project_id = project.id
+
+      expect(TasksMock, :list_edges, fn ^project_id -> [] end)
+
+      assert conn
+             |> get(~p"/api/v1/dependencies?project_id=#{project.id}")
+             |> json_response(200)
+             |> Map.fetch!("data") == []
+
+      assert %{"details" => %{"project_id" => ["is invalid"]}} =
+               conn |> get(~p"/api/v1/dependencies?project_id=nope") |> json_response(400)
+    end
+  end
+
+  describe "index across every project" do
+    test "asks the context for the whole pool, with no project at all", %{conn: conn} do
+      task = insert(:task)
+      task_id = task.id
+
+      expect(TasksMock, :list_tasks, fn %{} = filter ->
+        assert filter == %{}
+        [task]
+      end)
+
+      conn = get(conn, ~p"/api/v1/tasks")
+
+      assert [%{"id" => ^task_id}] = json_response(conn, 200)["data"]
+    end
+
+    # The question this endpoint exists for, spelled as a query: unclaimed,
+    # unfinished, in the order the board would reach it.
+    test "parses the scheduling filters and the plan order", %{conn: conn} do
+      expect(TasksMock, :list_tasks, fn filter ->
+        assert filter == %{
+                 assignee_id: nil,
+                 live: true,
+                 priority: 1,
+                 scheduled: false,
+                 sort: :plan
+               }
+
+        []
+      end)
+
+      conn =
+        get(
+          conn,
+          ~p"/api/v1/tasks?assignee_id=none&live=true&priority=1&scheduled=false&sort=plan"
+        )
+
+      assert json_response(conn, 200)["data"] == []
+    end
+
+    test "the same filters work on one project", %{conn: conn} do
+      project = expect_project()
+
+      expect(TasksMock, :list_tasks, fn ^project, filter ->
+        assert filter == %{scheduled: true, sort: :plan}
+        []
+      end)
+
+      conn = get(conn, ~p"/api/v1/projects/#{project.slug}/tasks?scheduled=true&sort=plan")
+
+      assert json_response(conn, 200)["data"] == []
+    end
+
+    test "rejects a priority off the scale and an unknown sort", %{conn: conn} do
+      assert %{"details" => %{"priority" => ["is invalid"]}} =
+               conn |> get(~p"/api/v1/tasks?priority=9") |> json_response(400)
+
+      assert %{"details" => %{"priority" => ["is invalid"]}} =
+               conn |> get(~p"/api/v1/tasks?priority=high") |> json_response(400)
+
+      assert %{"details" => %{"sort" => ["is invalid"]}} =
+               conn |> get(~p"/api/v1/tasks?sort=priority") |> json_response(400)
+    end
+  end
+
   describe "create" do
     test "passes a three-point estimate through", %{conn: conn} do
       project = expect_project()
@@ -300,16 +397,42 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
              } = json_response(conn, 409)
     end
 
-    test "releases a task back to the pool", %{conn: conn} do
+    test "releases a task back to the pool as the token's actor", %{
+      conn: conn,
+      current_actor: current_actor
+    } do
       task = insert(:task, assignee: build(:actor))
       released = %{task | assignee_id: nil, assigned_at: nil}
 
       expect(TasksMock, :get_task!, fn _id -> task end)
-      expect(TasksMock, :release_task, fn ^task -> {:ok, released} end)
+
+      expect(TasksMock, :release_task, fn ^task, actor_id ->
+        assert actor_id == current_actor.id
+        {:ok, released}
+      end)
 
       conn = post(conn, ~p"/api/v1/tasks/#{task.id}/release")
 
       assert %{"assignee_id" => nil} = json_response(conn, 200)["data"]
+    end
+
+    test "releasing somebody else's task is a 403", %{conn: conn} do
+      owner = insert(:actor)
+      task = insert(:task, assignee: owner)
+      owner_id = owner.id
+
+      expect(TasksMock, :get_task!, fn _id -> task end)
+
+      expect(TasksMock, :release_task, fn ^task, _actor_id ->
+        {:error, :task_not_yours, %{assignee_id: owner_id}}
+      end)
+
+      conn = post(conn, ~p"/api/v1/tasks/#{task.id}/release")
+
+      assert %{
+               "error" => "task_not_yours",
+               "details" => %{"assignee_id" => ^owner_id}
+             } = json_response(conn, 403)
     end
   end
 
@@ -409,32 +532,32 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
   end
 
   describe "status machine" do
-    test "POST /tasks/:id/start fires :start", %{conn: conn} do
-      task = expect_transition(:start)
+    test "POST /tasks/:id/start fires :start", %{conn: conn, current_actor: actor} do
+      task = expect_transition(:start, actor.id)
 
       conn = post(conn, ~p"/api/v1/tasks/#{task.id}/start")
 
       assert json_response(conn, 200)["data"]["id"] == task.id
     end
 
-    test "POST /tasks/:id/complete fires :complete", %{conn: conn} do
-      task = expect_transition(:complete)
+    test "POST /tasks/:id/complete fires :complete", %{conn: conn, current_actor: actor} do
+      task = expect_transition(:complete, actor.id)
 
       conn = post(conn, ~p"/api/v1/tasks/#{task.id}/complete")
 
       assert json_response(conn, 200)["data"]["id"] == task.id
     end
 
-    test "POST /tasks/:id/cancel fires :cancel", %{conn: conn} do
-      task = expect_transition(:cancel)
+    test "POST /tasks/:id/cancel fires :cancel", %{conn: conn, current_actor: actor} do
+      task = expect_transition(:cancel, actor.id)
 
       conn = post(conn, ~p"/api/v1/tasks/#{task.id}/cancel")
 
       assert json_response(conn, 200)["data"]["id"] == task.id
     end
 
-    test "POST /tasks/:id/reopen fires :reopen", %{conn: conn} do
-      task = expect_transition(:reopen)
+    test "POST /tasks/:id/reopen fires :reopen", %{conn: conn, current_actor: actor} do
+      task = expect_transition(:reopen, actor.id)
 
       conn = post(conn, ~p"/api/v1/tasks/#{task.id}/reopen")
 
@@ -446,7 +569,7 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
 
       expect(TasksMock, :get_task!, fn _id -> chunk end)
 
-      expect(TasksMock, :transition_task, fn ^chunk, :start, _attrs ->
+      expect(TasksMock, :transition_task, fn ^chunk, :start, _actor_id, _attrs ->
         {:error, :task_state_conflict, %{kind: :summary, reason: "a summary node holds no work"}}
       end)
 
@@ -456,12 +579,31 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
                json_response(conn, 409)
     end
 
+    test "starting work assigned to somebody else is a 403", %{conn: conn} do
+      owner = insert(:actor)
+      task = insert(:task, assignee: owner)
+      owner_id = owner.id
+
+      expect(TasksMock, :get_task!, fn _id -> task end)
+
+      expect(TasksMock, :transition_task, fn ^task, :start, _actor_id, _attrs ->
+        {:error, :task_not_yours, %{assignee_id: owner_id}}
+      end)
+
+      conn = post(conn, ~p"/api/v1/tasks/#{task.id}/start")
+
+      assert %{
+               "error" => "task_not_yours",
+               "details" => %{"assignee_id" => ^owner_id}
+             } = json_response(conn, 403)
+    end
+
     test "an impossible transition is a 409", %{conn: conn} do
       task = insert(:task)
 
       expect(TasksMock, :get_task!, fn _id -> task end)
 
-      expect(TasksMock, :transition_task, fn ^task, :complete, _attrs ->
+      expect(TasksMock, :transition_task, fn ^task, :complete, _actor_id, _attrs ->
         {:error, :task_state_conflict, %{status: :open, event: :complete}}
       end)
 
@@ -476,7 +618,7 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
 
       expect(TasksMock, :get_task!, fn _id -> task end)
 
-      expect(TasksMock, :transition_task, fn ^task, :complete, attrs ->
+      expect(TasksMock, :transition_task, fn ^task, :complete, _actor_id, attrs ->
         assert attrs == %{"actual_minutes" => 90}
         {:ok, %{task | status: :done, actual_minutes: 90}}
       end)
@@ -576,13 +718,17 @@ defmodule RintoPMOWeb.V1.TaskControllerTest do
              assert_error_sent(:not_found, fn -> get(conn, ~p"/api/v1/tasks/#{id}") end)
   end
 
-  defp expect_transition(expected_event) do
+  # Every event carries the token's actor into the context, including the two
+  # the context does not gate on it: which events are the assignee's is a domain
+  # rule, and the controller's job is only to say truthfully who is asking.
+  defp expect_transition(expected_event, expected_actor_id) do
     task = insert(:task)
 
     expect(TasksMock, :get_task!, fn _id -> task end)
 
-    expect(TasksMock, :transition_task, fn ^task, event, _attrs ->
+    expect(TasksMock, :transition_task, fn ^task, event, actor_id, _attrs ->
       assert event == expected_event
+      assert actor_id == expected_actor_id
       {:ok, task}
     end)
 

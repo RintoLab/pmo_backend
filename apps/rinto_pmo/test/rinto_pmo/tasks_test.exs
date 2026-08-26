@@ -125,6 +125,114 @@ defmodule RintoPMO.TasksTest do
       assert [late.id] == ids(Tasks.list_tasks(project, %{overdue: true}))
       assert length(Tasks.list_tasks(project, %{overdue: false})) == 3
     end
+
+    test "filters by priority and by whether the task is in the backlog" do
+      project = insert(:project)
+      monday = ~D[2026-09-07]
+
+      urgent = insert(:task, project: project, priority: 1, planned_start_on: monday)
+      backlog = insert(:task, project: project, priority: 1)
+      insert(:task, project: project, priority: 4, planned_start_on: monday)
+
+      assert [urgent.id, backlog.id] == ids(Tasks.list_tasks(project, %{priority: 1}))
+      assert [backlog.id] == ids(Tasks.list_tasks(project, %{scheduled: false}))
+
+      assert [urgent.id] ==
+               ids(Tasks.list_tasks(project, %{scheduled: true, priority: 1}))
+    end
+
+    # The point of the option: it is the packer's rule, not a second one that
+    # happens to agree on the easy cases.
+    test "sorting by plan is the order the board fills a week in" do
+      project = insert(:project)
+
+      later = insert(:task, project: project, priority: 2, planned_start_on: ~D[2026-09-09])
+      sooner = insert(:task, project: project, priority: 2, planned_start_on: ~D[2026-09-07])
+      first = insert(:task, project: project, priority: 1, planned_start_on: ~D[2026-09-11])
+      backlog = insert(:task, project: project, priority: 3)
+
+      assert [later.id, sooner.id, first.id, backlog.id] == ids(Tasks.list_tasks(project, %{}))
+
+      assert [first.id, sooner.id, later.id, backlog.id] ==
+               ids(Tasks.list_tasks(project, %{sort: :plan}))
+    end
+  end
+
+  describe "list_tasks/1" do
+    test "reads every project's tasks as one pool" do
+      first = insert(:project)
+      second = insert(:project)
+      here = insert(:task, project: first)
+      there = insert(:task, project: second)
+
+      assert [here.id, there.id] == ids(Tasks.list_tasks(%{}))
+    end
+
+    # The question the endpoint exists for: what is there to pick up, in the
+    # order the plan would reach it, across everything being worked on.
+    test "answers the claimable pool in plan order" do
+      first = insert(:project)
+      second = insert(:project)
+      actor = insert(:actor)
+
+      insert(:task, project: first, assignee: actor)
+      insert(:task, project: first, status: :done)
+      normal = insert(:task, project: first, priority: 3, planned_start_on: ~D[2026-09-07])
+      urgent = insert(:task, project: second, priority: 1, planned_start_on: ~D[2026-09-09])
+
+      assert [urgent.id, normal.id] ==
+               ids(Tasks.list_tasks(%{assignee_id: nil, live: true, sort: :plan}))
+    end
+
+    # A cover's status is rolled up from children, and the whole table is read
+    # at once, so a summary must not lose its rollup by crossing a project.
+    test "rolls a cover up the same way the project-scoped list does" do
+      project = insert(:project)
+      insert(:task, project: insert(:project))
+      cover = insert(:task, project: project, kind: :summary)
+      insert(:task, project: project, parent: cover, status: :done)
+      insert(:task, project: project, parent: cover, status: :in_progress)
+
+      listed = Enum.find(Tasks.list_tasks(%{}), &(&1.id == cover.id))
+
+      assert listed.status == :in_progress
+    end
+  end
+
+  describe "list_edges/1" do
+    test "answers every edge as a pair of ids" do
+      first = insert(:task)
+      second = insert(:task)
+      third = insert(:task)
+
+      {:ok, _} = Tasks.add_dependency(second, first.id)
+      {:ok, _} = Tasks.add_dependency(third, second.id)
+
+      assert [
+               %{task_id: second.id, depends_on_id: first.id},
+               %{task_id: third.id, depends_on_id: second.id}
+             ] == Tasks.list_edges()
+    end
+
+    # An edge reaching out of the project is a real constraint on the work
+    # being drawn, so it is answered rather than hidden.
+    test "a project's edges include the ones with only one end in it" do
+      mine = insert(:project)
+      inside = insert(:task, project: mine)
+      also_inside = insert(:task, project: mine)
+      outside = insert(:task, project: insert(:project))
+      elsewhere = insert(:task, project: insert(:project))
+
+      {:ok, _} = Tasks.add_dependency(also_inside, inside.id)
+      {:ok, _} = Tasks.add_dependency(inside, outside.id)
+      {:ok, _} = Tasks.add_dependency(elsewhere, outside.id)
+
+      edges = Tasks.list_edges(mine.id)
+
+      assert length(edges) == 2
+      assert %{task_id: inside.id, depends_on_id: outside.id} in edges
+      refute %{task_id: elsewhere.id, depends_on_id: outside.id} in edges
+    end
   end
 
   describe "assign_task/2" do
@@ -203,7 +311,7 @@ defmodule RintoPMO.TasksTest do
     end
   end
 
-  describe "release_task/1" do
+  describe "release_task/2" do
     test "returns a task to the pool while keeping its progress" do
       actor = insert(:actor)
 
@@ -214,23 +322,44 @@ defmodule RintoPMO.TasksTest do
           started_at: ~U[2026-01-01 00:00:00.000000Z]
         )
 
-      assert {:ok, released} = Tasks.release_task(task)
+      assert {:ok, released} = Tasks.release_task(task, actor.id)
       assert released.assignee_id == nil
       assert released.assigned_at == nil
       assert released.status == :in_progress
       assert released.started_at == task.started_at
     end
+
+    test "refuses to put somebody else's work back in the pool" do
+      actor = insert(:actor)
+      task = insert(:task, assignee: actor, status: :in_progress)
+
+      assert {:error, :task_not_yours, %{assignee_id: assignee_id}} =
+               Tasks.release_task(task, insert(:actor).id)
+
+      assert assignee_id == actor.id
+      assert Repo.get!(Task, task.id).assignee_id == actor.id
+    end
+
+    test "refuses to release what nobody is holding" do
+      task = insert(:task, status: :in_progress)
+
+      assert {:error, :task_state_conflict, details} =
+               Tasks.release_task(task, insert(:actor).id)
+
+      assert details.reason == "task has no assignee"
+    end
   end
 
-  describe "transition_task/2" do
+  describe "transition_task/3" do
     test "runs the happy path from open to done" do
-      task = insert(:task, assignee: build(:actor))
+      actor = insert(:actor)
+      task = insert(:task, assignee: actor)
 
-      assert {:ok, started} = Tasks.transition_task(task, :start)
+      assert {:ok, started} = Tasks.transition_task(task, :start, actor.id)
       assert started.status == :in_progress
       assert started.started_at
 
-      assert {:ok, done} = Tasks.transition_task(started, :complete)
+      assert {:ok, done} = Tasks.transition_task(started, :complete, actor.id)
       assert done.status == :done
       assert done.completed_at
     end
@@ -238,41 +367,93 @@ defmodule RintoPMO.TasksTest do
     test "refuses to start a task nobody owns" do
       task = insert(:task)
 
-      assert {:error, :task_state_conflict, details} = Tasks.transition_task(task, :start)
+      assert {:error, :task_state_conflict, details} =
+               Tasks.transition_task(task, :start, insert(:actor).id)
+
       assert details.reason == "task has no assignee"
     end
 
-    test "refuses an event the current status has no edge for" do
-      task = insert(:task, assignee: build(:actor))
+    test "refuses to start or finish work that belongs to somebody else" do
+      actor = insert(:actor)
+      intruder = insert(:actor)
+      task = insert(:task, assignee: actor)
 
-      assert {:error, :task_state_conflict, %{status: :open, event: :complete}} =
-               Tasks.transition_task(task, :complete)
+      assert {:error, :task_not_yours, %{assignee_id: assignee_id}} =
+               Tasks.transition_task(task, :start, intruder.id)
+
+      assert assignee_id == actor.id
+      assert Repo.get!(Task, task.id).status == :open
+
+      {:ok, started} = Tasks.transition_task(task, :start, actor.id)
+
+      assert {:error, :task_not_yours, _details} =
+               Tasks.transition_task(started, :complete, intruder.id)
+
+      assert Repo.get!(Task, task.id).status == :in_progress
     end
 
-    test "cancelling keeps what was spent" do
+    test "cancelling and reopening are decisions from outside the work" do
+      actor = insert(:actor)
+      outsider = insert(:actor)
+
       task =
         insert(:task,
-          assignee: build(:actor),
+          assignee: actor,
           status: :in_progress,
           started_at: ~U[2026-01-01 00:00:00.000000Z]
         )
 
-      assert {:ok, cancelled} = Tasks.transition_task(task, :cancel)
+      assert {:ok, cancelled} = Tasks.transition_task(task, :cancel, outsider.id)
+      assert cancelled.status == :cancelled
+
+      assert {:ok, reopened} = Tasks.transition_task(cancelled, :reopen, outsider.id)
+      assert reopened.status == :open
+    end
+
+    test "refuses an event the current status has no edge for" do
+      actor = insert(:actor)
+      task = insert(:task, assignee: actor)
+
+      assert {:error, :task_state_conflict, %{status: :open, event: :complete}} =
+               Tasks.transition_task(task, :complete, actor.id)
+    end
+
+    test "the status machine answers before ownership does" do
+      actor = insert(:actor)
+      task = insert(:task, assignee: actor, status: :done)
+
+      assert {:error, :task_state_conflict, %{status: :done, event: :start}} =
+               Tasks.transition_task(task, :start, insert(:actor).id)
+    end
+
+    test "cancelling keeps what was spent" do
+      actor = insert(:actor)
+
+      task =
+        insert(:task,
+          assignee: actor,
+          status: :in_progress,
+          started_at: ~U[2026-01-01 00:00:00.000000Z]
+        )
+
+      assert {:ok, cancelled} = Tasks.transition_task(task, :cancel, actor.id)
       assert cancelled.status == :cancelled
       assert cancelled.started_at == task.started_at
       assert cancelled.completed_at == nil
     end
 
     test "reopening drops the timestamps that claimed the task finished" do
+      actor = insert(:actor)
+
       task =
         insert(:task,
-          assignee: build(:actor),
+          assignee: actor,
           status: :done,
           started_at: ~U[2026-01-01 00:00:00.000000Z],
           completed_at: ~U[2026-01-02 00:00:00.000000Z]
         )
 
-      assert {:ok, reopened} = Tasks.transition_task(task, :reopen)
+      assert {:ok, reopened} = Tasks.transition_task(task, :reopen, actor.id)
       assert reopened.status == :open
       assert reopened.started_at == nil
       assert reopened.completed_at == nil
@@ -293,7 +474,8 @@ defmodule RintoPMO.TasksTest do
 
       assert status_of(project, chunk) == :open
 
-      {:ok, _started} = Tasks.transition_task(%{first | assignee_id: insert(:actor).id}, :start)
+      owner = insert(:actor)
+      {:ok, _started} = Tasks.transition_task(%{first | assignee_id: owner.id}, :start, owner.id)
       assert status_of(project, chunk) == :in_progress
     end
 
@@ -351,13 +533,15 @@ defmodule RintoPMO.TasksTest do
                Tasks.assign_task(chunk, actor.id)
 
       assert {:error, :task_state_conflict, %{kind: :summary}} = Tasks.claim_task(chunk, actor.id)
-      assert {:error, :task_state_conflict, %{kind: :summary}} = Tasks.release_task(chunk)
 
       assert {:error, :task_state_conflict, %{kind: :summary}} =
-               Tasks.transition_task(chunk, :start)
+               Tasks.release_task(chunk, actor.id)
 
       assert {:error, :task_state_conflict, %{kind: :summary}} =
-               Tasks.transition_task(chunk, :cancel)
+               Tasks.transition_task(chunk, :start, actor.id)
+
+      assert {:error, :task_state_conflict, %{kind: :summary}} =
+               Tasks.transition_task(chunk, :cancel, actor.id)
     end
 
     test "a summary cannot be created holding an assignee" do
@@ -495,7 +679,8 @@ defmodule RintoPMO.TasksTest do
       assert nested.parent_id == top.id
 
       [quarter] = nested.children
-      {:ok, _done} = Tasks.transition_task(%{quarter | assignee_id: insert(:actor).id}, :start)
+      owner = insert(:actor)
+      {:ok, _done} = Tasks.transition_task(%{quarter | assignee_id: owner.id}, :start, owner.id)
 
       assert status_of(project, top) == :in_progress
     end
@@ -749,7 +934,7 @@ defmodule RintoPMO.TasksTest do
       actor = insert(:actor)
       task = insert(:task, project: project, assignee: actor)
 
-      {:ok, started} = Tasks.transition_task(task, :start)
+      {:ok, started} = Tasks.transition_task(task, :start, actor.id)
       assert started.status == :in_progress
 
       {:ok, summary} = Tasks.split_task(started, [%{"title" => "Only"}])
@@ -1270,35 +1455,42 @@ defmodule RintoPMO.TasksTest do
     end
 
     test "complete can stamp the duration in the same act" do
-      task = insert(:task, assignee: build(:actor), status: :in_progress)
+      actor = insert(:actor)
+      task = insert(:task, assignee: actor, status: :in_progress)
 
-      assert {:ok, done} = Tasks.transition_task(task, :complete, %{"actual_minutes" => 45})
+      assert {:ok, done} =
+               Tasks.transition_task(task, :complete, actor.id, %{"actual_minutes" => 45})
+
       assert done.status == :done
       assert done.actual_minutes == 45
     end
 
     test "complete without a duration leaves whatever was already stored" do
+      actor = insert(:actor)
+
       task =
         insert(:task,
-          assignee: build(:actor),
+          assignee: actor,
           status: :in_progress,
           actual_minutes: 20
         )
 
-      assert {:ok, done} = Tasks.transition_task(task, :complete)
+      assert {:ok, done} = Tasks.transition_task(task, :complete, actor.id)
       assert done.actual_minutes == 20
     end
 
     test "reopening clears the duration of a finish that did not hold" do
+      actor = insert(:actor)
+
       task =
         insert(:task,
-          assignee: build(:actor),
+          assignee: actor,
           status: :done,
           actual_minutes: 40,
           completed_at: ~U[2026-01-02 00:00:00.000000Z]
         )
 
-      assert {:ok, reopened} = Tasks.transition_task(task, :reopen)
+      assert {:ok, reopened} = Tasks.transition_task(task, :reopen, actor.id)
       assert reopened.actual_minutes == nil
     end
 
@@ -1663,6 +1855,81 @@ defmodule RintoPMO.TasksTest do
 
       assert {:ok, task} = Tasks.update_task(task, %{"planned_start_on" => nil})
       assert task.planned_start_on == nil
+    end
+
+    test "the first plan is recorded once and survives every reschedule" do
+      project = insert(:project)
+
+      assert {:ok, task} = Tasks.create_task(project, %{"title" => "Planned"})
+      assert task.first_planned_on == nil
+
+      assert {:ok, task} =
+               Tasks.update_task(task, %{"planned_start_on" => ~D[2026-09-07]})
+
+      assert task.first_planned_on == ~D[2026-09-07]
+
+      assert {:ok, task} =
+               Tasks.update_task(task, %{"planned_start_on" => ~D[2026-09-28]})
+
+      assert task.planned_start_on == ~D[2026-09-28]
+      assert task.first_planned_on == ~D[2026-09-07]
+
+      # Back to the backlog and planned again: "when did we first say we would
+      # do this" does not stop having an answer because we stopped saying it.
+      assert {:ok, task} = Tasks.update_task(task, %{"planned_start_on" => nil})
+      assert task.first_planned_on == ~D[2026-09-07]
+
+      assert {:ok, task} =
+               Tasks.update_task(task, %{"planned_start_on" => ~D[2026-10-05]})
+
+      assert task.first_planned_on == ~D[2026-09-07]
+    end
+
+    test "a task created already planned is baselined at creation" do
+      project = insert(:project)
+
+      assert {:ok, task} =
+               Tasks.create_task(project, %{
+                 "title" => "Planned",
+                 "planned_start_on" => ~D[2026-09-07]
+               })
+
+      assert task.first_planned_on == ~D[2026-09-07]
+    end
+
+    # A client that could write it could report any slip it liked.
+    test "the baseline is not settable" do
+      project = insert(:project)
+
+      assert {:ok, task} =
+               Tasks.create_task(project, %{
+                 "title" => "Planned",
+                 "planned_start_on" => ~D[2026-09-07],
+                 "first_planned_on" => ~D[2020-01-01]
+               })
+
+      assert task.first_planned_on == ~D[2026-09-07]
+    end
+
+    # A cover holds no schedule, so it holds no baseline either -- and the
+    # rollup has to carry both, or a chunk would report as never slipped.
+    test "splitting drops the baseline, and a cover rolls up the earliest one" do
+      project = insert(:project)
+
+      {:ok, task} =
+        Tasks.create_task(project, %{"title" => "Chunk", "planned_start_on" => ~D[2026-09-07]})
+
+      assert {:ok, cover} =
+               Tasks.split_task(task, [
+                 %{"title" => "First", "planned_start_on" => ~D[2026-09-14]},
+                 %{"title" => "Second", "planned_start_on" => ~D[2026-09-21]}
+               ])
+
+      assert Repo.get!(Task, cover.id).first_planned_on == nil
+
+      listed = Enum.find(Tasks.list_tasks(project, %{}), &(&1.id == cover.id))
+      assert listed.first_planned_on == ~D[2026-09-14]
+      assert listed.planned_start_on == ~D[2026-09-14]
     end
 
     test "refuses a priority outside the five levels" do

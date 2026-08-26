@@ -495,71 +495,16 @@ paths:
         nodes come back with their rolled-up status. Every filter combines with
         the others.
       parameters:
-        - name: kind
-          in: query
-          required: false
-          description: >
-            Filter to real work or to summary nodes. The claimable pool is
-            `kind=work&assignee_id=none&live=true` -- without `kind`, covers
-            come back too, and nobody can pick one up.
-          schema:
-            $ref: "#/components/schemas/TaskKind"
-        - name: status
-          in: query
-          required: false
-          description: >
-            Filter by exactly one status. On summary nodes this matches the
-            rollup, not the stored column.
-          schema:
-            $ref: "#/components/schemas/TaskStatus"
-        - name: parent_id
-          in: query
-          required: false
-          description: >
-            Filter by position in the tree. Use `none` for the roots -- the top
-            level of the WBS.
-          schema:
-            oneOf:
-              - type: string
-                format: uuid
-              - type: string
-                enum: [none]
-        - name: assignee_id
-          in: query
-          required: false
-          description: >
-            Filter by owner. Use `none` for the claimable pool -- it has to be
-            spelled, because an absent parameter already means "no filter".
-          schema:
-            oneOf:
-              - type: string
-                format: uuid
-              - type: string
-                enum: [none]
-        - name: document_id
-          in: query
-          required: false
-          description: Filter by the document a task implements against.
-          schema:
-            type: string
-            format: uuid
-        - name: live
-          in: query
-          required: false
-          description: >
-            When true, only outstanding work (`open`, `in_progress`); when
-            false, only `done` and `cancelled`.
-          schema:
-            type: boolean
-        - name: overdue
-          in: query
-          required: false
-          description: >
-            When true, only outstanding tasks whose `due_on` has passed. A task
-            delivered late was late; it is not still late, so finished work is
-            never overdue.
-          schema:
-            type: boolean
+        - $ref: "#/components/parameters/TaskKindFilter"
+        - $ref: "#/components/parameters/TaskStatusFilter"
+        - $ref: "#/components/parameters/TaskParentFilter"
+        - $ref: "#/components/parameters/TaskAssigneeFilter"
+        - $ref: "#/components/parameters/TaskDocumentFilter"
+        - $ref: "#/components/parameters/TaskLiveFilter"
+        - $ref: "#/components/parameters/TaskOverdueFilter"
+        - $ref: "#/components/parameters/TaskPriorityFilter"
+        - $ref: "#/components/parameters/TaskScheduledFilter"
+        - $ref: "#/components/parameters/TaskSortFilter"
       responses:
         "200":
           description: Task list
@@ -1981,6 +1926,89 @@ paths:
       responses:
         "204":
           description: Rediscovery has been requested
+  /tasks:
+    get:
+      tags: [Tasks]
+      operationId: listAllTasks
+      summary: List every project's tasks as one pool
+      description: >
+        The same list as `GET /projects/{project_slug}/tasks`, over everything
+        rather than one project, with the same filters and the same rendering.
+
+
+        It exists because the pool a person pulls from is not a project's. A
+        week's minutes are one pool spanning every project they work in --
+        which is why `GET /schedule` refuses to filter by project -- so "what
+        is there to pick up" and "what is most worth starting" are questions
+        about all of it. Asking them project by project would leave the client
+        to merge and sort the union using an order it invented.
+
+
+        Two queries worth knowing. The claimable pool in the order the board
+        would reach it: `?kind=work&assignee_id=none&live=true&sort=plan`. What
+        is not in any plan at all, most important first:
+        `?live=true&scheduled=false&sort=plan`.
+
+
+        Unpaginated, like every list here.
+      parameters:
+        - $ref: "#/components/parameters/TaskKindFilter"
+        - $ref: "#/components/parameters/TaskStatusFilter"
+        - $ref: "#/components/parameters/TaskParentFilter"
+        - $ref: "#/components/parameters/TaskAssigneeFilter"
+        - $ref: "#/components/parameters/TaskDocumentFilter"
+        - $ref: "#/components/parameters/TaskLiveFilter"
+        - $ref: "#/components/parameters/TaskOverdueFilter"
+        - $ref: "#/components/parameters/TaskPriorityFilter"
+        - $ref: "#/components/parameters/TaskScheduledFilter"
+        - $ref: "#/components/parameters/TaskSortFilter"
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /tasks/schema:
+    get:
+      tags: [Tasks]
+      operationId: getTaskSchema
+      summary: Get the JSON Schema for a task write
+      description: >
+        The shapes `POST /projects/{project_slug}/tasks`, `PATCH /tasks/{id}`
+        and `POST /tasks/{id}/split` accept, as three JSON Schema documents
+        keyed `create`, `update` and `split`. Same content as the
+        `TaskCreateInput` / `TaskUpdateInput` / `TaskSplitInput` components
+        below, said in a form a client can fetch: it exists for the CLI's
+        `task schema`, whose caller has this API but not this file.
+
+
+        Built from `RintoPMO.Tasks.Task` as the request is answered, so the
+        difficulty ladder, the priority range and the estimate ceiling are the
+        values the server will enforce rather than a copy of them. Each shape
+        carries an `examples` entry that the server's own test suite feeds
+        back through the domain, so an example that stopped being accepted
+        fails the build.
+
+
+        `additionalProperties: false` is an instruction to whoever writes the
+        body, not a description of the server: unlisted keys are ignored, not
+        refused. A `PATCH` carrying `status` answers `200` and changes
+        nothing.
+
+
+        Describes no row, so it takes no id and no project slug, and it is
+        declared ahead of `/tasks/{id}` -- `schema` is a shape name, never a
+        task id.
+      responses:
+        "200":
+          description: One JSON Schema per write shape
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSchemaResponse"
   /tasks/{id}:
     parameters:
       - $ref: "#/components/parameters/TaskId"
@@ -2139,6 +2167,11 @@ paths:
         Not a cancel: the work still needs doing, by someone else. Status and
         `started_at` survive, so the next owner inherits an honest record
         rather than a clock reset to hide the handoff.
+
+
+        The mirror of `claim`, so it names nobody and the caller has to be
+        holding the task. Taking work off a different actor is `assign`, which
+        says who gets it next instead of leaving it to whoever looks first.
       responses:
         "200":
           description: Task released
@@ -2146,8 +2179,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TaskResponse"
+        "403":
+          $ref: "#/components/responses/TaskNotYours"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/TaskStateConflict"
         "422":
           $ref: "#/components/responses/ValidationError"
   /tasks/{id}/dependencies:
@@ -2322,6 +2359,194 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
+  /history:
+    get:
+      tags: [Schedule]
+      operationId: getHistory
+      summary: What was actually worked, beside what was planned for it
+      description: >
+        The counterpart to `GET /schedule`, and the other half of a
+        plan-versus-actual chart. That one forecasts forward from today and
+        never looks back; this one reports what `started_at` and `completed_at`
+        recorded, and computes nothing that was not measured.
+
+
+        A separate endpoint rather than a flag, because a client that could ask
+        for both at once would get one shape carrying two kinds of claim: a
+        forecast the packer computed, and a record of what happened.
+
+
+        A task appears when its work **overlapped** the window -- started on or
+        before `to`, and either still unfinished or finished on or after
+        `from`. Work spanning the whole window is included, which a pair of
+        "started between" and "finished between" filters would both miss and
+        which is exactly the bar a chart most needs. Cancelled work that was
+        started is included too: it really was worked, and dropping it would
+        make the window look cheaper than it was. Summary nodes never appear --
+        they have no clocks of their own.
+
+
+        Ordered by `started_on`, oldest first, and flat rather than grouped by
+        week: a task's work often spans weeks, and filing it under one of them
+        would make a client reassemble the bar.
+
+
+        Unlike `/schedule`, this one *can* be scoped to a project. That refusal
+        is about arithmetic -- packing one project alone would hand it the
+        whole week -- and nothing about the past is computed that way.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: First day of the window. Defaults to the Monday of the current week.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Last day of the window. Defaults to today.
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Only this project's work.
+      responses:
+        "200":
+          description: One entry per task worked in the window, oldest start first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /dependencies:
+    get:
+      tags: [Tasks]
+      operationId: listDependencyEdges
+      summary: Every dependency edge at once
+      description: >
+        The same facts as `GET /tasks/{id}/dependencies`, for every task in one
+        call. That one answers about a single task, which is a request per bar
+        for anything drawing arrows on a chart.
+
+
+        Two ids per edge and nothing else. The tasks themselves come from the
+        list this is drawn beside; repeating a task once per edge it appears in
+        would send the same rows several times over to say what the client
+        already has.
+
+
+        With `project_id`, every edge with **either** end in that project, not
+        only the ones with both -- dependencies are not scoped to a project,
+        and an edge reaching outside is a real constraint on the work being
+        drawn. Hiding it would present the chart as unconstrained while the
+        task waits on something. A client that does not recognise one of the
+        ids can say so, which is the honest rendering.
+
+
+        Every edge is here, including ones whose prerequisite is already `done`
+        or `cancelled`: the edge is still a true statement about the work, and
+        the client can see from the task's own status that it holds nothing up.
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Only edges with at least one end in this project.
+      responses:
+        "200":
+          description: Edges, oldest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskEdgeListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /calibration:
+    get:
+      tags: [Schedule]
+      operationId: getCalibration
+      summary: What the estimates turned out to be worth
+      description: >
+        The loop that lets an estimate be checked against what happened. This
+        API has collected three-point estimates, Fibonacci story points and
+        recorded durations from the beginning and never put them next to each
+        other; an estimator that is never checked is a habit rather than an
+        estimator.
+
+
+        Two groupings in one response, because they answer the same question
+        from two sides and a client making two calls could show two windows
+        that disagree. `weeks` asks whether the week-to-week arithmetic is
+        holding; `difficulty` asks whether the story-point ladder means
+        anything -- what a 5 has actually cost.
+
+
+        Tasks are counted in the week they were **finished**. Velocity is work
+        delivered per week, and when something started says nothing about when
+        it landed. Only delivered work counts: cancelled tasks have no
+        `completed_at` by design, and time spent on something that was dropped
+        is not what a finished estimate cost. Summary nodes are excluded --
+        their estimate and their actual are sums over their children, so
+        counting them beside the children counts the same work twice.
+
+
+        **The minutes are summed over `comparable` tasks only** -- the ones
+        carrying both an estimate and a recorded duration. A sum of estimates
+        over every finished task beside a sum of durations over every finished
+        task is two totals over two different populations, and their ratio
+        means nothing. `unestimated` and `unmeasured` count what was left out,
+        which is how a reader knows how much of the comparison to believe.
+
+
+        No ratio is computed here, for the same reason: one number without its
+        sample size is, at a handful of tasks a week, the difference between a
+        signal and a coincidence.
+
+
+        Empty weeks come back as zeroes rather than being left out -- a gap is
+        a fact about the plan, and closing it up would draw four productive
+        weeks where there were two. All seven story-point rungs come back for
+        the same reason.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Start of the window. Defaults to twelve weeks before `to`.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: End of the window. Defaults to today.
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Only this project's finished work.
+      responses:
+        "200":
+          description: Finished work by week, and by story point
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalibrationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /calendar/days:
     get:
       tags: [Calendar]
@@ -2471,9 +2696,10 @@ paths:
       operationId: startTask
       summary: Move a task to in_progress
       description: >
-        Only from `open`, and only with an owner: starting ownerless work is
-        how a task ends up in progress with nobody on it. Stamps `started_at`.
-        Never applies to a summary node.
+        Only from `open`, and only by the actor holding the task: starting
+        ownerless work is how a task ends up in progress with nobody on it, and
+        starting somebody else's is `403`. Stamps `started_at`. Never applies
+        to a summary node.
       responses:
         "200":
           description: Task started
@@ -2481,6 +2707,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TaskResponse"
+        "403":
+          $ref: "#/components/responses/TaskNotYours"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -2493,9 +2721,14 @@ paths:
       operationId: completeTask
       summary: Mark a task done
       description: >
-        Only from `in_progress`, and never on a summary node. Stamps
-        `completed_at`. Optional `actual_minutes` records how long it took in
-        the same act; absent or null leaves whatever was already stored.
+        Only from `in_progress`, only by the actor holding the task, and never
+        on a summary node. Stamps `completed_at`. Optional `actual_minutes`
+        records how long it took in the same act; absent or null leaves
+        whatever was already stored.
+
+
+        A task that was released while in progress has no owner, so finishing
+        it means claiming it first.
       requestBody:
         required: false
         content:
@@ -2509,6 +2742,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TaskResponse"
+        "403":
+          $ref: "#/components/responses/TaskNotYours"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -2996,6 +3231,115 @@ components:
           schema:
             $ref: "#/components/schemas/AnnotationReplyUpdateInput"
   parameters:
+    # The task filters are shared by `GET /tasks` and
+    # `GET /projects/{project_slug}/tasks`: the two lists differ only in what
+    # they read, and a filter that existed on one of them would be a trap.
+    TaskKindFilter:
+      name: kind
+      in: query
+      required: false
+      description: >
+        Filter to real work or to summary nodes. The claimable pool is
+        `kind=work&assignee_id=none&live=true` -- without `kind`, covers come
+        back too, and nobody can pick one up.
+      schema:
+        $ref: "#/components/schemas/TaskKind"
+    TaskStatusFilter:
+      name: status
+      in: query
+      required: false
+      description: >
+        Filter by exactly one status. On summary nodes this matches the
+        rollup, not the stored column.
+      schema:
+        $ref: "#/components/schemas/TaskStatus"
+    TaskParentFilter:
+      name: parent_id
+      in: query
+      required: false
+      description: >
+        Filter by position in the tree. Use `none` for the roots -- the top
+        level of the WBS.
+      schema:
+        oneOf:
+          - type: string
+            format: uuid
+          - type: string
+            enum: [none]
+    TaskAssigneeFilter:
+      name: assignee_id
+      in: query
+      required: false
+      description: >
+        Filter by owner. Use `none` for the claimable pool -- it has to be
+        spelled, because an absent parameter already means "no filter".
+      schema:
+        oneOf:
+          - type: string
+            format: uuid
+          - type: string
+            enum: [none]
+    TaskDocumentFilter:
+      name: document_id
+      in: query
+      required: false
+      description: Filter by the document a task implements against.
+      schema:
+        type: string
+        format: uuid
+    TaskLiveFilter:
+      name: live
+      in: query
+      required: false
+      description: >
+        When true, only outstanding work (`open`, `in_progress`); when false,
+        only `done` and `cancelled`.
+      schema:
+        type: boolean
+    TaskOverdueFilter:
+      name: overdue
+      in: query
+      required: false
+      description: >
+        When true, only outstanding tasks whose `due_on` has passed. A task
+        delivered late was late; it is not still late, so finished work is
+        never overdue.
+      schema:
+        type: boolean
+    TaskPriorityFilter:
+      name: priority
+      in: query
+      required: false
+      description: Filter to one priority level, 1 highest.
+      schema:
+        type: integer
+        enum: [1, 2, 3, 4, 5]
+    TaskScheduledFilter:
+      name: scheduled
+      in: query
+      required: false
+      description: >
+        When true, only work selected into a week; when false, the backlog.
+        This is the filter that answers "what is not in the plan", and it is a
+        filter rather than a status for the same reason there is no `backlog`
+        status: which slot of the plan a task sits in is a many-valued
+        question, and `planned_start_on` is the column that answers it.
+      schema:
+        type: boolean
+    TaskSortFilter:
+      name: sort
+      in: query
+      required: false
+      description: >
+        `oldest` (the default) is a backlog read from the front. `plan` is the
+        order `GET /schedule` fills a week in -- priority, then the day the
+        task was selected for, then age -- so the first row is the one the
+        plan would reach next. It is the packer's own ordering rather than a
+        second rule that agrees with it on the easy cases.
+      schema:
+        type: string
+        enum: [oldest, plan]
+        default: oldest
     SettingKey:
       name: key
       in: path
@@ -3172,9 +3516,26 @@ components:
     TaskStateConflict:
       description: >
         `task_state_conflict`: the event does not apply to the task's current
-        status, `start` was asked of a task nobody owns, or the target is a
-        summary node, whose status is not its own to move. `details` carries
-        the observed `status`, and `kind` when a summary node was the cause.
+        status, `start` or `complete` was asked of a task nobody owns, or the
+        target is a summary node, whose status is not its own to move.
+        `details` carries the observed `status`, and `kind` when a summary node
+        was the cause.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    TaskNotYours:
+      description: >
+        `task_not_yours`: the work is assigned to a different actor, and
+        `details.assignee_id` names them. Doing the work and finishing it are
+        the assignee's acts, so `start`, `complete` and `release` refuse for
+        anybody else.
+
+
+        Told apart from `task_already_claimed` on purpose. That one is a race
+        you lost, and the answer is to pick a different task. This one means
+        the task was never yours to move: re-reading state will not change it,
+        so claim something from the pool, or check the id.
       content:
         application/json:
           schema:
@@ -4358,6 +4719,27 @@ components:
             A summary node holds none; on one this reports the earliest day
             underneath it. There is deliberately no matching end -- see
             `/schedule`.
+        first_planned_on:
+          type: string
+          format: date
+          nullable: true
+          readOnly: true
+          description: >
+            The day this task was **first** selected into any week. Written
+            once, the first time `planned_start_on` goes from null to a day,
+            and never moved again -- returning the task to the backlog and
+            planning it afresh does not reset it.
+
+
+            It exists so that slip survives replanning. `planned_start_on` is
+            the current plan and moving it is the ordinary way to reschedule,
+            so slip measured against it is zero for every task however many
+            times the task was pushed. `GET /history` reports `slip_weeks`
+            against this column.
+
+
+            Not writable. On a summary node it is the earliest one underneath,
+            like `planned_start_on`; a cover stores neither.
         unscheduled_tasks:
           type: integer
           minimum: 0
@@ -4484,6 +4866,12 @@ components:
         same request as an edit of the wording. Moving `parent_id` away from a
         cover's last child demotes that cover to `work` as a side effect, so
         re-read the WBS after a structural move.
+
+
+        `additionalProperties: false` binds the caller, not the server: a key
+        that is not listed here is ignored rather than refused, so a body
+        carrying `status` is answered `200` and changes nothing. Read the
+        returned task rather than the status code.
       properties:
         parent_id:
           type: string
@@ -4705,6 +5093,18 @@ components:
           type: integer
           minimum: 0
           nullable: true
+        planned_start_on:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            Selects the child into the week this day falls in. Null is the
+            backlog. A breakdown that already knows when its parts are worked
+            can say so here rather than PATCHing each child afterwards.
+        priority:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+          description: 1 highest, 3 normal. Inherits nothing from the cover.
       additionalProperties: false
     TaskSplitResponse:
       type: object
@@ -4745,6 +5145,199 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ScheduleWeek"
+      additionalProperties: false
+    TaskEdgeListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskEdge"
+      additionalProperties: false
+    TaskEdge:
+      type: object
+      required: [task_id, depends_on_id]
+      description: >
+        "`task_id` cannot start until `depends_on_id` is done." An arrow, in
+        the direction the work waits.
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        depends_on_id:
+          type: string
+          format: uuid
+      additionalProperties: false
+    CalibrationResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [weeks, difficulty]
+          properties:
+            weeks:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalibrationWeek"
+            difficulty:
+              type: array
+              items:
+                $ref: "#/components/schemas/CalibrationRung"
+          additionalProperties: false
+      additionalProperties: false
+    CalibrationWeek:
+      type: object
+      required:
+        [
+          week,
+          completed,
+          comparable,
+          expected_minutes,
+          actual_minutes,
+          unestimated,
+          unmeasured,
+        ]
+      properties:
+        week:
+          type: string
+          format: date
+          description: The Monday of the week the work was finished in.
+        completed:
+          type: integer
+          minimum: 0
+          description: Work items delivered in this week.
+        comparable:
+          type: integer
+          minimum: 0
+          description: >
+            How many of them carry both an estimate and a recorded duration --
+            the population the two sums below are taken over. Read the sums
+            against this number, never against `completed`.
+        expected_minutes:
+          type: integer
+          minimum: 0
+          description: PERT expected values, summed over the comparable tasks. Zero when there are none.
+        actual_minutes:
+          type: integer
+          minimum: 0
+          description: Recorded durations, summed over the same tasks.
+        unestimated:
+          type: integer
+          minimum: 0
+          description: Delivered work that carried no estimate.
+        unmeasured:
+          type: integer
+          minimum: 0
+          description: Delivered work whose duration nobody recorded.
+      additionalProperties: false
+    CalibrationRung:
+      type: object
+      required: [difficulty, tasks, measured, median_actual_minutes]
+      properties:
+        difficulty:
+          type: integer
+          enum: [1, 2, 3, 5, 8, 13, 21]
+        tasks:
+          type: integer
+          minimum: 0
+          description: Delivered work rated with this story point in the window.
+        measured:
+          type: integer
+          minimum: 0
+          description: How many of them had a duration recorded.
+        median_actual_minutes:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            The middle recorded duration at this rung, or null when nothing at
+            it was ever measured -- which is not the same as a rung that is
+            genuinely quick.
+
+
+            The middle value rather than the average: with a handful of tasks
+            per rung, one that ran three days moves a mean somewhere no task
+            ever was, and the result reads as knowledge.
+      additionalProperties: false
+    HistoryResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistoryRecord"
+      additionalProperties: false
+    HistoryRecord:
+      type: object
+      required:
+        [
+          task,
+          started_on,
+          completed_on,
+          planned_on,
+          first_planned_on,
+          slip_weeks,
+          expected_minutes,
+          actual_minutes,
+        ]
+      description: >
+        One task's work as the clocks recorded it, with the plan beside it.
+        Every field is measured or derived from something measured; nothing
+        here is filled in.
+      properties:
+        task:
+          $ref: "#/components/schemas/Task"
+        started_on:
+          type: string
+          format: date
+          description: The day work began. Always present -- nothing without a start is here.
+        completed_on:
+          type: string
+          format: date
+          nullable: true
+          description: Null while the work is still in flight.
+        planned_on:
+          type: string
+          format: date
+          nullable: true
+          description: The task's current `planned_start_on`, whatever it has been moved to.
+        first_planned_on:
+          type: string
+          format: date
+          nullable: true
+          description: The day it was first selected into any week. What `slip_weeks` counts from.
+        slip_weeks:
+          type: integer
+          nullable: true
+          description: >
+            Whole weeks between the week the task was first planned for and the
+            week it actually began. Positive is late, negative is early, zero
+            means it began in the week it was promised for -- a week is the
+            unit the plan is made in, so starting Wednesday on what was
+            selected for Monday is not a slip.
+
+
+            **Null is not zero.** It means the task was never selected into any
+            week at all, so there was no promise to slip against.
+        expected_minutes:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            PERT expected value of the three-point estimate, or null when the
+            task carries no estimate. Not filled in -- a zero here would read
+            as a measurement.
+        actual_minutes:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            What was recorded on completion, or null when nobody recorded it.
+            Null against a non-null `expected_minutes` is the gap that says how
+            much of a velocity figure to believe.
       additionalProperties: false
     ScheduleWeek:
       type: object
@@ -5026,6 +5619,31 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Task"
+      additionalProperties: false
+    TaskSchemaResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [create, update, split]
+          description: >
+            One JSON Schema (2020-12) per write shape, keyed by the write it
+            describes. The bodies themselves are the `TaskCreateInput`,
+            `TaskUpdateInput` and `TaskSplitInput` components; what is served
+            here is those shapes rendered as schema documents, with a worked
+            example attached to each.
+          properties:
+            create:
+              type: object
+              description: The shape of `POST /projects/{project_slug}/tasks`.
+            update:
+              type: object
+              description: The shape of `PATCH /tasks/{id}`.
+            split:
+              type: object
+              description: The shape of `POST /tasks/{id}/split`.
+          additionalProperties: false
       additionalProperties: false
     RepoCredential:
       type: object
@@ -5980,6 +6598,7 @@ components:
         - unsupported_image
         - stale_document
         - task_already_claimed
+        - task_not_yours
         - task_state_conflict
         - dependency_cycle
         - validation_error

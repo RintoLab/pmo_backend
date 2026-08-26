@@ -51,6 +51,69 @@ for scripts.
 Configuration is stored at `~/.config/rinto-pmo/config.json`. Set
 `RINTO_CONFIG` to use a different path.
 
+## What it can do
+
+`rinto-pmo <group> --help` lists a group's commands and every flag; this is the
+map, not the reference. Two environments run this binary and they can do
+different things:
+
+* **Outside a topic** -- a coding agent on a developer's machine, configured by
+  `config init`. Writes are credited to the configured human.
+* **Inside a topic** -- spawned by the server with `RINTO_CONVERSATION_ID` in the
+  environment and no config file. Writes are credited to that topic's assistant,
+  and changes to documents can only be *proposed*, never committed.
+
+| Group | Commands |
+|---|---|
+| `config` | `init`, `show` |
+| `project` | `list`, `show` -- repositories, directory names, default branches |
+| `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `split`, `start`, `complete`, `cancel`, `reopen`, `delete` |
+| `schedule` | one command; what each week holds and what did not fit in it |
+| `history` | one command; what was actually worked, with the plan beside it |
+| `calibration` | one command; what the estimates turned out to be worth |
+| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `contentions`, `rebase` |
+| `search` | one command; finds things by meaning and answers with `rinto://` addresses |
+| `skill` | `list`, `install`, `sync` |
+| `update` | self-update from the Gitea package registry |
+
+Four things are worth knowing before writing anything:
+
+**The pool is not a project's.** `task list` takes a project slug, and without
+one it lists every project at once -- which is the right question, because
+capacity is one pool spanning everything a person works on. `--sort plan` puts
+it in the board's own order (priority, then the day it was selected for, then
+age), so the first row is what the plan would reach next. `--scheduled false`
+is the backlog: work that is in no week at all. `rinto-pmo schedule` shows the
+other side of it -- what each week holds, what overflowed, and what is blocked
+waiting on something that overflowed. `rinto-pmo history` shows the past
+instead: what was actually worked, how long it took against what was estimated,
+and how far it slipped from the week it was *first* planned for.
+
+
+**Ask what a task write looks like; do not guess.** `task create`, `task update`
+and `task split` each read a JSON file, and `task schema [create|update|split]`
+prints the shape of one -- every field, the enums, the estimate ceiling, and a
+worked example. It is fetched from the server rather than kept in here, so it is
+what that server will accept and not what was true when this binary was built.
+Two things it will save you: the flat `estimate_optimistic` / `estimate_likely`
+/ `estimate_pessimistic` columns are not writable at all, and a key the update
+shape does not list is *ignored* rather than refused -- a PATCH carrying
+`status` answers 200 and changes nothing.
+
+
+**Documents are read two ways.** `doc show` prints what has been committed.
+`doc show --working` prints the document as the current topic sees it, with that
+topic's own standing proposals in place of the text they would replace. A topic
+that changed a document and then reads it back with plain `doc show` sees the
+text it replaced -- and proposing again from that overwrites its earlier
+proposal, because a topic holds one live proposal per block. Read `--working`
+before changing the same document twice.
+
+**Committing and deciding are not here, on purpose.** An agent proposes; a
+person commits the proposal and settles arguments between competing ones. There
+is no CLI verb for either, and that is the point of the proposal flow rather
+than a gap in this binary.
+
 ## Update
 
 ```sh

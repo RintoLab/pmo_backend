@@ -92,6 +92,13 @@ defmodule RintoPMO.Tasks.Task do
   somebody. It keeps its `priority` -- how much a chunk matters does not change
   by learning that it is three jobs rather than one.
 
+  `first_planned_on` is the day the task was first selected into any week, and
+  it never moves afterwards. Replanning is what `planned_start_on` is for, so
+  it cannot also be the baseline: measuring slip against a column that follows
+  every reschedule would report every task as on time, however many times it
+  had been pushed. It is not settable, and returning a task to the backlog does
+  not clear it.
+
   A `:summary` row stores none of it, like everything else that measures work.
   Its estimate is the sum over its descendants, computed on read by
   `RintoPMO.Tasks` and written onto the struct the same way its status is.
@@ -169,6 +176,14 @@ defmodule RintoPMO.Tasks.Task do
     # lands is `RintoPMO.Schedule`'s answer, not this column's. A cover holds
     # none, like everything else that lays claim to somebody's time.
     field :planned_start_on, :date
+
+    # The day this task was first selected into any week, written once and
+    # never moved. `planned_start_on` is the current plan and replanning is
+    # what it is for, so it cannot also be the baseline: a task pushed from
+    # week 1 to week 6 would read as though week 6 had always been the plan,
+    # and the slip -- the one thing worth knowing about it -- disappears at the
+    # moment somebody acts on it. Not castable; see `put_first_planned_on/1`.
+    field :first_planned_on, :date
 
     # 1 highest, 3 normal. Not null: "no opinion" is "normal", and unlike an
     # estimate a missing priority says nothing worth counting.
@@ -351,6 +366,7 @@ defmodule RintoPMO.Tasks.Task do
     |> validate_required([:title, :kind, :priority])
     |> validate_length(:title, min: 1, max: 255)
     |> validate_inclusion(:priority, @priorities)
+    |> put_first_planned_on()
     |> reject_work_on_summary()
     |> put_assigned_at()
     |> foreign_key_constraint(:project_id)
@@ -389,6 +405,7 @@ defmodule RintoPMO.Tasks.Task do
       started_at: nil,
       completed_at: nil,
       planned_start_on: nil,
+      first_planned_on: nil,
       estimate_optimistic: nil,
       estimate_likely: nil,
       estimate_pessimistic: nil,
@@ -473,6 +490,18 @@ defmodule RintoPMO.Tasks.Task do
     case fetch_field(chset, field) do
       {_source, nil} -> chset
       _present -> add_error(chset, field, message)
+    end
+  end
+
+  # Written the first time a task is selected into a week, and never again.
+  # Not on every change of `planned_start_on` -- that is replanning, and the
+  # whole point of the column is to survive it. Not cleared when a task goes
+  # back to the backlog either: "when did we first say we would do this" does
+  # not stop having an answer because we stopped saying it.
+  defp put_first_planned_on(chset) do
+    case {fetch_change(chset, :planned_start_on), fetch_field!(chset, :first_planned_on)} do
+      {{:ok, %Date{} = day}, nil} -> put_change(chset, :first_planned_on, day)
+      _already_baselined_or_unchanged -> chset
     end
   end
 
