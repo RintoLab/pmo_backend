@@ -2359,6 +2359,72 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
+  /history:
+    get:
+      tags: [Schedule]
+      operationId: getHistory
+      summary: What was actually worked, beside what was planned for it
+      description: >
+        The counterpart to `GET /schedule`, and the other half of a
+        plan-versus-actual chart. That one forecasts forward from today and
+        never looks back; this one reports what `started_at` and `completed_at`
+        recorded, and computes nothing that was not measured.
+
+
+        A separate endpoint rather than a flag, because a client that could ask
+        for both at once would get one shape carrying two kinds of claim: a
+        forecast the packer computed, and a record of what happened.
+
+
+        A task appears when its work **overlapped** the window -- started on or
+        before `to`, and either still unfinished or finished on or after
+        `from`. Work spanning the whole window is included, which a pair of
+        "started between" and "finished between" filters would both miss and
+        which is exactly the bar a chart most needs. Cancelled work that was
+        started is included too: it really was worked, and dropping it would
+        make the window look cheaper than it was. Summary nodes never appear --
+        they have no clocks of their own.
+
+
+        Ordered by `started_on`, oldest first, and flat rather than grouped by
+        week: a task's work often spans weeks, and filing it under one of them
+        would make a client reassemble the bar.
+
+
+        Unlike `/schedule`, this one *can* be scoped to a project. That refusal
+        is about arithmetic -- packing one project alone would hand it the
+        whole week -- and nothing about the past is computed that way.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: First day of the window. Defaults to the Monday of the current week.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Last day of the window. Defaults to today.
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Only this project's work.
+      responses:
+        "200":
+          description: One entry per task worked in the window, oldest start first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /calendar/days:
     get:
       tags: [Calendar]
@@ -4531,6 +4597,27 @@ components:
             A summary node holds none; on one this reports the earliest day
             underneath it. There is deliberately no matching end -- see
             `/schedule`.
+        first_planned_on:
+          type: string
+          format: date
+          nullable: true
+          readOnly: true
+          description: >
+            The day this task was **first** selected into any week. Written
+            once, the first time `planned_start_on` goes from null to a day,
+            and never moved again -- returning the task to the backlog and
+            planning it afresh does not reset it.
+
+
+            It exists so that slip survives replanning. `planned_start_on` is
+            the current plan and moving it is the ordinary way to reschedule,
+            so slip measured against it is zero for every task however many
+            times the task was pushed. `GET /history` reports `slip_weeks`
+            against this column.
+
+
+            Not writable. On a summary node it is the earliest one underneath,
+            like `planned_start_on`; a cover stores neither.
         unscheduled_tasks:
           type: integer
           minimum: 0
@@ -4936,6 +5023,84 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ScheduleWeek"
+      additionalProperties: false
+    HistoryResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistoryRecord"
+      additionalProperties: false
+    HistoryRecord:
+      type: object
+      required:
+        [
+          task,
+          started_on,
+          completed_on,
+          planned_on,
+          first_planned_on,
+          slip_weeks,
+          expected_minutes,
+          actual_minutes,
+        ]
+      description: >
+        One task's work as the clocks recorded it, with the plan beside it.
+        Every field is measured or derived from something measured; nothing
+        here is filled in.
+      properties:
+        task:
+          $ref: "#/components/schemas/Task"
+        started_on:
+          type: string
+          format: date
+          description: The day work began. Always present -- nothing without a start is here.
+        completed_on:
+          type: string
+          format: date
+          nullable: true
+          description: Null while the work is still in flight.
+        planned_on:
+          type: string
+          format: date
+          nullable: true
+          description: The task's current `planned_start_on`, whatever it has been moved to.
+        first_planned_on:
+          type: string
+          format: date
+          nullable: true
+          description: The day it was first selected into any week. What `slip_weeks` counts from.
+        slip_weeks:
+          type: integer
+          nullable: true
+          description: >
+            Whole weeks between the week the task was first planned for and the
+            week it actually began. Positive is late, negative is early, zero
+            means it began in the week it was promised for -- a week is the
+            unit the plan is made in, so starting Wednesday on what was
+            selected for Monday is not a slip.
+
+
+            **Null is not zero.** It means the task was never selected into any
+            week at all, so there was no promise to slip against.
+        expected_minutes:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            PERT expected value of the three-point estimate, or null when the
+            task carries no estimate. Not filled in -- a zero here would read
+            as a measurement.
+        actual_minutes:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            What was recorded on completion, or null when nobody recorded it.
+            Null against a non-null `expected_minutes` is the gap that says how
+            much of a velocity figure to believe.
       additionalProperties: false
     ScheduleWeek:
       type: object

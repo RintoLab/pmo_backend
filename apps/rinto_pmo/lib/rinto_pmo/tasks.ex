@@ -1250,10 +1250,20 @@ defmodule RintoPMO.Tasks do
   # when the chunk finishes, is `RintoPMO.Schedule`'s answer and depends on
   # every other task competing for the same weeks; a max taken over selections
   # would look like that answer without being it.
+  #
+  # `first_planned_on` rolls up the same way and has to: a cover whose current
+  # selection was rolled up while its baseline stayed null would report a chunk
+  # that has never slipped, which is the one thing the baseline exists to stop.
   defp put_earliest_planned_start(%Task{} = task, rolled) do
-    case rolled |> Enum.map(& &1.planned_start_on) |> Enum.reject(&is_nil/1) do
+    task
+    |> put_earliest(rolled, :planned_start_on)
+    |> put_earliest(rolled, :first_planned_on)
+  end
+
+  defp put_earliest(%Task{} = task, rolled, field) do
+    case rolled |> Enum.map(&Map.fetch!(&1, field)) |> Enum.reject(&is_nil/1) do
       [] -> task
-      days -> %{task | planned_start_on: Enum.min(days, Date)}
+      days -> Map.put(task, field, Enum.min(days, Date))
     end
   end
 

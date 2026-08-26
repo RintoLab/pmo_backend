@@ -327,4 +327,105 @@ defmodule RintoPMO.ScheduleTest do
                [later_but_urgent.id, carried_over.id]
     end
   end
+
+  describe "history/3" do
+    defp worked(attrs) do
+      insert(:task, Keyword.merge([status: :done], attrs))
+    end
+
+    defp at(%Date{} = day), do: DateTime.new!(day, ~T[09:00:00.000000])
+
+    test "reports work whose span overlaps the window, oldest start first" do
+      inside = worked(started_at: at(~D[2026-06-10]), completed_at: at(~D[2026-06-11]))
+      spanning = worked(started_at: at(~D[2026-06-01]), completed_at: at(~D[2026-06-30]))
+      running = worked(status: :in_progress, started_at: at(~D[2026-06-05]), completed_at: nil)
+
+      worked(started_at: at(~D[2026-05-01]), completed_at: at(~D[2026-05-02]))
+      worked(started_at: at(~D[2026-07-01]), completed_at: at(~D[2026-07-02]))
+      insert(:task, started_at: nil)
+
+      assert [spanning.id, running.id, inside.id] ==
+               ~D[2026-06-08]
+               |> Schedule.history(~D[2026-06-14])
+               |> Enum.map(& &1.task.id)
+    end
+
+    # It really was worked. A record that dropped it would make the week look
+    # cheaper than it was.
+    test "cancelled work that was started is still part of the record" do
+      dropped =
+        worked(status: :cancelled, started_at: at(~D[2026-06-10]), completed_at: nil)
+
+      assert [dropped.id] ==
+               ~D[2026-06-08]
+               |> Schedule.history(~D[2026-06-14])
+               |> Enum.map(& &1.task.id)
+    end
+
+    # The whole point of the baseline column: a task pushed three weeks and
+    # then worked has slipped three weeks, however tidy `planned_start_on`
+    # looks by the time anybody reads it.
+    test "slip is measured from the first plan, not the current one" do
+      task =
+        worked(
+          planned_start_on: ~D[2026-06-08],
+          first_planned_on: ~D[2026-05-18],
+          started_at: at(~D[2026-06-09]),
+          completed_at: at(~D[2026-06-10]),
+          estimate_optimistic: 60,
+          estimate_likely: 120,
+          estimate_pessimistic: 240,
+          actual_minutes: 300
+        )
+
+      assert [entry] = Schedule.history(~D[2026-06-08], ~D[2026-06-14])
+
+      assert entry.task.id == task.id
+      assert entry.started_on == ~D[2026-06-09]
+      assert entry.completed_on == ~D[2026-06-10]
+      assert entry.planned_on == ~D[2026-06-08]
+      assert entry.first_planned_on == ~D[2026-05-18]
+      assert entry.slip_weeks == 3
+      assert entry.expected_minutes == 130
+      assert entry.actual_minutes == 300
+    end
+
+    # A week is the unit the plan is made in, so beginning on Wednesday what
+    # was selected for Monday is not a slip.
+    test "starting later in the same week is not a slip, and never planned is not zero" do
+      worked(
+        first_planned_on: ~D[2026-06-08],
+        planned_start_on: ~D[2026-06-08],
+        started_at: at(~D[2026-06-10])
+      )
+
+      unplanned = worked(started_at: at(~D[2026-06-11]))
+
+      records = Schedule.history(~D[2026-06-08], ~D[2026-06-14])
+
+      assert Enum.map(records, & &1.slip_weeks) == [0, nil]
+      assert Enum.find(records, &(&1.task.id == unplanned.id)).first_planned_on == nil
+    end
+
+    test "nothing is filled in for an estimate or a duration nobody recorded" do
+      worked(started_at: at(~D[2026-06-10]), actual_minutes: nil)
+
+      assert [%{expected_minutes: nil, actual_minutes: nil}] =
+               Schedule.history(~D[2026-06-08], ~D[2026-06-14])
+    end
+
+    # Unlike `pack/2`, which refuses to be scoped. That refusal is about
+    # arithmetic; nothing about the past is computed across projects.
+    test "narrows to one project when asked" do
+      mine = insert(:project)
+      theirs = insert(:project)
+      here = worked(project: mine, started_at: at(~D[2026-06-10]))
+      worked(project: theirs, started_at: at(~D[2026-06-10]))
+
+      assert [here.id] ==
+               ~D[2026-06-08]
+               |> Schedule.history(~D[2026-06-14], mine.id)
+               |> Enum.map(& &1.task.id)
+    end
+  end
 end

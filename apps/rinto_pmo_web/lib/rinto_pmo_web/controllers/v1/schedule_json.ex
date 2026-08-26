@@ -9,6 +9,40 @@ defmodule RintoPMOWeb.V1.ScheduleJSON do
     %{data: Enum.map(weeks, &week/1)}
   end
 
+  @doc """
+  One object per task that was worked in the window, oldest start first.
+
+  Flat rather than grouped by week, unlike `index/1`: a task's work spans days
+  and often weeks, and filing it under one of them would make a client that
+  wants the bar reassemble it. The dates are here; a client that wants weeks
+  groups by them.
+
+  `slip_weeks` is measured from `first_planned_on`, not from `planned_on`.
+  Rescheduling moves the latter, so slip measured against it is zero for every
+  task however many times it was pushed. Null means the task was never
+  selected into a week at all -- which is not a slip of zero.
+
+  `expected_minutes` and `actual_minutes` are both nullable and neither is
+  filled in. A missing estimate or a missing recorded duration is a gap in
+  what was measured, and a zero there would read as a measurement.
+  """
+  def history(%{records: records}) do
+    %{data: Enum.map(records, &record/1)}
+  end
+
+  defp record(entry) do
+    %{
+      task: TaskJSON.data(entry.task),
+      started_on: entry.started_on,
+      completed_on: entry.completed_on,
+      planned_on: entry.planned_on,
+      first_planned_on: entry.first_planned_on,
+      slip_weeks: entry.slip_weeks,
+      expected_minutes: entry.expected_minutes,
+      actual_minutes: entry.actual_minutes
+    }
+  end
+
   # `capacity` comes from the packer rather than being recomputed here: in the
   # current week the days already behind us hold nothing, and a renderer that
   # worked that out for itself would be a second copy of a rule that lives in

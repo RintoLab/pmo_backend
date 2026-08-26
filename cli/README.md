@@ -69,6 +69,7 @@ different things:
 | `project` | `list`, `show` -- repositories, directory names, default branches |
 | `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `split`, `start`, `complete`, `cancel`, `reopen`, `delete` |
 | `schedule` | one command; what each week holds and what did not fit in it |
+| `history` | one command; what was actually worked, with the plan beside it |
 | `doc` | `create`, `show`, `list`, `propose`, `proposals`, `contentions`, `rebase` |
 | `search` | one command; finds things by meaning and answers with `rinto://` addresses |
 | `skill` | `list`, `install`, `sync` |
@@ -83,7 +84,9 @@ it in the board's own order (priority, then the day it was selected for, then
 age), so the first row is what the plan would reach next. `--scheduled false`
 is the backlog: work that is in no week at all. `rinto-pmo schedule` shows the
 other side of it -- what each week holds, what overflowed, and what is blocked
-waiting on something that overflowed.
+waiting on something that overflowed. `rinto-pmo history` shows the past
+instead: what was actually worked, how long it took against what was estimated,
+and how far it slipped from the week it was *first* planned for.
 
 
 **Ask what a task write looks like; do not guess.** `task create`, `task update`

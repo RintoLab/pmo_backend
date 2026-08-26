@@ -41,7 +41,8 @@ defmodule RintoPMO.Schedule do
 
   The past is not packed at all. What happened before today is `started_at` and
   `completed_at`, a record; the plan is a forecast, and forecasting backwards
-  is not a thing.
+  is not a thing. `history/3` reports that record, and the two never produce
+  each other: one is what the clocks say, the other is what the minutes allow.
 
   ## Overflow does not stop the fill
 
@@ -110,6 +111,24 @@ defmodule RintoPMO.Schedule do
   @type allocation :: %{day: Date.t(), task: Task.t(), minutes: non_neg_integer()}
 
   @typedoc """
+  What one task's work came to, as the clocks recorded it.
+
+  Every field is measured or derived from something measured. `slip_weeks` is
+  nil when the task was never selected into a week at all, which is different
+  from a slip of zero.
+  """
+  @type history_entry :: %{
+          task: Task.t(),
+          started_on: Date.t(),
+          completed_on: Date.t() | nil,
+          planned_on: Date.t() | nil,
+          first_planned_on: Date.t() | nil,
+          slip_weeks: integer() | nil,
+          expected_minutes: non_neg_integer() | nil,
+          actual_minutes: non_neg_integer() | nil
+        }
+
+  @typedoc """
   What a single week came to.
 
   `allocations` is in day order, and within a day in the order the tasks were
@@ -157,6 +176,84 @@ defmodule RintoPMO.Schedule do
       |> plan_weeks(candidates(last), calendar)
       |> Enum.reject(&Date.before?(&1.week, first))
     end
+  end
+
+  @doc """
+  What was actually worked between two days, oldest start first.
+
+  The other half of the picture, and not a second view of the same thing:
+  `pack/2` forecasts forward from today and never looks back, because
+  forecasting backwards is not a thing. This reports what the clocks recorded,
+  and computes nothing that was not measured.
+
+  A task is in the window when its work overlapped it -- started on or before
+  `to`, and either still unfinished or finished on or after `from`. Work that
+  spans the whole window is in it, which a pair of "started between" and
+  "finished between" filters would both miss, and is exactly the bar a chart
+  most needs to draw.
+
+  Anything with a `started_at` qualifies, cancelled work included: it really
+  was worked, and a record that quietly dropped it would make the week look
+  cheaper than it was. A cover never appears -- it has no clocks of its own.
+
+  ## What each record carries
+
+  `planned_on` is the current plan and `first_planned_on` is the day the task
+  was first selected into any week, so `slip_weeks` is the distance between
+  the week it was first promised for and the week it actually began. Measured
+  against the baseline rather than the current plan on purpose: rescheduling a
+  task moves `planned_start_on`, and slip measured against it would be zero
+  however many times the task had been pushed.
+
+  `expected_minutes` against `actual_minutes` is the other comparison, and
+  either may be nil -- nothing here fills in an estimate nobody made or a
+  duration nobody recorded. Two nils are not a match, they are a gap, and the
+  count of them is what tells a reader how much of this to believe.
+  """
+  @spec history(Date.t(), Date.t(), UUIDv7.t() | nil) :: [history_entry()]
+  def history(%Date{} = from, %Date{} = to, project_id \\ nil) do
+    from
+    |> worked_between(to, project_id)
+    |> Enum.map(&record/1)
+  end
+
+  defp worked_between(from, to, project_id) do
+    started_by = DateTime.new!(Date.add(to, 1), ~T[00:00:00.000000])
+    finished_after = DateTime.new!(from, ~T[00:00:00.000000])
+
+    Task
+    |> where([task], not is_nil(task.started_at))
+    |> where([task], task.started_at < ^started_by)
+    |> where([task], is_nil(task.completed_at) or task.completed_at >= ^finished_after)
+    |> then(fn query ->
+      if project_id, do: where(query, [task], task.project_id == ^project_id), else: query
+    end)
+    |> order_by([task], asc: task.started_at)
+    |> Repo.all()
+  end
+
+  defp record(%Task{} = task) do
+    started_on = DateTime.to_date(task.started_at)
+
+    %{
+      task: task,
+      started_on: started_on,
+      completed_on: task.completed_at && DateTime.to_date(task.completed_at),
+      planned_on: task.planned_start_on,
+      first_planned_on: task.first_planned_on,
+      slip_weeks: slip_weeks(task.first_planned_on, started_on),
+      expected_minutes: Task.expected(task),
+      actual_minutes: task.actual_minutes
+    }
+  end
+
+  # In weeks rather than days, because that is the unit the plan is made in:
+  # a task selected for Monday and begun on Wednesday of the same week did not
+  # slip, it was worked in the week it was planned for.
+  defp slip_weeks(nil, _started_on), do: nil
+
+  defp slip_weeks(%Date{} = first_planned_on, %Date{} = started_on) do
+    div(Date.diff(Calendar.monday_of(started_on), Calendar.monday_of(first_planned_on)), 7)
   end
 
   @doc """

@@ -1821,6 +1821,81 @@ defmodule RintoPMO.TasksTest do
       assert task.planned_start_on == nil
     end
 
+    test "the first plan is recorded once and survives every reschedule" do
+      project = insert(:project)
+
+      assert {:ok, task} = Tasks.create_task(project, %{"title" => "Planned"})
+      assert task.first_planned_on == nil
+
+      assert {:ok, task} =
+               Tasks.update_task(task, %{"planned_start_on" => ~D[2026-09-07]})
+
+      assert task.first_planned_on == ~D[2026-09-07]
+
+      assert {:ok, task} =
+               Tasks.update_task(task, %{"planned_start_on" => ~D[2026-09-28]})
+
+      assert task.planned_start_on == ~D[2026-09-28]
+      assert task.first_planned_on == ~D[2026-09-07]
+
+      # Back to the backlog and planned again: "when did we first say we would
+      # do this" does not stop having an answer because we stopped saying it.
+      assert {:ok, task} = Tasks.update_task(task, %{"planned_start_on" => nil})
+      assert task.first_planned_on == ~D[2026-09-07]
+
+      assert {:ok, task} =
+               Tasks.update_task(task, %{"planned_start_on" => ~D[2026-10-05]})
+
+      assert task.first_planned_on == ~D[2026-09-07]
+    end
+
+    test "a task created already planned is baselined at creation" do
+      project = insert(:project)
+
+      assert {:ok, task} =
+               Tasks.create_task(project, %{
+                 "title" => "Planned",
+                 "planned_start_on" => ~D[2026-09-07]
+               })
+
+      assert task.first_planned_on == ~D[2026-09-07]
+    end
+
+    # A client that could write it could report any slip it liked.
+    test "the baseline is not settable" do
+      project = insert(:project)
+
+      assert {:ok, task} =
+               Tasks.create_task(project, %{
+                 "title" => "Planned",
+                 "planned_start_on" => ~D[2026-09-07],
+                 "first_planned_on" => ~D[2020-01-01]
+               })
+
+      assert task.first_planned_on == ~D[2026-09-07]
+    end
+
+    # A cover holds no schedule, so it holds no baseline either -- and the
+    # rollup has to carry both, or a chunk would report as never slipped.
+    test "splitting drops the baseline, and a cover rolls up the earliest one" do
+      project = insert(:project)
+
+      {:ok, task} =
+        Tasks.create_task(project, %{"title" => "Chunk", "planned_start_on" => ~D[2026-09-07]})
+
+      assert {:ok, cover} =
+               Tasks.split_task(task, [
+                 %{"title" => "First", "planned_start_on" => ~D[2026-09-14]},
+                 %{"title" => "Second", "planned_start_on" => ~D[2026-09-21]}
+               ])
+
+      assert Repo.get!(Task, cover.id).first_planned_on == nil
+
+      listed = Enum.find(Tasks.list_tasks(project, %{}), &(&1.id == cover.id))
+      assert listed.first_planned_on == ~D[2026-09-14]
+      assert listed.planned_start_on == ~D[2026-09-14]
+    end
+
     test "refuses a priority outside the five levels" do
       project = insert(:project)
 

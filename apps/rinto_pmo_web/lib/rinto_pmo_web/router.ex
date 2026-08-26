@@ -31,6 +31,13 @@ defmodule RintoPMOWeb.Router do
     # alone would hand it the whole week. A per-project view filters this.
     get "/schedule", ScheduleController, :index
 
+    # The same subject read backwards: not a forecast but what the clocks
+    # recorded. A separate endpoint rather than a flag, because a client that
+    # could ask for both at once would get one shape carrying two kinds of
+    # claim. This one *can* be scoped to a project -- the refusal above is
+    # about arithmetic, and nothing about the past is computed that way.
+    get "/history", ScheduleController, :history
+
     # Which days are not what the weekend rule says. Statutory holidays and the
     # weekends worked to make up for them are fetched daily and are read-only
     # here; leave is the half a person writes, and is the reason this table

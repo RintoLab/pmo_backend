@@ -134,6 +134,106 @@ fn section(output: &mut String, week: &Value, field: &str, meaning: &str) {
     }
 }
 
+/// What was actually worked, rather than what is planned.
+///
+/// The other half of the same subject, and a separate command for the reason
+/// it is a separate endpoint: one is a forecast, the other is what the clocks
+/// recorded, and printing them together would put two kinds of claim in one
+/// table. `slip` is measured from the day the task was *first* planned, which
+/// is why rescheduling it does not make the slip go away.
+#[derive(Args)]
+pub struct HistoryArgs {
+    /// First day of the window; defaults to the Monday of this week
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    from: Option<String>,
+
+    /// Last day of the window; defaults to today
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    to: Option<String>,
+
+    /// Only this project's work
+    #[arg(long, value_name = "UUID")]
+    project_id: Option<String>,
+}
+
+pub fn run_history(args: HistoryArgs) -> Result<()> {
+    let config = Config::load()?;
+    let client = Client::new(config.api(), config.token()?)?;
+
+    history(&client, args)
+}
+
+fn history(client: &Client, args: HistoryArgs) -> Result<()> {
+    let mut query: Vec<(&str, &str)> = Vec::new();
+    if let Some(from) = args.from.as_deref() {
+        query.push(("from", from));
+    }
+    if let Some(to) = args.to.as_deref() {
+        query.push(("to", to));
+    }
+    if let Some(project_id) = args.project_id.as_deref() {
+        query.push(("project_id", project_id));
+    }
+
+    let records = client::data(client.get("/history", &query)?)?;
+    let records = records.as_array().map(Vec::as_slice).unwrap_or_default();
+
+    if records.is_empty() {
+        println!("no work was started or in flight in that window");
+        return Ok(());
+    }
+
+    print!("{}", render_history(records));
+    Ok(())
+}
+
+fn render_history(records: &[Value]) -> String {
+    let mut output = String::new();
+
+    for record in records {
+        let task = record.get("task").unwrap_or(&Value::Null);
+        let _ = writeln!(
+            output,
+            "{} → {}  {}  {}  {}",
+            string(record, "started_on", "?"),
+            // Still in flight. Said as "open" rather than left blank, because
+            // a blank column reads as missing data.
+            string(record, "completed_on", "open"),
+            minutes(record),
+            slip(record),
+            string(task, "title", "(untitled)")
+        );
+        let _ = writeln!(
+            output,
+            "    {}  {}",
+            string(task, "id", "?"),
+            string(task, "status", "?")
+        );
+    }
+
+    output
+}
+
+/// Estimated against measured, and a gap is printed as a gap: a missing
+/// estimate or a missing duration is not a zero, and filling one in would
+/// invent the only number this view exists to check.
+fn minutes(record: &Value) -> String {
+    format!(
+        "{}m planned / {}m actual",
+        number(record, "expected_minutes"),
+        number(record, "actual_minutes")
+    )
+}
+
+fn slip(record: &Value) -> String {
+    match record.get("slip_weeks").and_then(Value::as_i64) {
+        None => "never planned".to_string(),
+        Some(0) => "on time".to_string(),
+        Some(weeks) if weeks > 0 => format!("+{weeks}w late"),
+        Some(weeks) => format!("{weeks}w early"),
+    }
+}
+
 fn array<'a>(value: &'a Value, field: &str) -> &'a [Value] {
     value
         .get(field)
@@ -148,6 +248,98 @@ fn number(value: &Value, field: &str) -> String {
         .and_then(Value::as_i64)
         .map(|number| number.to_string())
         .unwrap_or_else(|| "?".to_string())
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::{history, render_history, HistoryArgs};
+    use crate::testing::{client, Reply, StubServer};
+    use serde_json::json;
+
+    #[test]
+    fn the_window_and_the_project_travel_as_query_parameters() {
+        let server = StubServer::start(vec![
+            Reply::json(200, json!({"data": []})),
+            Reply::json(200, json!({"data": []})),
+        ]);
+        let client = client(&server);
+
+        history(
+            &client,
+            HistoryArgs {
+                from: None,
+                to: None,
+                project_id: None,
+            },
+        )
+        .unwrap();
+
+        history(
+            &client,
+            HistoryArgs {
+                from: Some("2026-06-08".to_string()),
+                to: Some("2026-06-14".to_string()),
+                project_id: Some("project-1".to_string()),
+            },
+        )
+        .unwrap();
+
+        let requests = server.requests();
+        assert_eq!(requests[0].target, "/api/v1/history");
+        assert_eq!(
+            requests[1].target,
+            "/api/v1/history?from=2026-06-08&to=2026-06-14&project_id=project-1"
+        );
+    }
+
+    #[test]
+    fn a_record_shows_the_span_the_minutes_and_the_slip() {
+        let rendered = render_history(&[json!({
+            "task": {"id": "task-1", "title": "Wire the estimator", "status": "done"},
+            "started_on": "2026-06-09",
+            "completed_on": "2026-06-10",
+            "slip_weeks": 3,
+            "expected_minutes": 130,
+            "actual_minutes": 300
+        })]);
+
+        assert!(rendered.contains("2026-06-09 → 2026-06-10"));
+        assert!(rendered.contains("130m planned / 300m actual"));
+        assert!(rendered.contains("+3w late"));
+        assert!(rendered.contains("task-1  done"));
+    }
+
+    /// Three different absences, and none of them is a zero: still running,
+    /// never planned, never measured.
+    #[test]
+    fn what_was_not_measured_is_not_printed_as_a_number() {
+        let rendered = render_history(&[json!({
+            "task": {"id": "task-2", "title": "Ship the board", "status": "in_progress"},
+            "started_on": "2026-06-09",
+            "completed_on": null,
+            "slip_weeks": null,
+            "expected_minutes": null,
+            "actual_minutes": null
+        })]);
+
+        assert!(rendered.contains("2026-06-09 → open"));
+        assert!(rendered.contains("?m planned / ?m actual"));
+        assert!(rendered.contains("never planned"));
+    }
+
+    #[test]
+    fn on_time_says_so_rather_than_printing_a_zero() {
+        let rendered = render_history(&[json!({
+            "task": {"id": "task-3", "title": "On time", "status": "done"},
+            "started_on": "2026-06-09",
+            "completed_on": "2026-06-09",
+            "slip_weeks": 0,
+            "expected_minutes": 60,
+            "actual_minutes": 60
+        })]);
+
+        assert!(rendered.contains("on time"));
+    }
 }
 
 fn string<'a>(value: &'a Value, field: &str, fallback: &'a str) -> &'a str {

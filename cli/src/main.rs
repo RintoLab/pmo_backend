@@ -52,6 +52,8 @@ enum Command {
     Task(task::TaskCommand),
     /// Show what each week holds and what did not fit in it
     Schedule(schedule::ScheduleArgs),
+    /// Show what was actually worked, beside what was planned for it
+    History(schedule::HistoryArgs),
     /// Find things by meaning, and get back rinto:// addresses
     Search(search::SearchArgs),
     /// Install the agent skills this binary carries
@@ -70,6 +72,7 @@ fn main() {
         Command::Project(command) => project::run(command),
         Command::Task(command) => task::run(command),
         Command::Schedule(args) => schedule::run(args),
+        Command::History(args) => schedule::run_history(args),
         Command::Search(args) => search::run(args),
         Command::Skill(command) => skill::run(command),
         Command::Update(args) => update::run(args),

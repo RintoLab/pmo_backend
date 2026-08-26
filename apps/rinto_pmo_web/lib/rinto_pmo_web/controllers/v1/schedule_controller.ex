@@ -33,6 +33,43 @@ defmodule RintoPMOWeb.V1.ScheduleController do
     end
   end
 
+  @doc """
+  What was actually worked between `from` and `to`.
+
+  The counterpart to `index/2`, and deliberately a separate endpoint rather
+  than a flag on it: one is a forecast the packer computes, the other is what
+  the clocks recorded, and a client that could ask for "both" would get one
+  shape carrying two kinds of claim.
+
+  `from` defaults to the Monday of the current week and `to` to today, so the
+  bare endpoint answers "what has happened this week so far".
+
+  Scoped to a project when `project_id` is given, which `index/2` refuses to
+  be. The refusal there is about arithmetic -- packing one project alone would
+  hand it the whole week -- and nothing about the past is computed that way.
+  A record is a record whichever project it belongs to.
+  """
+  def history(conn, params) do
+    with {:ok, from} <- date_param(params, "from", Calendar.current_week()),
+         {:ok, to} <- date_param(params, "to", Date.utc_today()),
+         {:ok, project_id} <- project_param(params) do
+      render(conn, :history, records: Schedule.history(from, to, project_id))
+    end
+  end
+
+  defp project_param(params) do
+    case Map.get(params, "project_id") do
+      nil ->
+        {:ok, nil}
+
+      value ->
+        case UUIDv7.cast(value) do
+          {:ok, id} -> {:ok, id}
+          :error -> {:error, :bad_request, %{"project_id" => ["is invalid"]}}
+        end
+    end
+  end
+
   defp date_param(params, name, default) do
     case Map.get(params, name) do
       nil ->
