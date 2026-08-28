@@ -73,10 +73,10 @@ different things:
 | `calibration` | one command; what the estimates turned out to be worth |
 | `doc` | `create`, `show`, `list`, `propose`, `proposals`, `annotations`, `annotation`, `contentions`, `rebase` |
 | `search` | one command; finds things by meaning and answers with `rinto://` addresses |
-| `skill` | `list`, `install`, `sync` |
+| `skill` | `list`, `install`, `sync` -- see "Skills" below |
 | `update` | self-update from the Gitea package registry |
 
-Five things are worth knowing before writing anything:
+Six things are worth knowing before writing anything:
 
 **The pool is not a project's.** `task list` takes a project slug, and without
 one it lists every project at once -- which is the right question, because
@@ -123,6 +123,16 @@ An annotation has two states and nothing derives them: confirmed, or not.
 Replies come from people and, when somebody clicks for one, from the AI; this
 binary does not distinguish them, because who said a thing does not change
 whether it is right.
+
+**A skill's version is this binary's version.** `skill list` says which version
+it carries, and for anything installed, which version wrote the copy on disk and
+whether that copy is still current -- without writing anything. Before, the only
+way to find out was `skill sync`, which writes. Nothing declares a version: the
+skills are compiled into the binary and describe its own commands, so a
+`version:` in each `SKILL.md` would be a second number to keep in step and the
+first edit that forgot to bump it would make it wrong. "written by 0.1.0 --
+current" is a real state and means the text did not change between those
+releases; nobody maintained a number to say so.
 
 **Committing and deciding are not here, on purpose.** An agent proposes; a
 person commits the proposal, settles arguments between competing ones, and

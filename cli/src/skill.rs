@@ -31,6 +31,24 @@ const DEFAULT_DIR: &str = "~/.pi/agent/skills";
 /// this machine was set up, not something the server knows.
 const STATE_FILE: &str = "skills.json";
 
+/// A skill's version is this binary's version, and is never declared anywhere.
+///
+/// The skills are `include_str!`d into the binary and describe its own commands,
+/// so they ship, change and are superseded as one artifact -- which means the
+/// binary's version already *is* the skill's, and a second number would only be
+/// a copy of it that somebody has to remember to keep in step.
+///
+/// A `version:` in each `SKILL.md` was the obvious alternative and is the worse
+/// one: it is maintained by hand, so the first edit that forgets to bump it
+/// makes it wrong, and a version that lies is worse than no version at all.
+/// Nothing here can drift, because there is nothing to keep in step.
+///
+/// What it does *not* answer -- "did this skill's text actually change between
+/// two releases" -- is what `sha256` answers, and that is likewise derived.
+fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 pub struct Skill {
     pub name: &'static str,
     pub body: &'static str,
@@ -96,12 +114,25 @@ pub fn run(command: SkillCommand) -> Result<()> {
     }
 }
 
+/// What this binary carries, and how the copy on this machine compares.
+///
+/// The comparison is the reason this reads the disk at all. Before it, the only
+/// way to learn whether an installed skill was still current was to run `skill
+/// sync` -- a command that *writes* -- so anybody who merely wanted to know had
+/// to change something to find out.
 fn list() -> Result<()> {
     let installed = State::load().unwrap_or_default();
 
+    println!("skills carried by rinto-pmo {}:\n", version());
+
     for skill in SKILLS {
         let where_installed = match installed.find(skill.name) {
-            Some(record) => format!("\n  installed: {}", record.path.display()),
+            Some(record) => format!(
+                "\n  installed: {}\n  {} -- {}",
+                record.path.display(),
+                written_by(record),
+                status_of(skill, record)
+            ),
             None => String::new(),
         };
         println!(
@@ -113,6 +144,40 @@ fn list() -> Result<()> {
 
     println!("install with: rinto-pmo skill install <name>");
     Ok(())
+}
+
+fn written_by(record: &Record) -> String {
+    match &record.version {
+        Some(version) => format!("written by {version}"),
+        None => "written before versions were recorded".to_string(),
+    }
+}
+
+/// How the file on disk stands against the one in this binary.
+///
+/// Decided by the same `decide/4` that `sync` uses, so a listing can never
+/// promise something a sync would then do differently -- a second rule for the
+/// same question is a second rule to keep in step.
+fn status_of(skill: &Skill, record: &Record) -> String {
+    match std::fs::read_to_string(&record.path) {
+        // Removing it by hand is an uninstall, which `sync` honours by dropping
+        // the record. Saying so here is how somebody finds out before then.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            "the file is gone; `skill sync` will drop it from the record".to_string()
+        }
+        Err(err) => format!("could not be read: {err}"),
+        Ok(existing) => match decide(&existing, skill.body, &record.sha256, false) {
+            // "Written by 0.1.0 -- current" is a real and useful state: the
+            // text did not change between those releases. Nobody had to
+            // maintain a number to say so.
+            Action::Current => "current".to_string(),
+            Action::Replace => "out of date; `skill sync` will replace it".to_string(),
+            Action::Edited => {
+                "edited here; `skill sync` leaves it alone (`skill install --force` takes ours)"
+                    .to_string()
+            }
+        },
+    }
 }
 
 fn install(args: InstallArgs) -> Result<()> {
@@ -156,7 +221,12 @@ fn install(args: InstallArgs) -> Result<()> {
 
     write_skill(skill, &directory, &path)?;
 
-    println!("installed {} to {}", skill.name, path.display());
+    println!(
+        "installed {} {} to {}",
+        skill.name,
+        version(),
+        path.display()
+    );
     remember(skill, &path)
 }
 
@@ -278,16 +348,29 @@ fn remember(skill: &Skill, path: &Path) -> Result<()> {
 /// The hash is the point. Without it, a sync after an update cannot tell "the
 /// old version's text" from "the text someone tuned", and would have to either
 /// overwrite tuned wording silently or refuse to do anything useful.
+///
+/// `version` says whose text that is, and moves with the hash and never
+/// separately: the two describe one body, and a pair that could disagree is a
+/// pair somebody eventually trusts the wrong half of.
+///
+/// It is optional because a record written before versions were kept has none.
+/// Absent means "written by some earlier build" -- which is true, and is a
+/// better answer than dropping the record and quietly forgetting the skill was
+/// installed at all.
 #[derive(Clone)]
 struct Record {
     name: String,
     path: PathBuf,
     sha256: String,
+    version: Option<String>,
 }
 
 impl Record {
+    /// After the file on disk has been confirmed, or made, equal to this
+    /// binary's text -- so both halves are restamped together.
     fn refreshed(mut self, skill: &Skill) -> Self {
         self.sha256 = sha256_hex(skill.body.as_bytes());
+        self.version = Some(version().to_string());
         self
     }
 }
@@ -331,6 +414,14 @@ impl State {
                             name: entry.get("name")?.as_str()?.to_string(),
                             path: PathBuf::from(entry.get("path")?.as_str()?),
                             sha256: entry.get("sha256")?.as_str()?.to_ascii_lowercase(),
+                            // Optional, unlike the three above: a record from
+                            // before versions were kept is still a record of an
+                            // install, and dropping it would un-remember a
+                            // skill that is sitting there installed.
+                            version: entry
+                                .get("version")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
                         })
                     })
                     .collect()
@@ -350,6 +441,7 @@ impl State {
             name: skill.name.to_string(),
             path: path.to_path_buf(),
             sha256: sha256_hex(skill.body.as_bytes()),
+            version: Some(version().to_string()),
         });
     }
 
@@ -362,6 +454,10 @@ impl State {
                     "name": record.name,
                     "path": record.path.to_string_lossy(),
                     "sha256": record.sha256,
+                    // Written as null rather than omitted when unknown, so the
+                    // shape of a row never depends on what happened to be known
+                    // when it was written.
+                    "version": record.version,
                 })
             })
             .collect();
@@ -420,7 +516,10 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{decide, description_of, sha256_hex, Action, Record, Skill, State, SKILLS};
+    use super::{
+        decide, description_of, sha256_hex, status_of, version, written_by, Action, Record, Skill,
+        State, SKILLS,
+    };
 
     #[test]
     fn every_skill_carries_content() {
@@ -512,6 +611,7 @@ mod tests {
             name: "x".to_string(),
             path: PathBuf::from("/x/SKILL.md"),
             sha256: sha256_hex(b"old"),
+            version: Some("0.0.1".to_string()),
         }
         .refreshed(&skill);
 
@@ -520,6 +620,106 @@ mod tests {
             decide(skill.body, skill.body, &record.sha256, false),
             Action::Current
         );
+
+        // The version moves with the hash, never separately: they describe one
+        // body, and a pair that can disagree is a pair somebody trusts the
+        // wrong half of.
+        assert_eq!(record.version.as_deref(), Some(version()));
+    }
+
+    /// The skill's version is the binary's, derived rather than declared, so
+    /// there is nothing anybody has to remember to bump. If this ever needs a
+    /// second source of truth, that is the moment to re-read `version/0`.
+    #[test]
+    fn the_recorded_version_is_this_binarys_own() {
+        let skill = Skill {
+            name: "x",
+            body: "---\nname: x\n---\nbody",
+        };
+        let mut state = State::default();
+        state.record(&skill, Path::new("/x/SKILL.md"));
+
+        assert_eq!(
+            state.find("x").unwrap().version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    /// A record written before versions were kept is still a record of an
+    /// install. Dropping it would un-remember a skill that is sitting there on
+    /// disk, and `sync` would then stop maintaining it.
+    #[test]
+    fn a_record_without_a_version_survives_being_read() {
+        let parsed = State::parse(&json!({"installed": [{
+            "name": "x",
+            "path": "/x/SKILL.md",
+            "sha256": sha256_hex(b"body"),
+        }]}));
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].version, None);
+        assert_eq!(
+            written_by(&parsed[0]),
+            "written before versions were recorded"
+        );
+    }
+
+    #[test]
+    fn a_version_round_trips_through_the_record() {
+        let state = State {
+            records: State::parse(&json!({"installed": [{
+                "name": "x",
+                "path": "/x/SKILL.md",
+                "sha256": sha256_hex(b"body"),
+                "version": "0.0.9",
+            }]})),
+        };
+
+        assert_eq!(written_by(&state.records[0]), "written by 0.0.9");
+        assert_eq!(
+            State::parse(&state.as_json())[0].version.as_deref(),
+            Some("0.0.9")
+        );
+    }
+
+    /// `list` answers "is my copy current" without writing anything, and has to
+    /// answer it the way `sync` would -- so it goes through the same `decide`.
+    #[test]
+    fn the_listing_reports_what_a_sync_would_do() {
+        let skill = Skill {
+            name: "x",
+            body: "---\nname: x\n---\nnew",
+        };
+        let directory =
+            std::env::temp_dir().join(format!("rinto-skill-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("SKILL.md");
+
+        let record = |body: &str, recorded: &[u8]| Record {
+            name: "x".to_string(),
+            path: {
+                std::fs::write(&path, body).unwrap();
+                path.clone()
+            },
+            sha256: sha256_hex(recorded),
+            version: Some("0.0.9".to_string()),
+        };
+
+        assert_eq!(
+            status_of(&skill, &record(skill.body, skill.body.as_bytes())),
+            "current"
+        );
+        assert!(status_of(&skill, &record("old", b"old")).contains("out of date"));
+        assert!(status_of(&skill, &record("tuned", b"old")).contains("edited here"));
+
+        std::fs::remove_file(&path).unwrap();
+        let gone = Record {
+            name: "x".to_string(),
+            path: path.clone(),
+            sha256: sha256_hex(b"old"),
+            version: None,
+        };
+        assert!(status_of(&skill, &gone).contains("gone"));
     }
 
     #[test]
