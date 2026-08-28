@@ -141,6 +141,40 @@ jobs:
           tar -czf release.tar.gz -C _build/prod/rel/pmo_backend .
           sha256sum release.tar.gz > release.tar.gz.sha256
 
+      # Resolved here rather than on the server so the server needs no jq, no
+      # reachability to the package registry, and no second copy of the URL
+      # scheme -- it receives a file and a checksum, exactly as it does for the
+      # release tarball.
+      #
+      # Taken from the `latest` pointer, so the CLI on the server follows Server
+      # releases rather than CLI releases: publishing a CLI does not reach this
+      # machine until the next deploy. That is a real property, not an
+      # oversight; pushing a CLI release out immediately would be a step in
+      # release-cli.yml.
+      - name: Fetch the current CLI for the server's agent
+        if: env.SHOULD_PUBLISH == 'true'
+        env:
+          PACKAGE_BASE_URL: ${{ gitea.server_url }}
+          PACKAGE_OWNER: ${{ vars.PACKAGE_OWNER || 'Rinto' }}
+          PACKAGE_NAME: ${{ vars.PACKAGE_NAME || 'rinto-pmo' }}
+        run: |
+          set -euo pipefail
+          base="${PACKAGE_BASE_URL%/}/api/packages/${PACKAGE_OWNER}/generic/${PACKAGE_NAME}"
+          curl -fsS "${base}/latest/manifest.json" -o cli-manifest.json
+          cli_version="$(jq -r '.version // empty' cli-manifest.json)"
+          asset="$(jq -r '.files["linux-amd64"].name // empty' cli-manifest.json)"
+          sha="$(jq -r '.files["linux-amd64"].sha256 // empty' cli-manifest.json)"
+          test -n "${cli_version}" && test -n "${asset}" && test -n "${sha}" || {
+            echo "the latest CLI manifest is missing a version or the linux-amd64 asset" >&2
+            cat cli-manifest.json >&2
+            exit 1
+          }
+          curl -fsS "${base}/${cli_version}/${asset}" -o rinto-pmo-linux-amd64
+          printf '%s  rinto-pmo-linux-amd64\n' "${sha}" > rinto-pmo-linux-amd64.sha256
+          sha256sum -c rinto-pmo-linux-amd64.sha256
+          echo "AGENT_CLI_VERSION=${cli_version}" >> "${GITEA_ENV}"
+          echo "the server's agent will get rinto-pmo ${cli_version}"
+
       - name: Fetch runtime environment from r-nacos
         if: env.SHOULD_PUBLISH == 'true'
         env:
@@ -217,7 +251,17 @@ jobs:
           deploy_staging_created=true
           scp "${ssh_opts[@]}" \
             release.tar.gz release.tar.gz.sha256 deploy/deploy.sh deploy/validate_env.sh \
+            deploy/provision_agent.sh rinto-pmo-linux-amd64 rinto-pmo-linux-amd64.sha256 \
             "${DEPLOY_USER}@${HOST}:${deploy_staging}/"
+          scp "${ssh_opts[@]}" -r \
+            deploy/agent "${DEPLOY_USER}@${HOST}:${deploy_staging}/"
+
+          # Before the swap: a failure here leaves the running release untouched.
+          # It also needs the unit prepare.sh just installed, whose PATH is what
+          # makes the CLI reachable to a topic's pi.
+          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${HOST}" \
+            "bash '${deploy_staging}/provision_agent.sh' '${AGENT_CLI_VERSION}'"
+
           ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${HOST}" \
             "bash '${deploy_staging}/deploy.sh' '${RELEASE_VERSION}'"
 

@@ -31,9 +31,14 @@ WorkingDirectory=/apps/pmo_backend
 ; points at, so an upgrade that installs a new node does not leave this line
 ; naming a directory that is no longer there.
 ;
+; `~deploy/.local/bin` holds `rinto-pmo`, which is how a topic's pi reads and
+; writes anything at all -- see deploy/provision_agent.sh. It is a directory
+; `deploy` can write without sudo, which is what lets the provisioning step run
+; as the same unprivileged user as the rest of the release.
+;
 ; Ahead of the environment file deliberately: later assignments win, so the
 ; r-nacos config can override this without touching the unit.
-Environment=PATH=/home/deploy/.local/share/pi-node/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/home/deploy/.local/bin:/home/deploy/.local/share/pi-node/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ; Written by the deploy from r-nacos, root:deploy 640 -- systemd reads it as
 ; root, and `deploy.sh` reads the same file to run migrations. systemd parses this
