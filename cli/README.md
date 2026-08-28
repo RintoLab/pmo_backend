@@ -71,12 +71,12 @@ different things:
 | `schedule` | one command; what each week holds and what did not fit in it |
 | `history` | one command; what was actually worked, with the plan beside it |
 | `calibration` | one command; what the estimates turned out to be worth |
-| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `contentions`, `rebase` |
+| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `annotations`, `annotation`, `contentions`, `rebase` |
 | `search` | one command; finds things by meaning and answers with `rinto://` addresses |
 | `skill` | `list`, `install`, `sync` |
 | `update` | self-update from the Gitea package registry |
 
-Four things are worth knowing before writing anything:
+Five things are worth knowing before writing anything:
 
 **The pool is not a project's.** `task list` takes a project slug, and without
 one it lists every project at once -- which is the right question, because
@@ -109,10 +109,20 @@ text it replaced -- and proposing again from that overwrites its earlier
 proposal, because a topic holds one live proposal per block. Read `--working`
 before changing the same document twice.
 
+**What people wrote about a document is not in the document.** An annotation is
+somebody pointing at a paragraph and saying it is wrong, and neither `doc show`
+nor `--working` carries one. `doc annotations <id> --status open` lists what is
+still unsettled, with the block each one is anchored to; `doc annotation <id>
+<annotation-id>` reads one thread in full. The thread is where it matters: a
+reply marked as a conclusion from a topic message is what a discussion actually
+landed on, and it is often not what the original objection asked for. Changing a
+document without reading these re-argues settled points, or silently overwrites
+the thing somebody objected to.
+
 **Committing and deciding are not here, on purpose.** An agent proposes; a
-person commits the proposal and settles arguments between competing ones. There
-is no CLI verb for either, and that is the point of the proposal flow rather
-than a gap in this binary.
+person commits the proposal, settles arguments between competing ones, and
+resolves annotations. There is no CLI verb for any of those, and that is the
+point of the proposal flow rather than a gap in this binary.
 
 ## Update
 
