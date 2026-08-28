@@ -26,7 +26,7 @@ defmodule RintoPMO.Documents do
   Revisions are produced only by `commit_proposals/2`. That is the one place
   where a new revision, the annotations it settles, and the proposals it
   accepts all move together, and they move in a single transaction because a
-  revision that resolved nothing -- or resolutions pointing at a revision that
+  revision that settled nothing -- or confirmations pointing at a revision that
   was never written -- would each be worse than failing.
   """
 
@@ -890,16 +890,16 @@ defmodule RintoPMO.Documents do
   Turns the chosen proposals into a revision.
 
   Three things happen here and they happen together, in one transaction: the
-  revision is written, the annotations named as settled are resolved against
+  revision is written, the annotations named as settled are confirmed against
   it, and the proposals it used become `accepted`. Commit is the only natural
-  moment for an annotation to be resolved -- there is no other point at which
-  someone has both decided and changed the document -- so a revision written
-  without its resolutions, or resolutions pointing at a revision that failed to
-  write, would both leave the record lying.
+  moment for an annotation to be confirmed *with a revision* -- there is no
+  other point at which someone has both decided and changed the document -- so
+  a revision written without its confirmations, or confirmations pointing at a
+  revision that failed to write, would both leave the record lying.
 
   `attrs` takes `actor_id`, `base_revision_id`, and optionally `block_ids`
   (defaulting to every uncontended block holding a live proposal),
-  `resolve_annotation_ids`, `source_conversation_id`, `title` and
+  `confirm_annotation_ids`, `source_conversation_id`, `title` and
   `change_summary`.
 
   A block with an undecided contention cannot be committed, but it does not
@@ -955,7 +955,7 @@ defmodule RintoPMO.Documents do
          revision_attrs = revision_attrs(attrs, adopted, title),
          {:ok, revision} <- insert_revision(repo, document, parent, revision_attrs),
          :ok <- accept_all(repo, adopted ++ adopted_title(title), attr(attrs, :actor_id, nil)),
-         :ok <- resolve_annotations(document, revision, attrs) do
+         :ok <- confirm_annotations(document, revision, attrs) do
       {:ok, revision}
     end
   end
@@ -970,7 +970,7 @@ defmodule RintoPMO.Documents do
          {:ok, revision} <- insert_revision(repo, document, parent, revision_attrs),
          :ok <- accept_all(repo, [proposal | adopted_title(title)], actor_id),
          :ok <- supersede_others(repo, document, proposal, actor_id),
-         :ok <- resolve_annotations(document, revision, attrs) do
+         :ok <- confirm_annotations(document, revision, attrs) do
       {:ok, revision}
     end
   end
@@ -1636,27 +1636,31 @@ defmodule RintoPMO.Documents do
     decide_each(repo, adopted, :accepted, actor_id, DateTime.utc_now())
   end
 
-  defp resolve_annotations(document, revision, attrs) do
+  defp confirm_annotations(document, revision, attrs) do
     attrs
-    |> attr(:resolve_annotation_ids, [])
+    |> attr(:confirm_annotation_ids, [])
     |> List.wrap()
     |> Enum.reduce_while(:ok, fn annotation_id, :ok ->
-      case resolve_annotation(document, revision, annotation_id) do
+      case confirm_annotation(document, revision, annotation_id) do
         :ok -> {:cont, :ok}
         error -> {:halt, error}
       end
     end)
   end
 
-  # Scoped to the document, so an annotation from elsewhere cannot be marked
-  # resolved by a revision that could not have touched it. An annotation always
-  # belongs to a document and its resolving revision is in that same document,
-  # so the two line up without anything having to check.
-  defp resolve_annotation(document, revision, annotation_id) do
+  # Scoped to the document, so an annotation from elsewhere cannot be confirmed
+  # by a revision that could not have touched it. An annotation always belongs
+  # to a document and the revision confirming it is in that same document, so
+  # the two line up without anything having to check.
+  #
+  # This is the one place a confirmation carries a revision without a person
+  # naming it separately: they named the annotation in the same breath as the
+  # commit, which is exactly the claim "this change is what settled that".
+  defp confirm_annotation(document, revision, annotation_id) do
     context = annotations()
     annotation = context.get_annotation!(document, annotation_id)
 
-    case context.resolve_annotation(annotation, %{resolved_by_revision_id: revision.id}) do
+    case context.confirm_annotation(annotation, %{confirmed_by_revision_id: revision.id}) do
       {:ok, _annotation} -> :ok
       {:error, changeset} -> {:error, changeset}
     end

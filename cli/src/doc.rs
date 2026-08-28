@@ -128,24 +128,25 @@ pub struct ProposalsArgs {
 ///
 /// The listing is the entry point and `doc annotation` reads one thread in
 /// full, which is the same split as `doc list` and `doc show`. It has to be a
-/// split: the list endpoint does not carry replies, and a conclusion drawn in a
-/// topic lives in a reply rather than in the note it answers.
+/// split: the list endpoint does not carry replies, and what was decided about
+/// an objection is further down the thread rather than in the note that opened
+/// it.
 #[derive(Args)]
 pub struct AnnotationsArgs {
     /// Document id
     document_id: String,
 
-    /// Only notes in this state; omit for every state
-    #[arg(long, value_name = "open|resolved|dismissed")]
-    status: Option<String>,
-
     /// Only notes anchored to this block; pass `none` for the unanchored ones
     #[arg(long, value_name = "BLOCK_ID|none")]
     block: Option<String>,
 
-    /// Only notes still open that a topic has already written a conclusion under
+    /// Only the notes nobody has marked as settled yet
+    #[arg(long, conflicts_with = "confirmed")]
+    unconfirmed: bool,
+
+    /// Only the notes somebody has marked as settled
     #[arg(long)]
-    pending_conclusion: bool,
+    confirmed: bool,
 }
 
 #[derive(Args)]
@@ -580,25 +581,25 @@ fn proposal_summary(proposal: &Value) -> String {
 
 /// Which filters this asks for, using the server's own parameter names.
 ///
-/// `pending_conclusion` goes on the wire only when asked for. The server also
-/// understands `false` -- everything *except* what is waiting on a person --
-/// which is a question about somebody else's inbox, so there is no flag for it.
+/// The server takes one boolean, and this offers it as two flags because a
+/// model reading `--help` should not have to work out that "still open" is
+/// spelled `--confirmed false`. Neither flag means no opinion, which is every
+/// note -- the same "no hidden default" rule `doc list --status` follows.
 fn annotations_query(args: &AnnotationsArgs) -> Vec<(&str, &str)> {
     let mut query = Vec::new();
 
-    // Passed through as written, like `doc list --status`: which states exist
-    // is the server's to say, and a copy of the list kept here would drift.
-    // `none` for a block is the server's own spelling of "unanchored" too.
-    if let Some(status) = args.status.as_deref() {
-        query.push(("status", status));
-    }
-
+    // `none` is the server's own spelling of "unanchored", passed through as
+    // written rather than translated here.
     if let Some(block) = args.block.as_deref() {
         query.push(("block_id", block));
     }
 
-    if args.pending_conclusion {
-        query.push(("pending_conclusion", "true"));
+    if args.unconfirmed {
+        query.push(("confirmed", "false"));
+    }
+
+    if args.confirmed {
+        query.push(("confirmed", "true"));
     }
 
     query
@@ -645,19 +646,27 @@ fn annotations(client: &Client, args: AnnotationsArgs) -> Result<()> {
     Ok(())
 }
 
-/// One line per note: where it is anchored, whether it is still open, and how
-/// it opens. The rest of the thread is `doc annotation` -- twenty notes printed
-/// in full is the document again, at which point the list stops being one.
+/// One line per note: whether anybody has settled it, where it is anchored,
+/// and how it opens. The rest of the thread is `doc annotation` -- twenty notes
+/// printed in full is the document again, at which point the list stops being
+/// one.
+///
+/// `confirmed_at` is a timestamp and prints as one word, because what a reader
+/// wants off a list is whether this argument is over. When it happened is on
+/// the note itself.
 fn annotation_summary(annotation: &Value) -> String {
     let id = string(annotation, "id", "?");
-    let status = string(annotation, "status", "?");
+    let state = match annotation.get("confirmed_at").and_then(Value::as_str) {
+        Some(_settled) => "confirmed",
+        None => "open",
+    };
     let anchor = match annotation.get("block_id").and_then(Value::as_str) {
         Some(block_id) => format!("block {block_id}"),
         None => "unanchored".to_string(),
     };
 
     format!(
-        "{id}  {status}  {anchor}  {}",
+        "{id}  {state}  {anchor}  {}",
         opening_of(string(annotation, "content", ""))
     )
 }
@@ -679,14 +688,13 @@ fn opening_of(content: &str) -> String {
 /// One note and everything written under it.
 ///
 /// The replies are the point of reading a single one: a note records an
-/// objection, and what a topic concluded about it lands in a reply. Acting on
-/// the note alone means implementing the complaint rather than the answer it
-/// already has.
+/// objection, and what was decided about it is further down the thread. Acting
+/// on the opening line alone means answering a complaint that has already been
+/// answered.
 ///
-/// A reply that came out of a topic is marked as such. That is the difference
-/// between "somebody discussed this and this is where it landed" and "somebody
-/// added another opinion", and it is the only distinction a reader has to draw
-/// here -- deciding the note is a person's action either way.
+/// Who wrote each reply is not marked. A person and the AI both write here,
+/// and which is which does not change what the argument says -- deciding is a
+/// person's action either way, and this binary is never the one deciding.
 fn annotation(client: &Client, args: AnnotationArgs) -> Result<()> {
     let path = format!(
         "/documents/{}/annotations/{}",
@@ -694,11 +702,13 @@ fn annotation(client: &Client, args: AnnotationArgs) -> Result<()> {
     );
     let annotation = client::data(client.get(&path, &[])?)?;
 
-    println!(
-        "{}  {}",
-        string(&annotation, "id", "?"),
-        string(&annotation, "status", "?")
-    );
+    match annotation.get("confirmed_at").and_then(Value::as_str) {
+        Some(confirmed_at) => println!(
+            "{}  confirmed {confirmed_at}",
+            string(&annotation, "id", "?")
+        ),
+        None => println!("{}  open", string(&annotation, "id", "?")),
+    }
 
     match annotation.get("block_id").and_then(Value::as_str) {
         Some(block_id) => println!("anchored to block {block_id}"),
@@ -712,8 +722,11 @@ fn annotation(client: &Client, args: AnnotationArgs) -> Result<()> {
         println!("about: {selected}");
     }
 
+    // Present only alongside a confirmation, and its absence there is somebody
+    // having decided the document needed no change. That is the whole of the
+    // difference between the two ways a thread ends.
     if let Some(revision_id) = annotation
-        .get("resolved_by_revision_id")
+        .get("confirmed_by_revision_id")
         .and_then(Value::as_str)
     {
         println!("settled by revision {revision_id}");
@@ -744,12 +757,7 @@ fn reply_heading(reply: &Value) -> String {
         .map(|position| position.to_string())
         .unwrap_or_else(|| "?".to_string());
 
-    match reply.get("source_message_id").and_then(Value::as_str) {
-        Some(message_id) => {
-            format!("reply {position} -- a conclusion from topic message {message_id}:")
-        }
-        None => format!("reply {position}:"),
-    }
+    format!("reply {position}:")
 }
 
 /// Where two topics want the same text to say different things.
@@ -943,56 +951,57 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
 
+    fn list_args(project_id: Option<&str>, status: Option<&str>) -> ListArgs {
+        ListArgs {
+            project_id: project_id.map(str::to_string),
+            status: status.map(str::to_string),
+        }
+    }
+
     fn annotations_args(
-        status: Option<&str>,
         block: Option<&str>,
-        pending_conclusion: bool,
+        unconfirmed: bool,
+        confirmed: bool,
     ) -> AnnotationsArgs {
         AnnotationsArgs {
             document_id: "doc-1".to_string(),
-            status: status.map(str::to_string),
             block: block.map(str::to_string),
-            pending_conclusion,
+            unconfirmed,
+            confirmed,
         }
     }
 
     #[test]
     fn annotation_filters_use_the_servers_own_names() {
-        let args = annotations_args(Some("open"), Some("block-1"), true);
+        let args = annotations_args(Some("block-1"), true, false);
 
         assert_eq!(
             annotations_query(&args),
-            vec![
-                ("status", "open"),
-                ("block_id", "block-1"),
-                ("pending_conclusion", "true"),
-            ]
+            vec![("block_id", "block-1"), ("confirmed", "false")]
         );
     }
 
-    /// No hidden default: an unfiltered listing asks for every state, the same
+    /// Two flags over one boolean, so that "still open" is not spelled
+    /// `--confirmed false` in a `--help` a model is reading.
+    #[test]
+    fn confirmed_and_unconfirmed_are_the_two_sides_of_one_parameter() {
+        let settled = annotations_args(None, false, true);
+
+        assert_eq!(annotations_query(&settled), vec![("confirmed", "true")]);
+    }
+
+    /// No hidden default: an unfiltered listing asks for every note, the same
     /// rule `doc list` and `doc proposals` follow.
     #[test]
     fn an_unfiltered_annotation_listing_asks_for_nothing() {
-        assert!(annotations_query(&annotations_args(None, None, false)).is_empty());
-    }
-
-    /// `false` would be a question about what is *not* waiting on anyone, so
-    /// the absent flag has to mean "no opinion" rather than "the other one".
-    #[test]
-    fn pending_conclusion_is_absent_rather_than_false() {
-        let args = annotations_args(None, None, false);
-
-        assert!(!annotations_query(&args)
-            .iter()
-            .any(|(name, _)| *name == "pending_conclusion"));
+        assert!(annotations_query(&annotations_args(None, false, false)).is_empty());
     }
 
     #[test]
     fn an_unanchored_annotation_says_so_rather_than_printing_an_empty_slot() {
         let line = annotation_summary(&json!({
             "id": "note-1",
-            "status": "open",
+            "confirmed_at": null,
             "block_id": null,
             "content": "This contradicts the deployment doc."
         }));
@@ -1007,12 +1016,26 @@ mod tests {
     fn an_anchored_annotation_names_the_block_a_change_would_go_to() {
         let line = annotation_summary(&json!({
             "id": "note-1",
-            "status": "open",
+            "confirmed_at": null,
             "block_id": "block-9",
             "content": "Wrong order."
         }));
 
         assert!(line.contains("block block-9"));
+    }
+
+    /// The list says whether the argument is over, not when. A timestamp in a
+    /// column of ids is noise, and the note itself carries the moment.
+    #[test]
+    fn a_settled_note_reads_as_one_word() {
+        let line = annotation_summary(&json!({
+            "id": "note-1",
+            "confirmed_at": "2026-08-28T09:00:00Z",
+            "block_id": null,
+            "content": "Fixed in the rewrite."
+        }));
+
+        assert!(line.starts_with("note-1  confirmed  unanchored"));
     }
 
     /// A first line printed silently reads as the whole note.
@@ -1029,22 +1052,12 @@ mod tests {
         );
     }
 
-    /// The one distinction worth drawing in a thread: a conclusion drawn in a
-    /// topic is what to implement, another opinion is not.
+    /// Replies are numbered and nothing else. Who wrote one does not change
+    /// what the argument says, and this binary is never the one deciding.
     #[test]
-    fn a_reply_out_of_a_topic_is_marked_and_a_bare_one_is_not() {
-        let concluded = reply_heading(&json!({"position": 1, "source_message_id": "msg-7"}));
-        let bare = reply_heading(&json!({"position": 0, "source_message_id": null}));
-
-        assert!(concluded.contains("conclusion from topic message msg-7"));
-        assert_eq!(bare, "reply 0:");
-    }
-
-    fn list_args(project_id: Option<&str>, status: Option<&str>) -> ListArgs {
-        ListArgs {
-            project_id: project_id.map(str::to_string),
-            status: status.map(str::to_string),
-        }
+    fn a_reply_is_headed_by_its_position() {
+        assert_eq!(reply_heading(&json!({"position": 0})), "reply 0:");
+        assert_eq!(reply_heading(&json!({"position": 3})), "reply 3:");
     }
 
     /// What each document command puts on the wire, against a real socket.
@@ -1243,7 +1256,7 @@ mod tests {
         }
 
         /// The listing a topic reads before proposing anything. No topic of its
-        /// own: what is open on a document is not a fact about who is asking.
+        /// own: what is unsettled on a document is not a fact about who asks.
         #[test]
         fn annotations_are_read_off_the_document_with_the_filters_as_written() {
             let server = StubServer::start(vec![Reply::json(200, json!({"data": []}))]);
@@ -1252,17 +1265,16 @@ mod tests {
                 &client(&server),
                 AnnotationsArgs {
                     document_id: "doc-1".to_string(),
-                    status: Some("open".to_string()),
                     block: Some("none".to_string()),
-                    pending_conclusion: true,
+                    unconfirmed: true,
+                    confirmed: false,
                 },
             )
             .unwrap();
 
             assert_eq!(
                 server.only_request()[0].target,
-                "/api/v1/documents/doc-1/annotations\
-                 ?status=open&block_id=none&pending_conclusion=true"
+                "/api/v1/documents/doc-1/annotations?block_id=none&confirmed=false"
             );
         }
 
@@ -1274,13 +1286,12 @@ mod tests {
                 200,
                 json!({"data": {
                     "id": "note-1",
-                    "status": "open",
+                    "confirmed_at": null,
                     "block_id": "block-9",
                     "selected_text": "rolled back in one step",
                     "content": "This is not what we agreed.",
                     "replies": [
-                        {"position": 0, "content": "Agreed, it should be two.",
-                         "source_message_id": "msg-7"}
+                        {"position": 0, "content": "Agreed, it should be two."}
                     ]
                 }}),
             )]);

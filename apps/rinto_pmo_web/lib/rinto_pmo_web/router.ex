@@ -140,11 +140,23 @@ defmodule RintoPMOWeb.Router do
           param: "reply_id"
       end
 
-      # Status is deliberately not part of the annotation update payload: only
-      # a human decision moves it, never an edit of the wording.
-      post "/annotations/:id/resolve", AnnotationController, :resolve
-      post "/annotations/:id/dismiss", AnnotationController, :dismiss
-      post "/annotations/:id/reopen", AnnotationController, :reopen
+      # An annotation is over when a person says it is, and that is the only
+      # thing this mark means. Deliberately not part of the update payload:
+      # editing the wording must never be able to close the thread.
+      #
+      # A pair rather than three verbs. "Settled by this revision" and "settled
+      # without one" are the same decision carrying a different pointer, so
+      # `confirm` takes an optional `confirmed_by_revision_id` and there is no
+      # second name for the case where it is absent. `DELETE` is the way back,
+      # the way it is for a day's leave.
+      post "/annotations/:id/confirm", AnnotationController, :confirm
+      delete "/annotations/:id/confirm", AnnotationController, :unconfirm
+
+      # The only thing that writes here that is not a person. One click, one
+      # reply: nothing works out on its own whether a discussion has concluded,
+      # because the asking is the boundary. Answers with the job -- watch
+      # `document:{id}` for the end of it.
+      post "/annotations/:id/reply", AnnotationController, :reply
 
       # The many-to-many between annotations and topics, derived from message
       # refs. No join table backs this.

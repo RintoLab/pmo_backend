@@ -109,8 +109,7 @@ defmodule RintoPMO.Factory do
     %Annotation{
       document: build(:document),
       actor: build(:actor),
-      content: sequence(:annotation_content, &"Annotation #{&1}"),
-      status: :open
+      content: sequence(:annotation_content, &"Annotation #{&1}")
     }
   end
 

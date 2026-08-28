@@ -4,7 +4,8 @@ defmodule RintoPMOWeb.V1.SettingControllerTest do
   @empty_settings %{
     "title_actor" => nil,
     "decomposition_actor" => nil,
-    "estimation_actor" => nil
+    "estimation_actor" => nil,
+    "annotation_actor" => nil
   }
 
   test "GET settings answers with every role, filled or not", %{conn: conn} do

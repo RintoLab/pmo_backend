@@ -31,33 +31,33 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
     assert json_response(conn, 200)["data"] == []
   end
 
-  test "GET annotations filters by status", %{conn: conn} do
+  test "GET annotations filters by whether it is confirmed", %{conn: conn} do
     document = expect_document()
 
-    expect(AnnotationsMock, :list_annotations, fn ^document, %{status: :resolved} -> [] end)
+    expect(AnnotationsMock, :list_annotations, fn ^document, %{confirmed: false} -> [] end)
 
-    conn = get(conn, ~p"/api/v1/documents/#{document.id}/annotations?status=resolved")
+    conn = get(conn, ~p"/api/v1/documents/#{document.id}/annotations?confirmed=false")
     assert json_response(conn, 200)["data"] == []
   end
 
-  test "GET annotations rejects an unknown status", %{conn: conn} do
+  test "GET annotations rejects a confirmed filter that is not a boolean", %{conn: conn} do
     document = expect_document()
 
-    conn = get(conn, ~p"/api/v1/documents/#{document.id}/annotations?status=nope")
+    conn = get(conn, ~p"/api/v1/documents/#{document.id}/annotations?confirmed=nope")
 
-    assert %{"error" => "bad_request", "details" => %{"status" => ["is invalid"]}} =
+    assert %{"error" => "bad_request", "details" => %{"confirmed" => ["is invalid"]}} =
              json_response(conn, 400)
   end
 
-  test "GET annotations exposes status and resolving revision", %{conn: conn} do
+  test "GET annotations exposes the mark and the revision behind it", %{conn: conn} do
     document = expect_document()
     revision = insert(:document_revision, document: document)
 
     annotation =
       insert(:annotation,
         document: document,
-        status: :resolved,
-        resolved_by_revision_id: revision.id
+        confirmed_at: DateTime.utc_now(),
+        confirmed_by_revision_id: revision.id
       )
 
     revision_id = revision.id
@@ -66,8 +66,10 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
 
     conn = get(conn, ~p"/api/v1/documents/#{document.id}/annotations")
 
-    assert [%{"status" => "resolved", "resolved_by_revision_id" => ^revision_id}] =
+    assert [%{"confirmed_at" => confirmed_at, "confirmed_by_revision_id" => ^revision_id}] =
              json_response(conn, 200)["data"]
+
+    assert confirmed_at
   end
 
   test "GET annotations/:id includes ordered replies", %{conn: conn} do
@@ -144,7 +146,7 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
     assert %{"content" => "New", "replies" => []} = json_response(conn, 200)["data"]
   end
 
-  test "PATCH annotations/:id does not forward status to the context", %{conn: conn} do
+  test "PATCH annotations/:id cannot confirm through an edit", %{conn: conn} do
     document = expect_document()
     annotation = insert(:annotation, document: document, content: "Old")
     updated = %{annotation | content: "New", replies: []}
@@ -163,22 +165,22 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
     conn =
       patch(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}", %{
         "content" => "New",
-        "status" => "resolved"
+        "confirmed_at" => DateTime.utc_now()
       })
 
-    assert %{"status" => "open"} = json_response(conn, 200)["data"]
+    assert %{"confirmed_at" => nil} = json_response(conn, 200)["data"]
   end
 
-  test "POST annotations/:id/resolve records the resolving revision", %{conn: conn} do
+  test "POST annotations/:id/confirm records the revision that settled it", %{conn: conn} do
     document = expect_document()
     annotation = insert(:annotation, document: document)
     revision = insert(:document_revision, document: document)
     revision_id = revision.id
 
-    resolved = %{
+    confirmed = %{
       annotation
-      | status: :resolved,
-        resolved_by_revision_id: revision.id,
+      | confirmed_at: DateTime.utc_now(),
+        confirmed_by_revision_id: revision.id,
         replies: []
     }
 
@@ -187,70 +189,101 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
       %{annotation | replies: []}
     end)
 
-    expect(AnnotationsMock, :resolve_annotation, fn _annotation, attrs ->
-      assert attrs == %{"resolved_by_revision_id" => revision_id}
-      {:ok, resolved}
+    expect(AnnotationsMock, :confirm_annotation, fn _annotation, attrs ->
+      assert attrs == %{"confirmed_by_revision_id" => revision_id}
+      {:ok, confirmed}
     end)
 
     conn =
-      post(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/resolve", %{
-        "resolved_by_revision_id" => revision.id
+      post(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/confirm", %{
+        "confirmed_by_revision_id" => revision.id
       })
 
-    assert %{"status" => "resolved", "resolved_by_revision_id" => ^revision_id} =
-             json_response(conn, 200)["data"]
+    assert %{"confirmed_by_revision_id" => ^revision_id} = json_response(conn, 200)["data"]
   end
 
-  test "POST annotations/:id/dismiss returns the dismissed annotation", %{conn: conn} do
+  # Confirming without one is the same verb: "I looked and it needs no change"
+  # is a confirmation, and the difference is the pointer's absence.
+  test "POST annotations/:id/confirm without a revision names none", %{conn: conn} do
     document = expect_document()
     annotation = insert(:annotation, document: document)
-    dismissed = %{annotation | status: :dismissed, replies: []}
+    confirmed = %{annotation | confirmed_at: DateTime.utc_now(), replies: []}
 
     expect(AnnotationsMock, :get_annotation!, fn ^document, _id ->
       %{annotation | replies: []}
     end)
 
-    expect(AnnotationsMock, :dismiss_annotation, fn _annotation -> {:ok, dismissed} end)
+    expect(AnnotationsMock, :confirm_annotation, fn _annotation, attrs ->
+      assert attrs == %{}
+      {:ok, confirmed}
+    end)
 
-    conn =
-      post(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/dismiss")
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/confirm")
 
-    assert %{"status" => "dismissed"} = json_response(conn, 200)["data"]
+    assert %{"confirmed_at" => confirmed_at, "confirmed_by_revision_id" => nil} =
+             json_response(conn, 200)["data"]
+
+    assert confirmed_at
   end
 
-  test "POST annotations/:id/reopen clears the resolving revision", %{conn: conn} do
+  test "DELETE annotations/:id/confirm takes the mark off", %{conn: conn} do
     document = expect_document()
 
     annotation =
       insert(:annotation,
         document: document,
-        status: :resolved,
-        resolved_by_revision: build(:document_revision, document: document)
+        confirmed_at: DateTime.utc_now(),
+        confirmed_by_revision: build(:document_revision, document: document)
       )
 
-    reopened = %{annotation | status: :open, resolved_by_revision_id: nil, replies: []}
+    reopened = %{annotation | confirmed_at: nil, confirmed_by_revision_id: nil, replies: []}
 
     expect(AnnotationsMock, :get_annotation!, fn ^document, _id ->
       %{annotation | replies: []}
     end)
 
-    expect(AnnotationsMock, :reopen_annotation, fn _annotation -> {:ok, reopened} end)
+    expect(AnnotationsMock, :unconfirm_annotation, fn _annotation -> {:ok, reopened} end)
 
-    conn = post(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/reopen")
+    conn = delete(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/confirm")
 
-    assert %{"status" => "open", "resolved_by_revision_id" => nil} =
+    assert %{"confirmed_at" => nil, "confirmed_by_revision_id" => nil} =
              json_response(conn, 200)["data"]
   end
 
-  test "GET annotations filters to conclusions awaiting a decision", %{conn: conn} do
+  test "POST annotations/:id/reply answers with the job", %{conn: conn} do
     document = expect_document()
+    annotation = insert(:annotation, document: document)
 
-    expect(AnnotationsMock, :list_annotations, fn ^document, %{pending_conclusion: true} ->
-      []
+    expect(AnnotationsMock, :get_annotation!, fn ^document, _id ->
+      %{annotation | replies: []}
     end)
 
-    conn = get(conn, ~p"/api/v1/documents/#{document.id}/annotations?pending_conclusion=true")
-    assert json_response(conn, 200)["data"] == []
+    expect(AnnotationsMock, :request_reply, fn _annotation ->
+      {:ok, queued_job(annotation.id)}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/reply")
+
+    assert %{"id" => 42, "status" => "running"} = json_response(conn, 202)["data"]
+  end
+
+  # A condition of asking, not an outcome, so it is answered here rather than
+  # queued and failed somewhere the person who clicked is not looking.
+  test "POST annotations/:id/reply says when nobody holds the role", %{conn: conn} do
+    document = expect_document()
+    annotation = insert(:annotation, document: document)
+
+    expect(AnnotationsMock, :get_annotation!, fn ^document, _id ->
+      %{annotation | replies: []}
+    end)
+
+    expect(AnnotationsMock, :request_reply, fn _annotation ->
+      {:error, :no_annotation_actor, %{}}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/reply")
+
+    assert %{"error" => "no_annotation_actor"} = json_response(conn, 422)
   end
 
   test "GET annotations/:id/conversations lists the topics that discussed it", %{conn: conn} do
@@ -288,6 +321,22 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
 
     conn = delete(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}")
     assert response(conn, 204) == ""
+  end
+
+  # Built rather than inserted, like `TaskControllerTest`: the controller only
+  # reads it, and Oban's queues are off in test so nothing would run it anyway.
+  defp queued_job(annotation_id) do
+    %Oban.Job{
+      id: 42,
+      worker: "RintoPMO.Annotations.ReplyWorker",
+      queue: "default",
+      state: "available",
+      args: %{"annotation_id" => annotation_id},
+      errors: [],
+      priority: 0,
+      inserted_at: ~U[2026-08-28 09:00:00.000000Z],
+      scheduled_at: ~U[2026-08-28 09:00:00.000000Z]
+    }
   end
 
   defp expect_document do

@@ -92,7 +92,7 @@ defmodule RintoPMOWeb.V1.DocumentRevisionControllerTest do
       "actor_id" => actor.id,
       "base_revision_id" => document.latest_revision.id,
       "source_conversation_id" => conversation.id,
-      "resolve_annotation_ids" => [annotation.id],
+      "confirm_annotation_ids" => [annotation.id],
       "change_summary" => "Tightened §3"
     }
 

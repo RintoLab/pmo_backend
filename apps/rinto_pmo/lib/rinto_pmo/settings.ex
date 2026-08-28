@@ -52,10 +52,14 @@ defmodule RintoPMO.Settings do
   * `"estimation_actor"` -- rates a task's difficulty or produces its
     three-point estimate. Same as decomposition: it belongs to no conversation,
     so an empty role is a refusal rather than a fallback.
+  * `"annotation_actor"` -- answers one annotation when somebody asks it to.
+    Refuses when empty, for the same reason: a person clicked a button on a
+    note, not inside a topic, so there is no assistant standing there to
+    inherit from.
   """
   @type key :: String.t()
 
-  @keys ~w(title_actor decomposition_actor estimation_actor)
+  @keys ~w(title_actor decomposition_actor estimation_actor annotation_actor)
 
   @doc """
   The roles that exist.

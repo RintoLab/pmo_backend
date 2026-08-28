@@ -313,7 +313,7 @@ defmodule RintoPMO.References.Resolver do
       {annotation.id,
        projection(%{
          title: document_title,
-         subtitle: to_string(annotation.status),
+         subtitle: annotation_state(annotation),
          excerpt: excerpt(annotation.content),
          document_id: annotation.document_id,
          document_title: document_title
@@ -378,6 +378,12 @@ defmodule RintoPMO.References.Resolver do
   # Projecting
 
   defp excerpt(text), do: Text.excerpt(text, config(:max_excerpt_chars))
+
+  # The one thing worth saying about an annotation in a one-line preview: is
+  # this argument over. There is no third value to report -- how it was settled
+  # is a revision pointer, which does not belong in a subtitle.
+  defp annotation_state(%Annotation{confirmed_at: nil}), do: "unconfirmed"
+  defp annotation_state(%Annotation{}), do: "confirmed"
 
   defp max_references, do: config(:max_references)
 

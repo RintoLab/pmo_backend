@@ -1,10 +1,8 @@
 defmodule RintoPMOWeb.V1.AnnotationController do
   use RintoPMOWeb, :controller
 
-  alias RintoPMO.Annotations.Annotation
+  alias RintoPMO.Jobs
   alias RintoPMO.Utils
-
-  @statuses Map.new(Annotation.statuses(), &{Atom.to_string(&1), &1})
 
   def index(conn, %{"document_id" => document_id} = params) do
     document = get_document!(document_id)
@@ -53,34 +51,46 @@ defmodule RintoPMOWeb.V1.AnnotationController do
     end
   end
 
-  def resolve(conn, %{"document_id" => document_id, "id" => id} = params) do
+  def confirm(conn, %{"document_id" => document_id, "id" => id} = params) do
     context = annotations_context()
     document = get_document!(document_id)
     annotation = context.get_annotation!(document, id)
-    attrs = Map.take(params, ["resolved_by_revision_id"])
+    attrs = Map.take(params, ["confirmed_by_revision_id"])
 
-    with {:ok, annotation} <- context.resolve_annotation(annotation, attrs) do
+    with {:ok, annotation} <- context.confirm_annotation(annotation, attrs) do
       render(conn, :show, annotation: annotation)
     end
   end
 
-  def dismiss(conn, %{"document_id" => document_id, "id" => id}) do
+  def unconfirm(conn, %{"document_id" => document_id, "id" => id}) do
     context = annotations_context()
     document = get_document!(document_id)
     annotation = context.get_annotation!(document, id)
 
-    with {:ok, annotation} <- context.dismiss_annotation(annotation) do
+    with {:ok, annotation} <- context.unconfirm_annotation(annotation) do
       render(conn, :show, annotation: annotation)
     end
   end
 
-  def reopen(conn, %{"document_id" => document_id, "id" => id}) do
+  @doc """
+  Asks the AI for one reply to this annotation.
+
+  Answers with the *job*, the way estimation does: the model call takes as long
+  as it takes, and what a client does next is watch `document:{id}`.
+  """
+  def reply(conn, %{"document_id" => document_id, "id" => id}) do
     context = annotations_context()
     document = get_document!(document_id)
     annotation = context.get_annotation!(document, id)
 
-    with {:ok, annotation} <- context.reopen_annotation(annotation) do
-      render(conn, :show, annotation: annotation)
+    with {:ok, job} <- context.request_reply(annotation) do
+      # Answered the same whether this call queued the job or was handed one
+      # already in flight, for the reason `TaskController` gives: a
+      # double-click is one reply, and the same id back twice needs no branch.
+      conn
+      |> put_status(:accepted)
+      |> put_view(json: RintoPMOWeb.V1.JobJSON)
+      |> render(:show, job: Jobs.describe(job))
     end
   end
 
@@ -104,18 +114,17 @@ defmodule RintoPMOWeb.V1.AnnotationController do
   end
 
   defp annotation_filter(params) do
-    with {:ok, filter} <- block_id_filter(params),
-         {:ok, filter} <- status_filter(params, filter) do
-      pending_conclusion_filter(params, filter)
+    with {:ok, filter} <- block_id_filter(params) do
+      confirmed_filter(params, filter)
     end
   end
 
-  defp pending_conclusion_filter(params, filter) do
-    case Map.get(params, "pending_conclusion") do
+  defp confirmed_filter(params, filter) do
+    case Map.get(params, "confirmed") do
       nil -> {:ok, filter}
-      "true" -> {:ok, Map.put(filter, :pending_conclusion, true)}
-      "false" -> {:ok, Map.put(filter, :pending_conclusion, false)}
-      _invalid -> {:error, :bad_request, %{"pending_conclusion" => ["is invalid"]}}
+      "true" -> {:ok, Map.put(filter, :confirmed, true)}
+      "false" -> {:ok, Map.put(filter, :confirmed, false)}
+      _invalid -> {:error, :bad_request, %{"confirmed" => ["is invalid"]}}
     end
   end
 
@@ -131,19 +140,6 @@ defmodule RintoPMOWeb.V1.AnnotationController do
         case UUIDv7.cast(value) do
           {:ok, block_id} -> {:ok, %{block_id: block_id}}
           :error -> {:error, :bad_request, %{"block_id" => ["is invalid"]}}
-        end
-    end
-  end
-
-  defp status_filter(params, filter) do
-    case Map.get(params, "status") do
-      nil ->
-        {:ok, filter}
-
-      value ->
-        case Map.fetch(@statuses, value) do
-          {:ok, status} -> {:ok, Map.put(filter, :status, status)}
-          :error -> {:error, :bad_request, %{"status" => ["is invalid"]}}
         end
     end
   end

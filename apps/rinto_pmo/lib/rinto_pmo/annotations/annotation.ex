@@ -7,15 +7,26 @@ defmodule RintoPMO.Annotations.Annotation do
   monotonic positions. Optional `block_id`, `block_text`, and `selected_text`
   capture anchor context without positional offsets inside a block.
 
-  `status` is what lets collaborative review converge: without it there is no
-  way to say "the AI is done talking, a human still has to decide". Only a
-  human decision moves it — being discussed changes nothing — so it is kept out
-  of `changeset/2` and `update_changeset/2` entirely and can only travel through
-  `status_changeset/3`. Editing an annotation's wording must not be able to
-  silently close it.
+  ## There is no status, only a mark somebody put here
 
-  `resolved_by_revision_id` is meaningful only while `status` is `:resolved`;
-  every other transition clears it.
+  `confirmed_at` is null until a person says this thread is over, and that is
+  the whole of it. It is not a workflow state and nothing derives one: no
+  amount of discussion moves it, and nothing in this system decides on a
+  person's behalf that their turn has come.
+
+  It was three states once -- open, resolved, dismissed -- and two of those
+  were the same answer carrying a reason. Which reason is already next to it:
+  `confirmed_by_revision_id` names the change that settled this, and its
+  absence is somebody deciding no change was needed. Spending a state on that
+  said it twice.
+
+  Only a person moves it, so it is kept out of `changeset/2` and
+  `update_changeset/2` entirely and travels through `confirm_changeset/2` and
+  `unconfirm_changeset/1` alone. Editing an annotation's wording must not be
+  able to silently close it.
+
+  `confirmed_by_revision_id` is meaningful only while `confirmed_at` is set;
+  unconfirming clears both together.
   """
 
   use RintoPMO, :schema
@@ -27,16 +38,13 @@ defmodule RintoPMO.Annotations.Annotation do
   alias RintoPMO.Embeddings
 
   @type t :: %__MODULE__{}
-  @type status :: :open | :resolved | :dismissed
-
-  @statuses [:open, :resolved, :dismissed]
 
   schema "annotations" do
     field :block_id, UUIDv7
     field :block_text, :string
     field :selected_text, :string
     field :content, :string
-    field :status, Ecto.Enum, values: @statuses, default: :open
+    field :confirmed_at, :utc_datetime_usec
 
     # Null means "needs embedding". Never cast from a caller: it is written
     # by the worker that computes it, and voided by whichever changeset rewrites
@@ -45,18 +53,12 @@ defmodule RintoPMO.Annotations.Annotation do
 
     belongs_to :document, Document
     belongs_to :actor, Actor
-    belongs_to :resolved_by_revision, DocumentRevision
+    belongs_to :confirmed_by_revision, DocumentRevision
 
     has_many :replies, AnnotationReply, preload_order: [asc: :position]
 
     timestamps()
   end
-
-  @doc """
-  The statuses an annotation can hold.
-  """
-  @spec statuses() :: [status()]
-  def statuses, do: @statuses
 
   @doc false
   def changeset(%__MODULE__{} = annotation \\ %__MODULE__{}, attrs) do
@@ -86,25 +88,25 @@ defmodule RintoPMO.Annotations.Annotation do
   end
 
   @doc false
-  def status_changeset(annotation, status, attrs \\ %{})
-
-  def status_changeset(%__MODULE__{} = annotation, :resolved, attrs) do
+  def confirm_changeset(%__MODULE__{} = annotation, attrs \\ %{}) do
     annotation
-    |> cast(attrs, [:resolved_by_revision_id])
-    |> put_change(:status, :resolved)
-    |> foreign_key_constraint(:resolved_by_revision_id)
+    |> cast(attrs, [:confirmed_by_revision_id])
+    |> put_change(:confirmed_at, confirmed_at(annotation))
+    |> foreign_key_constraint(:confirmed_by_revision_id)
   end
 
-  # Everything other than `:resolved` drops the pointer, because only
-  # `:resolved` can honestly carry one: it names the revision that settled this
-  # annotation. Reopening means nothing settles it any more, and dismissing
-  # means it was declined without the document changing at all -- in both cases
-  # a revision left there would be a claim that never happened.
-  def status_changeset(%__MODULE__{} = annotation, status, _attrs)
-      when status in [:open, :dismissed] do
+  @doc false
+  def unconfirm_changeset(%__MODULE__{} = annotation) do
     annotation
     |> change()
-    |> put_change(:status, status)
-    |> put_change(:resolved_by_revision_id, nil)
+    |> put_change(:confirmed_at, nil)
+    |> put_change(:confirmed_by_revision_id, nil)
   end
+
+  # Confirming an already-confirmed annotation leaves the original moment
+  # alone. The mark records when somebody first said this was over, and a
+  # second call -- naming the revision this time, say -- is not a second
+  # ending. Reopening and confirming again *is*, and that clears it first.
+  defp confirmed_at(%__MODULE__{confirmed_at: nil}), do: DateTime.utc_now()
+  defp confirmed_at(%__MODULE__{confirmed_at: confirmed_at}), do: confirmed_at
 end

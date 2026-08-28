@@ -32,6 +32,12 @@ defmodule RintoPMOWeb.DocumentChannel do
     * `"decomposition_output"` -- `%{"decomposition_id" => id, "chunk" => text}`,
       more of the model's output. **Append them in order.** They are pieces of
       a stream, not lines and not whole messages -- a chunk may end mid-word
+    * `"annotation_reply"` -- `%{"job_id" => id, "annotation_id" => id,
+      "status" => "succeeded" | "failed", "error" => text | null}`, the AI
+      reply somebody asked for on one annotation is over. It carries no reply
+      text: re-read the thread with `GET /annotations/{id}`, which is what the
+      panel showing it does anyway. There is no `"annotation_reply_output"` --
+      a reply is a paragraph, not minutes of streamed text
 
   ## Output is live only
 
@@ -79,6 +85,17 @@ defmodule RintoPMOWeb.DocumentChannel do
 
   def handle_info({:decomposition_output, decomposition_id, chunk}, socket) do
     push(socket, "decomposition_output", %{decomposition_id: decomposition_id, chunk: chunk})
+    {:noreply, socket}
+  end
+
+  def handle_info({:annotation_reply, job_id, annotation_id, status, error}, socket) do
+    push(socket, "annotation_reply", %{
+      job_id: job_id,
+      annotation_id: annotation_id,
+      status: status,
+      error: error
+    })
+
     {:noreply, socket}
   end
 

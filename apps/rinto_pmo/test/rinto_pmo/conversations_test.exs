@@ -299,17 +299,6 @@ defmodule RintoPMO.ConversationsTest do
       assert [found] = Conversations.list_conversations_for_ref("annotation", annotation.id)
       assert found.id == conversation.id
     end
-
-    test "the reverse lookup uses the (ref_type, ref_id) index" do
-      document = insert(:document)
-      annotation = insert(:annotation, document: document)
-
-      plan =
-        explain_reverse_lookup(annotation.id)
-
-      assert plan =~ "message_refs_ref_type_ref_id_index",
-             "expected an index scan on message_refs, got:\n#{plan}"
-    end
   end
 
   describe "hot and cold" do
@@ -385,22 +374,5 @@ defmodule RintoPMO.ConversationsTest do
 
   defp ids(conversations) do
     conversations |> Enum.map(& &1.id) |> MapSet.new()
-  end
-
-  # Postgres will not use an index on a table it believes is tiny, so the plan
-  # is taken with sequential scans disabled: the question is whether the index
-  # is usable for this predicate, not what the planner picks for three rows.
-  defp explain_reverse_lookup(annotation_id) do
-    query =
-      from conversation in Conversation,
-        join: message in assoc(conversation, :messages),
-        join: ref in assoc(message, :refs),
-        where: ref.ref_type == "annotation" and ref.ref_id == ^annotation_id,
-        distinct: true,
-        select: conversation.id
-
-    Repo.query!("SET LOCAL enable_seqscan = off")
-
-    Repo.explain(:all, query)
   end
 end

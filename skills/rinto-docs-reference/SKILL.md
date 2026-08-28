@@ -134,21 +134,21 @@ Rinto 文档是项目的**决策记录**：方案、规范、已经拍板的设�
 `doc show` 看不到它们，要单独问：
 
 ```sh
-rinto-pmo doc annotations <document-id> --status open
+rinto-pmo doc annotations <document-id> --unconfirmed
 ```
 
-一行一条，包括它挂在哪个 block 上。**一条 open 的批注意味着那一段正在被质疑，
-还没有人拍板。** 你要实现的正好是那一段时，先读完整一条：
+一行一条，包括它挂在哪个 block 上。**一条 `open` 的批注意味着那一段有人提过异议，
+还没有人给它盖章。** 你要实现的正好是那一段时，先读完整一条：
 
 ```sh
 rinto-pmo doc annotation <document-id> <annotation-id>
 ```
 
-追评里标着 `a conclusion from topic message …` 的，是讨论得出的结论。
+追评是这条线后来的走向，读到底再判断。
 
 **照正文实现，然后把冲突说出来。** 批注不是新的规范，正文才是；
 但正文的这一段正被质疑而你照做了，值得在回报时说一句。
-不要自己按批注里的说法去改实现，也不要去动批注的状态 —— 那是人的动作。
+不要自己按批注里的说法去改实现，也不要去确认批注 —— 那是人的动作。
 
 不确定还有没有相关文档时，有两条路：
 

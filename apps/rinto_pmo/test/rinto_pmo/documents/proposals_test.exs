@@ -240,16 +240,16 @@ defmodule RintoPMO.Documents.ProposalsTest do
                Documents.commit_proposals(document, %{
                  actor_id: insert(:actor).id,
                  base_revision_id: latest_revision_id(document),
-                 resolve_annotation_ids: [settled.id]
+                 confirm_annotation_ids: [settled.id]
                })
 
       settled = Repo.get!(RintoPMO.Annotations.Annotation, settled.id)
-      assert settled.status == :resolved
-      assert settled.resolved_by_revision_id == revision.id
+      assert settled.confirmed_at
+      assert settled.confirmed_by_revision_id == revision.id
 
-      # One discussion may touch three annotations and settle two; resolution
-      # is named per annotation, never inferred.
-      assert Repo.get!(RintoPMO.Annotations.Annotation, untouched.id).status == :open
+      # One commit may touch three annotations and settle two; confirming is
+      # named per annotation, never inferred from what the revision changed.
+      assert Repo.get!(RintoPMO.Annotations.Annotation, untouched.id).confirmed_at == nil
     end
 
     test "refuses a contended block but not the blocks beside it" do
@@ -378,7 +378,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
                Documents.commit_proposals(document, %{
                  actor_id: actor.id,
                  base_revision_id: latest_revision_id(document),
-                 resolve_annotation_ids: [foreign.id]
+                 confirm_annotation_ids: [foreign.id]
                })
 
       # All three moves are one transaction: a revision that settled nothing,
@@ -386,7 +386,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       # leave the record lying.
       assert length(Documents.list_revisions(document)) == revisions_before
       assert Repo.get!(BlockProposal, proposal.id).status == :live
-      assert Repo.get!(RintoPMO.Annotations.Annotation, foreign.id).status == :open
+      assert Repo.get!(RintoPMO.Annotations.Annotation, foreign.id).confirmed_at == nil
     end
 
     test "a rejected proposal is not committed" do

@@ -32,6 +32,7 @@ config :rinto_pmo,
     title_generator: RintoPMO.Agent.TitleGenerator,
     wbs_generator: RintoPMO.Agent.WbsGenerator,
     task_estimator: RintoPMO.Agent.TaskEstimator,
+    annotation_responder: RintoPMO.Agent.AnnotationResponder,
     # Reading what a `rinto://` reference points at. Only the read side is
     # injected: parsing a reference is pure and belongs to every write path,
     # and mocking it would let a document test lie about what it stored.
@@ -190,6 +191,11 @@ config :rinto_pmo, RintoPMO.Agent.TaskEstimator,
   # Silence, not duration, same as `WbsGenerator`: a model that is still
   # producing is still working. Three minutes of complete silence is well past
   # anything a working call does.
+  idle_timeout: 180_000
+
+config :rinto_pmo, RintoPMO.Agent.AnnotationResponder,
+  # Same as the two above: the actor is the `annotation_actor` role, and the
+  # timeout is on silence rather than on how long an answer takes.
   idle_timeout: 180_000
 
 config :rinto_pmo, RintoPMO.Agent.PromptBuilder,

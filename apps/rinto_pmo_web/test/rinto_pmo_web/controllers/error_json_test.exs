@@ -100,6 +100,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     no_estimation_actor:
       {422, "No actor holds the estimation role. Set one with `PUT /settings/estimation_actor`.",
        %{}},
+    no_annotation_actor:
+      {422, "No actor holds the annotation role. Set one with `PUT /settings/annotation_actor`.",
+       %{}},
     nothing_to_estimate:
       {422, "There is nothing left to estimate on this task.",
        %{kind: "difficulty", reason: "every work item already has a difficulty"}},

@@ -1195,22 +1195,14 @@ paths:
                 format: uuid
               - type: string
                 enum: [none]
-        - name: status
-          in: query
-          required: false
-          description: Filter by lifecycle status. Combines with `block_id`.
-          schema:
-            type: string
-            enum: [open, resolved, dismissed]
-        - name: pending_conclusion
+        - name: confirmed
           in: query
           required: false
           description: >
-            When true, returns only annotations still `open` that carry a reply
-            drawn from a conversation -- the AI has finished and a human has
-            not decided. Deliberately not keyed on whether anyone has read it:
-            clearing the marker on read would hide it at exactly the moment
-            intervention matters most.
+            `false` returns the threads nobody has marked as over, which is
+            what "still unsettled on this document" means. Combines with
+            `block_id`. There is no third value and nothing derived: what a
+            person has not got to yet is not something the server knows.
           schema:
             type: boolean
       responses:
@@ -1302,26 +1294,38 @@ paths:
           description: Annotation deleted
         "404":
           $ref: "#/components/responses/NotFound"
-  /documents/{document_id}/annotations/{id}/resolve:
+  /documents/{document_id}/annotations/{id}/confirm:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
       - $ref: "#/components/parameters/AnnotationId"
     post:
       tags: [Annotations]
-      operationId: resolveAnnotation
-      summary: Mark an annotation resolved
+      operationId: confirmAnnotation
+      summary: Mark an annotation as settled
       description: >
-        Status lives behind its own actions rather than the update payload, so
-        that editing an annotation's wording cannot silently close it.
+        A person saying this thread is over. It lives behind its own action
+        rather than in the update payload, so that editing an annotation's
+        wording cannot silently close it.
+
+
+        One verb and not two. `confirmed_by_revision_id` present means a change
+        to the document answered this; absent means somebody looked and decided
+        none was needed. Both are the same decision, so the difference is the
+        pointer rather than a second state name.
+
+
+        Confirming an already-confirmed annotation leaves `confirmed_at` where
+        it was and only updates the pointer: the mark records when somebody
+        first said this was over, and saying it again is not a second ending.
       requestBody:
         required: false
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AnnotationResolveInput"
+              $ref: "#/components/schemas/AnnotationConfirmInput"
       responses:
         "200":
-          description: Annotation resolved
+          description: Annotation confirmed
           content:
             application/json:
               schema:
@@ -1330,39 +1334,20 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
-  /documents/{document_id}/annotations/{id}/dismiss:
-    parameters:
-      - $ref: "#/components/parameters/DocumentId"
-      - $ref: "#/components/parameters/AnnotationId"
-    post:
+    delete:
       tags: [Annotations]
-      operationId: dismissAnnotation
-      summary: Mark an annotation dismissed
+      operationId: unconfirmAnnotation
+      summary: Take the mark off an annotation
       description: >
-        Considered and declined: the "no" that is not a deletion. The opinion
-        and its replies survive, and the topics that discussed it keep pointing
-        at something real. Clears `resolved_by_revision_id`, since no revision
-        settled an annotation nobody acted on.
-      responses:
-        "200":
-          description: Annotation dismissed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AnnotationResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-  /documents/{document_id}/annotations/{id}/reopen:
-    parameters:
-      - $ref: "#/components/parameters/DocumentId"
-      - $ref: "#/components/parameters/AnnotationId"
-    post:
-      tags: [Annotations]
-      operationId: reopenAnnotation
-      summary: Return an annotation to open
-      description: Clears `resolved_by_revision_id`; nothing settles the annotation any more.
+        The thread is open again. Clears `confirmed_by_revision_id` with it:
+        whatever settled this no longer does, and a pointer left behind would
+        claim a decision that has been taken back.
+
+
+        `DELETE` on the same path rather than a third verb, the way a day's
+        leave is set and cleared. Deleting the *annotation* is a different
+        thing and stays a different thing -- it takes the replies with it and
+        leaves the topics that cited it pointing at nothing.
       responses:
         "200":
           description: Annotation reopened
@@ -1374,6 +1359,55 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/annotations/{id}/reply:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationId"
+    post:
+      tags: [Annotations]
+      operationId: replyToAnnotationWithAI
+      summary: Ask the AI to answer this annotation
+      description: >
+        The only thing that writes a reply here that is not a person. One
+        request, one reply, appended to the thread like any other and credited
+        to whichever actor holds the `annotation_actor` role.
+
+
+        Nothing works out on its own whether a discussion has concluded,
+        because the asking is the boundary: somebody clicked, so somebody wants
+        an answer to this note. Conversations never write here -- a topic
+        produces proposals against the document, which is a different output on
+        a different resource.
+
+
+        Answers with the **job**, before the model has been asked. What a
+        client does next is watch `document:{id}` for `annotation_reply`;
+        `GET /jobs/{job_id}` is the way back if it was not listening. The reply
+        itself is read with `GET .../annotations/{id}`.
+
+
+        Asking twice appends twice -- replies are a list, and a second opinion
+        is a second opinion. A double-click is not two calls: while one is in
+        flight, the job already queued comes back. A confirmed annotation is
+        not refused; wanting the model's read on a decision already taken is
+        nobody else's business.
+      responses:
+        "202":
+          description: The reply was queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            No actor holds the `annotation_actor` role. Set one with
+            `PUT /settings/annotation_actor`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /documents/{document_id}/annotations/{id}/conversations:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -1478,12 +1512,13 @@ paths:
       summary: Turn the chosen proposals into a revision
       description: >
         One call, three things, one transaction: the revision is written, the
-        annotations named in `resolve_annotation_ids` are resolved against it,
+        annotations named in `confirm_annotation_ids` are confirmed against it,
         and the proposals it used become `accepted`. Commit is the only moment
         at which somebody has both decided and changed the document, so it is
-        the only natural place to resolve an annotation -- and a revision
-        written without its resolutions, or resolutions pointing at a revision
-        that failed to write, would each leave the record lying.
+        the only natural place to confirm an annotation *with a revision* --
+        and a revision written without its confirmations, or confirmations
+        pointing at a revision that failed to write, would each leave the
+        record lying.
 
 
         Omit `block_ids` to take every block holding exactly one live proposal.
@@ -3347,7 +3382,7 @@ components:
       description: The system-wide role being filled.
       schema:
         type: string
-        enum: [title_actor, decomposition_actor, estimation_actor]
+        enum: [title_actor, decomposition_actor, estimation_actor, annotation_actor]
     ActorId:
       name: id
       in: path
@@ -5720,8 +5755,8 @@ components:
           block_text,
           selected_text,
           content,
-          status,
-          resolved_by_revision_id,
+          confirmed_at,
+          confirmed_by_revision_id,
           inserted_at,
           updated_at
         ]
@@ -5750,18 +5785,23 @@ components:
         content:
           type: string
           description: Opening opinion for the annotation thread.
-        status:
+        confirmed_at:
           type: string
-          enum: [open, resolved, dismissed]
+          format: date-time
+          nullable: true
           description: >
-            Lifecycle of the annotation. Only an explicit human decision moves
-            it, via the resolve, dismiss, and reopen actions; being discussed
-            never changes it, and it is ignored on create and update.
-        resolved_by_revision_id:
+            When a person marked this thread as over. Null is unconfirmed, and
+            that is the whole of it -- there is no third value and nothing
+            derived. Only the confirm and unconfirm actions move it; being
+            discussed never does, and it is ignored on create and update.
+        confirmed_by_revision_id:
           type: string
           format: uuid
           nullable: true
-          description: The revision that settled this annotation, when one is named.
+          description: >
+            The revision that settled this, when the confirmation came with a
+            change to the document. Absent alongside a set `confirmed_at` means
+            somebody looked and decided no change was needed.
         inserted_at:
           type: string
           format: date-time
@@ -5769,14 +5809,17 @@ components:
           type: string
           format: date-time
       additionalProperties: false
-    AnnotationResolveInput:
+    AnnotationConfirmInput:
       type: object
       properties:
-        resolved_by_revision_id:
+        confirmed_by_revision_id:
           type: string
           format: uuid
           nullable: true
-          description: The revision that settled this annotation, when the caller knows it.
+          description: >
+            The revision that settled this, when there was one. Omit when the
+            answer was that no change was needed -- that is a confirmation too,
+            and its absence is what says which of the two happened.
       additionalProperties: false
     Annotation:
       allOf:
@@ -6026,13 +6069,13 @@ components:
           items:
             type: string
             format: uuid
-        resolve_annotation_ids:
+        confirm_annotation_ids:
           type: array
           description: >
-            Annotations this commit settles. Each is resolved with
-            `resolved_by_revision_id` pointing at the new revision. One
-            discussion may touch three annotations and settle two, so these are
-            named rather than inferred.
+            Annotations this commit settles. Each is confirmed with
+            `confirmed_by_revision_id` pointing at the new revision. One commit
+            may touch three annotations and settle two, so these are named
+            rather than inferred from what the revision changed.
           items:
             type: string
             format: uuid
@@ -6185,7 +6228,7 @@ components:
       additionalProperties: false
     Settings:
       type: object
-      required: [title_actor, decomposition_actor, estimation_actor]
+      required: [title_actor, decomposition_actor, estimation_actor, annotation_actor]
       properties:
         title_actor:
           allOf:
@@ -6215,6 +6258,15 @@ components:
             The actor that rates a task's difficulty or produces its three-point
             estimate. Same as decomposition: the job belongs to no conversation,
             so an empty role is a refusal rather than a fallback.
+        annotation_actor:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: >
+            The actor that answers an annotation when somebody asks it to. Same
+            as the two above: a person clicked a button on a note rather than
+            spoke inside a topic, so there is no assistant to inherit from and
+            an empty role is a refusal.
       additionalProperties: false
     SettingsResponse:
       type: object
@@ -6434,7 +6486,6 @@ components:
           actor_id,
           content,
           position,
-          source_message_id,
           inserted_at,
           updated_at
         ]
@@ -6454,11 +6505,6 @@ components:
           type: integer
           minimum: 0
           description: Monotonic order within the annotation. Gaps remain after deletions.
-        source_message_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: The conversation message this conclusion was drawn from, when it came from one.
         inserted_at:
           type: string
           format: date-time
@@ -6476,11 +6522,6 @@ components:
         content:
           type: string
           minLength: 1
-        source_message_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: The conversation message this conclusion was drawn from.
       additionalProperties: false
     AnnotationReplyUpdateInput:
       type: object
@@ -6617,6 +6658,7 @@ components:
         - decomposition_in_flight
         - no_estimation_actor
         - nothing_to_estimate
+        - no_annotation_actor
         - no_chunks
         - task_before_chunk
         - corrupt_image

@@ -111,17 +111,22 @@ before changing the same document twice.
 
 **What people wrote about a document is not in the document.** An annotation is
 somebody pointing at a paragraph and saying it is wrong, and neither `doc show`
-nor `--working` carries one. `doc annotations <id> --status open` lists what is
-still unsettled, with the block each one is anchored to; `doc annotation <id>
-<annotation-id>` reads one thread in full. The thread is where it matters: a
-reply marked as a conclusion from a topic message is what a discussion actually
-landed on, and it is often not what the original objection asked for. Changing a
-document without reading these re-argues settled points, or silently overwrites
-the thing somebody objected to.
+nor `--working` carries one. `doc annotations <id> --unconfirmed` lists the ones
+nobody has marked as settled, with the block each is anchored to; `doc
+annotation <id> <annotation-id>` reads one thread in full. The thread is where
+it matters -- what a discussion landed on is at the bottom of it, and is often
+not what the opening objection asked for. Changing a document without reading
+these re-argues settled points, or silently overwrites the thing somebody
+objected to.
+
+An annotation has two states and nothing derives them: confirmed, or not.
+Replies come from people and, when somebody clicks for one, from the AI; this
+binary does not distinguish them, because who said a thing does not change
+whether it is right.
 
 **Committing and deciding are not here, on purpose.** An agent proposes; a
 person commits the proposal, settles arguments between competing ones, and
-resolves annotations. There is no CLI verb for any of those, and that is the
+confirms annotations. There is no CLI verb for any of those, and that is the
 point of the proposal flow rather than a gap in this binary.
 
 ## Update

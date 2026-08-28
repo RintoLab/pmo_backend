@@ -83,6 +83,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     no_estimation_actor:
       {422, "No actor holds the estimation role. Set one with `PUT /settings/estimation_actor`."},
     nothing_to_estimate: {422, "There is nothing left to estimate on this task."},
+    # Asking the AI to answer one annotation. The only condition of asking, so
+    # the only thing that can be refused before the model call is queued.
+    no_annotation_actor:
+      {422, "No actor holds the annotation role. Set one with `PUT /settings/annotation_actor`."},
     # Filing one as a work breakdown. Both mean the document is not the shape a
     # breakdown is, which is a thing to fix in the document.
     no_chunks: {422, "The document has no headings, so there is no work in it to file."},
