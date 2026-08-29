@@ -8,8 +8,11 @@
 # not carry:
 #
 #   the CLI          how it reads and writes anything in Rinto
-#   the skill        how to call that CLI -- shipped inside the binary itself
+#   the skills       how to call that CLI -- shipped inside the binary itself
 #   AGENTS.md        what it is, before any of the above is loaded
+#
+# and one thing it only checks for, because a package manager owns it: git,
+# which the workspace subsystem shells out to for every clone and fetch.
 #
 # `docs/ai-document-cli.md` already required the first two and said why they
 # must not be done by hand: "换台机器、重建容器，skill 和二进制静默消失，表现出来
@@ -37,6 +40,7 @@
 #
 #   ~/.local/bin/rinto-pmo         on the unit's PATH -- see pmo_backend.service
 #   ~/.pi/agent/skills/rinto-document-authoring/SKILL.md
+#   ~/.pi/agent/skills/rinto-project-code/SKILL.md
 #   ~/.pi/agent/AGENTS.md
 
 set -euo pipefail
@@ -48,13 +52,19 @@ cli="${bin_dir}/rinto-pmo"
 agent_dir="${HOME}/.pi/agent"
 context_file="${agent_dir}/AGENTS.md"
 
-# Only this one. `rinto-docs-reference` is the development-side loop -- claim a
-# task, change code, report back -- and `rinto-backlog-cleanup` opens by
-# requiring that a human confirm every cancellation one at a time, which is not
-# a person this process has in front of it. `skill install` deliberately refuses
-# to install everything by default for exactly this reason; installing the wrong
-# ones here would work around that on the one machine it matters most.
-skill="rinto-document-authoring"
+# These two, and not the others. `rinto-docs-reference` is the development-side
+# loop -- claim a task, change code, report back -- and `rinto-backlog-cleanup`
+# opens by requiring that a human confirm every cancellation one at a time,
+# which is not a person this process has in front of it. `skill install`
+# deliberately refuses to install everything by default for exactly this reason;
+# installing the wrong ones here would work around that on the one machine it
+# matters most.
+#
+# `rinto-project-code` is separate from `rinto-document-authoring` rather than a
+# section inside it: that one's description triggers on "write this up", and
+# reading a project's code usually happens *before* anybody has decided there is
+# a document to write. Folded in, it would be discovered too late to be used.
+skills="rinto-document-authoring rinto-project-code"
 
 say() { printf '\n=== %s\n' "$1"; }
 
@@ -67,6 +77,17 @@ test -s agent/AGENTS.md || {
   echo "the agent context file did not arrive in ${staging}" >&2
   exit 1
 }
+
+# The workspace subsystem shells out to git for every clone, fetch and worktree.
+# Without it a release starts, serves everything else, and answers `503
+# repo_unavailable` the first time anybody asks about a project's code -- which
+# reads as a broken repository rather than a machine missing a package.
+say "checking git is installed"
+command -v git >/dev/null || {
+  echo "git is not installed; the agent will not be able to read any project's code" >&2
+  exit 1
+}
+git --version
 
 say "verifying the CLI that arrived"
 sha256sum -c rinto-pmo-linux-amd64.sha256
@@ -94,8 +115,10 @@ test "${installed}" = "rinto-pmo ${cli_version}" || {
 # stale. Without it every deploy after the first would refuse on differing
 # content, and the machine would sit on a skill describing commands the CLI no
 # longer has -- the drift `include_str!` exists to prevent, arriving late.
-say "installing the ${skill} skill"
-"${cli}" skill install "${skill}" --force
+say "installing the agent skills"
+for skill in ${skills}; do
+  "${cli}" skill install "${skill}" --force
+done
 
 # Global context, loaded by pi for every process on this machine regardless of
 # cwd, of `--system-prompt`, and of whether any skill is triggered

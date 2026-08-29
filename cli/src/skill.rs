@@ -70,6 +70,10 @@ pub const SKILLS: &[Skill] = &[
         body: include_str!("../../skills/rinto-docs-reference/SKILL.md"),
     },
     Skill {
+        name: "rinto-project-code",
+        body: include_str!("../../skills/rinto-project-code/SKILL.md"),
+    },
+    Skill {
         name: "rinto-backlog-cleanup",
         body: include_str!("../../skills/rinto-backlog-cleanup/SKILL.md"),
     },
