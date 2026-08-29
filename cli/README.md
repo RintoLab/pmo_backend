@@ -72,7 +72,7 @@ away anything written there. On a developer's machine the repository to be in is
 | Group | Commands |
 |---|---|
 | `config` | `init`, `show` |
-| `project` | `list`, `show` -- repositories, directory names, default branches |
+| `project` | `list`, `show` -- repositories, directory names, git URLs |
 | `repo` | `checkout` -- puts a branch on the *server's* disk and says where; only useful there |
 | `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `split`, `start`, `complete`, `cancel`, `reopen`, `delete` |
 | `schedule` | one command; what each week holds and what did not fit in it |

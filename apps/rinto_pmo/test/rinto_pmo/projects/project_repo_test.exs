@@ -11,8 +11,8 @@ defmodule RintoPMO.Projects.ProjectRepoTest do
       assert changeset.valid?
     end
 
-    test "requires name, git URL, and branch" do
-      for field <- [:name, :git_url, :branch] do
+    test "requires a name and a git URL" do
+      for field <- [:name, :git_url] do
         changeset =
           %ProjectRepo{}
           |> ProjectRepo.changeset(Map.delete(valid_attrs(), field))
@@ -20,6 +20,17 @@ defmodule RintoPMO.Projects.ProjectRepoTest do
         refute changeset.valid?
         assert "can't be blank" in errors_on(changeset)[field]
       end
+    end
+
+    # Which branch to read belongs to the question, not to the registration.
+    # `RintoPMO.Workspace` says why.
+    test "holds no branch, and ignores one that is sent" do
+      refute Map.has_key?(%ProjectRepo{}, :branch)
+
+      changeset = ProjectRepo.changeset(%ProjectRepo{}, Map.put(valid_attrs(), :branch, "main"))
+
+      assert changeset.valid?
+      refute Map.has_key?(changeset.changes, :branch)
     end
 
     test "does not cast project ownership or synchronization results" do
@@ -32,8 +43,7 @@ defmodule RintoPMO.Projects.ProjectRepoTest do
           last_synced_at: DateTime.utc_now(),
           last_sync_error: "hidden",
           name: "repo",
-          git_url: "https://example.com/repo.git",
-          branch: "main"
+          git_url: "https://example.com/repo.git"
         })
 
       assert changeset.valid?
@@ -76,11 +86,45 @@ defmodule RintoPMO.Projects.ProjectRepoTest do
     end
   end
 
+  describe "suggest_name/1" do
+    test "is the last segment of the URL, without .git" do
+      assert ProjectRepo.suggest_name("https://github.com/acme/rinto.git") == "rinto"
+      assert ProjectRepo.suggest_name("https://github.com/acme/rinto") == "rinto"
+      assert ProjectRepo.suggest_name("ssh://git@host/~acme/rinto.git") == "rinto"
+    end
+
+    test "sanitises what it finds into a usable name" do
+      assert ProjectRepo.suggest_name("https://host/acme/my repo.git") == "my-repo"
+      assert ProjectRepo.suggest_name("https://host/acme/.hidden.git") == "hidden"
+      assert ProjectRepo.suggest_name("https://host/acme/-x.git") == "x"
+    end
+
+    test "falls back rather than returning something uninsertable" do
+      assert ProjectRepo.suggest_name("https://host/") == "repo"
+      assert ProjectRepo.suggest_name("https://host/.git") == "repo"
+      assert ProjectRepo.suggest_name(nil) == "repo"
+    end
+
+    test "always produces a name the changeset accepts" do
+      for url <- [
+            "https://github.com/acme/rinto.git",
+            "https://host/acme/my repo.git",
+            "https://host/acme/-x.git",
+            "https://host/",
+            "https://host/#{String.duplicate("a", 300)}.git"
+          ] do
+        attrs = %{name: ProjectRepo.suggest_name(url), git_url: "https://example.com/x.git"}
+
+        assert ProjectRepo.changeset(%ProjectRepo{}, attrs).valid?,
+               "#{url} suggested a name the changeset rejects"
+      end
+    end
+  end
+
   defp valid_attrs do
     %{
       name: "backend",
-      git_url: "https://example.com/owner/backend.git",
-      branch: "main"
+      git_url: "https://example.com/owner/backend.git"
     }
   end
 end

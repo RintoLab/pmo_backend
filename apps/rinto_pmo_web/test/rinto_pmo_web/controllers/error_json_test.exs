@@ -112,6 +112,8 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     corrupt_image: {422, "The image header could not be read.", %{}},
     invalid_branch: {422, "The branch name is not one git accepts.", %{branch: "--upload-pack"}},
     unknown_branch: {422, "The repository has no branch by that name.", %{branch: "nope"}},
+    no_default_branch:
+      {422, "The remote names no default branch. Ask for a branch by name.", %{}},
     unusable_repo_name:
       {422, "The repository name cannot be used as a directory. Rename the repository.",
        %{name: "../etc"}},

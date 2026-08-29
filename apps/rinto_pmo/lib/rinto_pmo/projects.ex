@@ -169,17 +169,108 @@ defmodule RintoPMO.Projects do
   in `last_sync_error` shortly after registering rather than in the middle of
   the first conversation about the project. Installations with no workspace
   configured queue nothing.
+
+  Only `git_url` has to be given. A registration that names no repository gets
+  one derived from its URL -- see `RintoPMO.Projects.ProjectRepo.suggest_name/1`
+  for why the field exists at all, and `ProjectRepo` for what happens to the
+  branch.
   """
   @impl true
   def create_project_repo(%Project{} = project, attrs) do
-    with {:ok, project_repo} <-
-           %ProjectRepo{project_id: project.id}
-           |> ProjectRepo.changeset(attrs)
-           |> Repo.insert() do
+    with {:ok, project_repo} <- insert_project_repo(project, attrs, 1) do
       queue_first_sync(project_repo)
       {:ok, project_repo}
     end
   end
+
+  # Two registrations racing derive the same name and one of them loses to
+  # `project_repos_project_id_name_index`. Retried rather than reported: the
+  # caller never chose this name and has nothing to fix in the request. A name
+  # that *was* sent is a different matter and comes back as the conflict it is,
+  # which is why the retry turns on whether `name_project_repo/2` changed
+  # anything.
+  @name_attempts 3
+
+  defp insert_project_repo(%Project{} = project, attrs, attempt) do
+    named = name_project_repo(project, attrs)
+
+    %ProjectRepo{project_id: project.id}
+    |> ProjectRepo.changeset(named)
+    |> Repo.insert()
+    |> case do
+      {:error, changeset} when attempt < @name_attempts ->
+        if named != attrs and name_taken?(changeset) do
+          insert_project_repo(project, attrs, attempt + 1)
+        else
+          {:error, changeset}
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp name_taken?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn
+      {:name, {_message, meta}} -> Keyword.get(meta, :constraint) == :unique
+      _other -> false
+    end)
+  end
+
+  defp name_project_repo(project, attrs) do
+    if blank?(attr(attrs, :name)) do
+      name =
+        attrs
+        |> attr(:git_url)
+        |> ProjectRepo.suggest_name()
+        |> unique_name(project)
+
+      put_attr(attrs, :name, name)
+    else
+      attrs
+    end
+  end
+
+  # Names are unique per project, and two repositories in one project routinely
+  # share a last URL segment -- a fork and its upstream, `acme/api` next to
+  # `beta/api`. Suffixed rather than refused, because nobody asked for this name
+  # in the first place. Running out of suffixes falls back to the bare name and
+  # lets the unique constraint answer, which is the one case where telling the
+  # caller to choose a name is the right answer.
+  @name_suffixes 2..1_000
+
+  defp unique_name(base, project) do
+    taken = taken_names(project)
+
+    [base]
+    |> Stream.concat(Stream.map(@name_suffixes, &"#{base}-#{&1}"))
+    |> Enum.find(base, &(not MapSet.member?(taken, &1)))
+  end
+
+  defp taken_names(project) do
+    project
+    |> Ecto.assoc(:repos)
+    |> select([project_repo], project_repo.name)
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  # Attributes arrive string-keyed from the API and atom-keyed from everything
+  # else, and Ecto refuses a map that mixes the two -- so a key added here has
+  # to match what is already in there.
+  defp attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
+
+  defp put_attr(attrs, key, value) do
+    if attrs |> Map.keys() |> Enum.all?(&is_atom/1) do
+      Map.put(attrs, key, value)
+    else
+      Map.put(attrs, Atom.to_string(key), value)
+    end
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank?(_present), do: false
 
   # The repository is worth more than its working copy. A queue that will not
   # take the job leaves the row with nothing cloned, which `POST

@@ -1,6 +1,6 @@
 defmodule RintoPMO.Workspace.Server do
   @moduledoc """
-  The queue that keeps two checkouts out of the same directory.
+  The queue that keeps two git calls out of the same directory.
 
   Git is not safe to run twice at once in one repository -- `index.lock` is the
   polite failure, and a `reset --hard` landing while another process reads the
@@ -45,11 +45,27 @@ defmodule RintoPMO.Workspace.Server do
     GenServer.call(__MODULE__, {:checkout, project, repo, opts}, @call_timeout)
   end
 
+  @doc """
+  Runs `RintoPMO.Workspace.perform_sync/2` in this process.
+
+  Through the same queue as a checkout, and it has to be: a sync fetches into
+  the mirror that a checkout reads, so the two are as unsafe to run at once as
+  two checkouts are.
+  """
+  @spec sync(Project.t(), ProjectRepo.t()) :: :ok | {:error, Workspace.error()}
+  def sync(%Project{} = project, %ProjectRepo{} = repo) do
+    GenServer.call(__MODULE__, {:sync, project, repo}, @call_timeout)
+  end
+
   @impl true
   def init(_opts), do: {:ok, %{}}
 
   @impl true
   def handle_call({:checkout, project, repo, opts}, _from, state) do
     {:reply, Workspace.perform_checkout(project, repo, opts), state}
+  end
+
+  def handle_call({:sync, project, repo}, _from, state) do
+    {:reply, Workspace.perform_sync(project, repo), state}
   end
 end

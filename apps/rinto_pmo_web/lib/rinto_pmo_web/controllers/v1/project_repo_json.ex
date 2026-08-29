@@ -36,7 +36,6 @@ defmodule RintoPMOWeb.V1.ProjectRepoJSON do
       project_id: project_repo.project_id,
       name: project_repo.name,
       git_url: project_repo.git_url,
-      branch: project_repo.branch,
       credential_id: project_repo.credential_id,
       last_synced_at: project_repo.last_synced_at,
       last_sync_error: project_repo.last_sync_error,

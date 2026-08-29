@@ -37,6 +37,21 @@ defmodule RintoPMO.Workspace do
   That is the whole reason updating is a single unconditional command rather
   than a merge with a failure mode.
 
+  ## The branch belongs to the question, not to the repository
+
+  `RintoPMO.Projects.ProjectRepo` holds no branch, so every checkout either
+  names one or gets the remote's current default. That default is read from the
+  mirror's own HEAD, which a `--mirror` clone copies from the remote -- so it
+  costs no round trip, and it is resolved fresh each time rather than recorded.
+  A repository that moves from `master` to `main` upstream is followed by the
+  next unnamed checkout, because "no branch named" means whatever the remote
+  considers current, not whatever it considered current on the day somebody
+  registered the URL.
+
+  This is also why a sync needs no branch at all: it refreshes the mirror, and
+  a mirror holds every ref. Only a worktree is ever about one branch, and those
+  are built on demand.
+
   ## Freshness is lazy
 
   A fetch happens when somebody asks for a checkout and the last one was longer
@@ -121,6 +136,7 @@ defmodule RintoPMO.Workspace do
           | {:invalid_name, String.t()}
           | {:invalid_branch, String.t()}
           | {:unknown_branch, String.t()}
+          | :no_default_branch
           | {:root_unavailable, term()}
           | {:git, Git.error()}
 
@@ -172,7 +188,8 @@ defmodule RintoPMO.Workspace do
 
   Options:
 
-    * `:branch` - defaults to the repository's own `branch`
+    * `:branch` - the one being asked about; defaults to whatever the remote
+      currently calls its default
     * `:force` - fetch even if the last one was within the TTL
   """
   @impl Behaviour
@@ -210,11 +227,17 @@ defmodule RintoPMO.Workspace do
   end
 
   @doc """
-  Brings a repository's own branch up to date, by id.
+  Brings a repository's mirror up to date, by id.
 
   What `RintoPMO.Workspace.SyncWorker` runs when a repository is registered.
+  No branch is involved and no worktree is built: a mirror holds every ref, so
+  this makes the whole repository available, and which branch anybody wants to
+  read is a question none of them have asked yet.
+
   Answers `:ok` for a repository that has since been deleted: the job outliving
-  its subject is not a failure, and there is nothing left to clone.
+  its subject is not a failure, and there is nothing left to clone. Answers
+  `:ok` too when the mirror was already there and the fetch failed -- that is
+  recorded in `last_sync_error`, and the previous snapshot is still readable.
   """
   @spec sync(UUIDv7.t()) :: :ok | {:error, error()}
   def sync(project_repo_id) when is_binary(project_repo_id) do
@@ -222,14 +245,8 @@ defmodule RintoPMO.Workspace do
     |> Repo.get(project_repo_id)
     |> Repo.preload(:project)
     |> case do
-      nil ->
-        :ok
-
-      %ProjectRepo{project: project} = repo ->
-        case checkout(project, repo, force: true) do
-          {:ok, _checkout} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
+      nil -> :ok
+      %ProjectRepo{project: project} = repo -> Server.sync(project, repo)
     end
   end
 
@@ -239,42 +256,59 @@ defmodule RintoPMO.Workspace do
   @spec perform_checkout(Project.t(), ProjectRepo.t(), [opt()]) ::
           {:ok, checkout()} | {:error, error()}
   def perform_checkout(%Project{} = project, %ProjectRepo{} = repo, opts \\ []) do
+    with {:ok, context} <- context(project, repo),
+         {:ok, requested} <- requested_branch(opts),
+         {:ok, repo} <- ensure_mirror(context),
+         {:ok, repo} <- refresh(%{context | repo: repo}, Keyword.get(opts, :force, false)),
+         # After the mirror, because a checkout that named no branch has
+         # nothing to ask until there is one.
+         {:ok, branch} <- resolve_branch(context, requested),
+         {:ok, commit} <- resolve(context, branch),
+         worktree = Path.join([context.worktrees | Path.split(branch)]),
+         {:ok, path} <- ensure_worktree(context, worktree, branch) do
+      # In that order: the one just asked for is stamped before anything is
+      # judged old, so it can never be swept by the same call that made it.
+      stamp(path)
+      sweep(context, path)
+
+      {:ok,
+       %{
+         path: path,
+         branch: branch,
+         commit: commit,
+         synced_at: repo.last_synced_at,
+         sync_error: repo.last_sync_error
+       }}
+    end
+  end
+
+  @doc false
+  # The body of `sync/1`, called by the server that serialises it. Public only
+  # so that tests can drive it without a queue in the way.
+  @spec perform_sync(Project.t(), ProjectRepo.t()) :: :ok | {:error, error()}
+  def perform_sync(%Project{} = project, %ProjectRepo{} = repo) do
+    with {:ok, context} <- context(project, repo),
+         {:ok, repo} <- ensure_mirror(context),
+         {:ok, _repo} <- refresh(%{context | repo: repo}, true) do
+      :ok
+    end
+  end
+
+  # Everything a git call here needs, and every check that has to pass before
+  # one is made.
+  defp context(%Project{} = project, %ProjectRepo{} = repo) do
     with {:ok, root} <- ensure_root(),
          {:ok, slug} <- validate_segment(project.slug),
          {:ok, id} <- validate_segment(repo.id),
-         {:ok, branch} <- validate_branch(Keyword.get(opts, :branch) || repo.branch),
          {:ok, askpass} <- ensure_askpass(root) do
-      repo = Repo.preload(repo, :credential)
-      mirror = Path.join([root, slug, id, ".mirror"])
-      worktrees = Path.join([root, slug, id, "worktrees"])
-      worktree = Path.join([worktrees | Path.split(branch)])
-
-      context = %{
-        repo: repo,
-        mirror: mirror,
-        worktrees: worktrees,
-        askpass: askpass,
-        root: root
-      }
-
-      with {:ok, repo} <- ensure_mirror(context),
-           {:ok, repo} <- refresh(%{context | repo: repo}, Keyword.get(opts, :force, false)),
-           {:ok, commit} <- resolve(context, branch),
-           {:ok, path} <- ensure_worktree(context, worktree, branch) do
-        # In that order: the one just asked for is stamped before anything is
-        # judged old, so it can never be swept by the same call that made it.
-        stamp(path)
-        sweep(context, path)
-
-        {:ok,
-         %{
-           path: path,
-           branch: branch,
-           commit: commit,
-           synced_at: repo.last_synced_at,
-           sync_error: repo.last_sync_error
-         }}
-      end
+      {:ok,
+       %{
+         repo: Repo.preload(repo, :credential),
+         mirror: Path.join([root, slug, id, ".mirror"]),
+         worktrees: Path.join([root, slug, id, "worktrees"]),
+         askpass: askpass,
+         root: root
+       }}
     end
   end
 
@@ -363,6 +397,48 @@ defmodule RintoPMO.Workspace do
 
   defp stale?(%ProjectRepo{last_synced_at: at}),
     do: DateTime.diff(DateTime.utc_now(), at, :millisecond) >= setting(:ttl_ms)
+
+  ## Branch
+
+  # Nothing to validate when nobody has named a branch: the answer is not in
+  # the request, and comes later from the mirror.
+  defp requested_branch(opts) do
+    case Keyword.get(opts, :branch) do
+      nil -> {:ok, nil}
+      branch -> validate_branch(branch)
+    end
+  end
+
+  # Named by whoever asked, or the remote's current default. There is nothing
+  # in between: the repository holds no branch, deliberately -- see
+  # `RintoPMO.Projects.ProjectRepo`.
+  defp resolve_branch(_context, branch) when is_binary(branch), do: {:ok, branch}
+  defp resolve_branch(context, nil), do: default_branch(context)
+
+  # A `--mirror` clone copies the remote's HEAD, so this is the remote's own
+  # answer rather than a guess about it, and it is already on disk. Read on
+  # every checkout that names no branch rather than recorded once: "no branch
+  # named" means whatever the remote considers current, and a repository that
+  # moves from `master` to `main` upstream should be followed rather than
+  # remembered.
+  #
+  # Validated like any other branch even though git wrote it. It is about to
+  # become a path component, and this module checks its own inputs for exactly
+  # that reason -- see `@segment`.
+  defp default_branch(%{mirror: mirror} = context) do
+    case Git.run(["-C", mirror, "symbolic-ref", "--short", "HEAD"], local_opts(context)) do
+      {:ok, output} ->
+        validate_branch(String.trim(output))
+
+      # A remote whose HEAD is detached names no default branch. Reported
+      # rather than guessed at: falling back to `main` here would be the
+      # assumption this whole path exists to remove, and it would fail later,
+      # somewhere less obviously connected to the cause. Naming a branch is
+      # what fixes it, and only the caller can.
+      {:error, _reason} ->
+        {:error, :no_default_branch}
+    end
+  end
 
   ## Worktree
 

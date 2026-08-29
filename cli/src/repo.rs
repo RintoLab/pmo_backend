@@ -23,7 +23,8 @@ pub enum RepoCommand {
 pub struct CheckoutArgs {
     /// Which repository, as <project-slug>/<repo-name>
     target: String,
-    /// Branch to check out. Defaults to the repository's own default branch
+    /// Branch to check out. Defaults to the remote's current default branch.
+    /// Applies to this call only -- nothing remembers it between calls
     #[arg(long)]
     branch: Option<String>,
     /// Fetch even if the last one was recent. For a person who has just pushed

@@ -16,8 +16,7 @@ defmodule RintoPMO.ProjectsTest do
       assert {:ok, project_repo} =
                Projects.create_project_repo(project, %{
                  name: "backend",
-                 git_url: "https://example.com/backend.git",
-                 branch: "main"
+                 git_url: "https://example.com/backend.git"
                })
 
       assert_enqueued(worker: SyncWorker, args: %{project_repo_id: project_repo.id})
@@ -35,12 +34,100 @@ defmodule RintoPMO.ProjectsTest do
         assert {:error, changeset} =
                  Projects.create_project_repo(project, %{
                    name: name,
-                   git_url: "https://example.com/backend.git",
-                   branch: "main"
+                   git_url: "https://example.com/backend.git"
                  })
 
         assert %{name: [_message]} = errors_on(changeset), "#{name} was not refused"
       end
+    end
+
+    test "takes only a URL", %{project: project} do
+      assert {:ok, project_repo} =
+               Projects.create_project_repo(project, %{
+                 git_url: "https://example.com/acme/backend.git"
+               })
+
+      assert project_repo.name == "backend"
+      assert_enqueued(worker: SyncWorker, args: %{project_repo_id: project_repo.id})
+    end
+
+    test "derives a name through the API's string keys too", %{project: project} do
+      assert {:ok, project_repo} =
+               Projects.create_project_repo(project, %{
+                 "git_url" => "https://example.com/acme/backend.git"
+               })
+
+      assert project_repo.name == "backend"
+    end
+
+    test "keeps a name that was given", %{project: project} do
+      assert {:ok, project_repo} =
+               Projects.create_project_repo(project, %{
+                 name: "chosen",
+                 git_url: "https://example.com/acme/backend.git"
+               })
+
+      assert project_repo.name == "chosen"
+    end
+
+    test "derives a name for a registration that sent a blank one", %{project: project} do
+      assert {:ok, project_repo} =
+               Projects.create_project_repo(project, %{
+                 "name" => "  ",
+                 "git_url" => "https://example.com/acme/backend.git"
+               })
+
+      assert project_repo.name == "backend"
+    end
+
+    # A fork next to its upstream. Names are unique per project, and nobody
+    # asked for either of these -- so the second is suffixed rather than
+    # refused.
+    test "suffixes a derived name that is already taken", %{project: project} do
+      assert {:ok, first} =
+               Projects.create_project_repo(project, %{
+                 git_url: "https://example.com/acme/backend.git"
+               })
+
+      assert {:ok, second} =
+               Projects.create_project_repo(project, %{
+                 git_url: "https://example.com/beta/backend.git"
+               })
+
+      assert {:ok, third} =
+               Projects.create_project_repo(project, %{
+                 git_url: "https://example.com/gamma/backend.git"
+               })
+
+      assert [first.name, second.name, third.name] == ["backend", "backend-2", "backend-3"]
+    end
+
+    test "still refuses a name that was given and is taken", %{project: project} do
+      assert {:ok, _repo} =
+               Projects.create_project_repo(project, %{
+                 name: "backend",
+                 git_url: "https://example.com/acme/backend.git"
+               })
+
+      assert {:error, changeset} =
+               Projects.create_project_repo(project, %{
+                 name: "backend",
+                 git_url: "https://example.com/beta/other.git"
+               })
+
+      assert "has already been taken" in errors_on(changeset).name
+    end
+
+    test "suffixes around a name another project happens to hold", %{project: project} do
+      other = insert(:project, slug: "other")
+      insert(:project_repo, project: other, name: "backend")
+
+      assert {:ok, project_repo} =
+               Projects.create_project_repo(project, %{
+                 git_url: "https://example.com/acme/backend.git"
+               })
+
+      assert project_repo.name == "backend"
     end
   end
 
@@ -221,8 +308,8 @@ defmodule RintoPMO.ProjectsTest do
       project_repo = insert(:project_repo, project: project)
       scoped_repo = Projects.get_project_repo!(project, project_repo.id)
 
-      assert {:ok, updated} = Projects.update_project_repo(scoped_repo, %{branch: "next"})
-      assert updated.branch == "next"
+      assert {:ok, updated} = Projects.update_project_repo(scoped_repo, %{name: "next"})
+      assert updated.name == "next"
 
       assert {:ok, deleted} = Projects.delete_project_repo(updated)
       assert deleted.id == project_repo.id
@@ -234,7 +321,6 @@ defmodule RintoPMO.ProjectsTest do
     %{
       name: name,
       git_url: "https://example.com/owner/#{name}.git",
-      branch: "main",
       credential_id: credential_id
     }
   end

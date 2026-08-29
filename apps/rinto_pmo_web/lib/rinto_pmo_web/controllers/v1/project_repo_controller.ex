@@ -74,19 +74,38 @@ defmodule RintoPMOWeb.V1.ProjectRepoController do
     end
   end
 
-  # Where a branch of this repository is on this machine. Clones or fetches
-  # first when it has to, so freshness is a postcondition of being told a path
-  # rather than something a caller has to arrange separately.
-  #
-  # `force` is for a person: it skips the interval that keeps a conversation
-  # from re-fetching on every question, which is exactly what somebody who has
-  # just pushed, or who has just fixed a credential, is asking for.
+  @doc """
+  Where a branch of this repository is on this machine.
+
+  Clones or fetches first when it has to, so freshness is a postcondition of
+  being told a path rather than something a caller has to arrange separately.
+
+  `force` is for a person: it skips the interval that keeps a conversation from
+  re-fetching on every question, which is exactly what somebody who has just
+  pushed, or who has just fixed a credential, is asking for.
+
+  ## Which branch
+
+  `branch` if given, and otherwise whatever the remote currently calls its
+  default. Nothing between the two: a repository holds no branch --
+  `RintoPMO.Projects.ProjectRepo` says why -- and neither does anything else.
+
+  So this call is answered entirely by its own arguments. Two topics reading
+  two branches at the same time is two calls naming two branches, each getting
+  its own worktree; asking again for a branch already asked for is the same
+  call again. Nothing carries a branch between requests, which is what makes
+  the same arguments always mean the same code.
+
+  The cost is that a caller reading a branch that is not the default has to say
+  so every time. `branch` comes back in the response for exactly that reason --
+  it is the one place a caller that forgot can see that it did.
+  """
   def checkout(conn, %{"project_slug" => project_slug, "id" => id} = params) do
     context = Utils.module(:projects)
     project = context.get_active_project_by_slug!(project_slug)
     project_repo = context.get_project_repo!(project, id)
 
-    opts = [branch: Map.get(params, "branch"), force: params["force"] == true]
+    opts = [branch: params["branch"], force: params["force"] == true]
 
     case Utils.module(:workspace).checkout(project, project_repo, opts) do
       {:ok, checkout} -> render(conn, :checkout, checkout: checkout)
@@ -101,6 +120,7 @@ defmodule RintoPMOWeb.V1.ProjectRepoController do
   defp refusal(:not_configured), do: {:error, :workspace_not_configured}
   defp refusal({:invalid_branch, branch}), do: {:error, :invalid_branch, %{branch: branch}}
   defp refusal({:unknown_branch, branch}), do: {:error, :unknown_branch, %{branch: branch}}
+  defp refusal(:no_default_branch), do: {:error, :no_default_branch}
   defp refusal({:invalid_name, name}), do: {:error, :unusable_repo_name, %{name: name}}
   defp refusal({:root_unavailable, _reason}), do: {:error, :workspace_unwritable}
   defp refusal({:git, _reason}), do: {:error, :repo_unavailable}

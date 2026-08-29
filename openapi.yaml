@@ -515,9 +515,15 @@ paths:
                 branch:
                   type: string
                   description: >
-                    Defaults to the repository's own `branch`. Validated against
-                    what git accepts as a ref, so a name that could be read as a
-                    flag is refused rather than passed on.
+                    Which branch is being asked about. A repository has no
+                    branch of its own -- that is a property of the question, not
+                    of the registration, and nothing else holds one either --
+                    so leaving this out means whatever the remote currently
+                    calls its default, read fresh each time. It applies to this
+                    call only: nothing carries a branch between requests, which
+                    is what makes the same arguments always mean the same code.
+                    Validated against what git accepts as a ref, so a name that
+                    could be read as a flag is refused rather than passed on.
                 force:
                   type: boolean
                   default: false
@@ -540,8 +546,10 @@ paths:
           description: >
             `invalid_branch` -- the name is not one git accepts, with the name in
             `details.branch`; `unknown_branch` -- the repository has no branch by
-            that name; or `unusable_repo_name` -- the repository's own name
-            cannot be a directory, which is fixed by renaming the repository.
+            that name; `no_default_branch` -- no `branch` was given and the
+            remote names no default to fall back on, which is fixed by naming
+            one; or `unusable_repo_name` -- the repository's own name cannot be
+            a directory, which is fixed by renaming the repository.
           content:
             application/json:
               schema:
@@ -4654,7 +4662,7 @@ components:
       additionalProperties: false
     ProjectRepo:
       type: object
-      required: [id, project_id, name, git_url, branch]
+      required: [id, project_id, name, git_url]
       properties:
         id:
           type: string
@@ -4670,11 +4678,10 @@ components:
             unique there, and editable. Has to start with a letter or digit and
             hold only letters, digits, `.`, `_` and `-`. Not where the working
             copy lives -- that is addressed by id, so renaming costs nothing.
+            Derived from `git_url` when a registration does not choose one.
         git_url:
           type: string
           format: uri
-        branch:
-          type: string
         credential_id:
           type: string
           format: uuid
@@ -4734,16 +4741,19 @@ components:
       additionalProperties: false
     ProjectRepoCreateInput:
       type: object
-      required: [name, git_url, branch]
+      required: [git_url]
       properties:
         name:
           type: string
+          description: >
+            Optional. Left out, it is derived from the last segment of
+            `git_url` and suffixed if that is already taken in this project --
+            which is what somebody would have typed anyway. Send one only to
+            override that.
         git_url:
           type: string
           format: uri
           description: Must use HTTPS when credential_id is set.
-        branch:
-          type: string
         credential_id:
           type: string
           format: uuid
@@ -4758,8 +4768,6 @@ components:
           type: string
           format: uri
           description: Must use HTTPS when credential_id is set.
-        branch:
-          type: string
         credential_id:
           type: string
           format: uuid
@@ -6277,6 +6285,7 @@ components:
           assistant_actor_id,
           hot,
           replay_pending,
+
           inserted_at,
           updated_at
         ]
@@ -6838,6 +6847,7 @@ components:
         - corrupt_image
         - invalid_branch
         - unknown_branch
+        - no_default_branch
         - unusable_repo_name
         - internal_server_error
         - workspace_unwritable

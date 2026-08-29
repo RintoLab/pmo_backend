@@ -117,10 +117,14 @@ defmodule RintoPMOWeb.ErrorJSON do
     unresolvable_references:
       {422, "The body points at things that do not exist. Check the rinto:// addresses."},
     # Asking for a branch of a repository. The first two are the request being
-    # wrong about the repository; the third is the repository being wrong about
-    # itself, and is the one case here that nobody can fix from the request.
+    # wrong about the repository; the last two are the repository being wrong
+    # about itself, and are the cases here nobody can fix from the request.
     invalid_branch: {422, "The branch name is not one git accepts."},
     unknown_branch: {422, "The repository has no branch by that name."},
+    # A checkout that named no branch falls back to the remote's default, and
+    # this remote names none. Nothing about the repository can be changed to
+    # fix it; naming a branch can, and only the caller can do that.
+    no_default_branch: {422, "The remote names no default branch. Ask for a branch by name."},
     unusable_repo_name:
       {422, "The repository name cannot be used as a directory. Rename the repository."},
     internal_server_error: {500, "An internal server error occurred."},

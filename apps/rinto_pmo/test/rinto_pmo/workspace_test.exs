@@ -13,16 +13,16 @@ defmodule RintoPMO.WorkspaceTest do
   # A real repository on disk, cloned over a plain path. Nothing here reaches
   # the network: the parts that would -- credentials, the remote URL -- are
   # checked through what git records rather than by dialling anything.
-  defp origin!(dir) do
+  defp origin!(dir, default) do
     File.mkdir_p!(dir)
-    git!(dir, ["init", "--quiet", "--initial-branch=main"])
+    git!(dir, ["init", "--quiet", "--initial-branch=#{default}"])
     git!(dir, ["config", "user.email", "test@example.com"])
     git!(dir, ["config", "user.name", "Test"])
     commit!(dir, "README.md", "one\n", "one")
 
     git!(dir, ["checkout", "--quiet", "-b", "feat/x"])
     commit!(dir, "topic.md", "topic\n", "topic")
-    git!(dir, ["checkout", "--quiet", "main"])
+    git!(dir, ["checkout", "--quiet", default])
 
     dir
   end
@@ -49,21 +49,25 @@ defmodule RintoPMO.WorkspaceTest do
   end
 
   defp fixture(tmp_dir, attrs \\ []) do
-    origin = origin!(Path.join(tmp_dir, "origin"))
-    configure(root: Path.join(tmp_dir, "workspace"))
+    {default, attrs} = Keyword.pop(attrs, :default_branch, "main")
+    root = Path.join(tmp_dir, "workspace")
+    origin = origin!(Path.join(tmp_dir, "origin"), default)
+    configure(root: root)
 
     project = insert(:project, slug: "acme")
 
     repo =
       insert(
         :project_repo,
-        Keyword.merge([project: project, name: "backend", git_url: origin, branch: "main"], attrs)
+        Keyword.merge([project: project, name: "backend", git_url: origin], attrs)
       )
 
-    %{origin: origin, project: project, repo: repo}
+    %{origin: origin, project: project, repo: repo, root: root}
   end
 
   defp reload(repo), do: Repo.get!(ProjectRepo, repo.id)
+
+  defp mirror(root, project, repo), do: Path.join([root, project.slug, repo.id, ".mirror"])
 
   describe "configuration" do
     test "is off with no root", %{tmp_dir: tmp_dir} do
@@ -186,6 +190,67 @@ defmodule RintoPMO.WorkspaceTest do
       # Passes this module's own pattern; only `check-ref-format` knows better.
       assert {:error, {:invalid_branch, "main.lock"}} =
                Workspace.perform_checkout(project, repo, branch: "main.lock")
+    end
+  end
+
+  describe "a checkout that names no branch" do
+    test "takes whatever the remote calls its default", %{tmp_dir: tmp_dir} do
+      %{origin: origin, project: project, repo: repo} =
+        fixture(tmp_dir, default_branch: "develop")
+
+      assert {:ok, checkout} = Workspace.perform_checkout(project, repo)
+
+      # Not "main". Nothing anywhere ever guessed at one.
+      assert checkout.branch == "develop"
+      assert checkout.commit == head!(origin, "develop")
+      assert Path.basename(checkout.path) == "develop"
+    end
+
+    # The reason it is read every time rather than recorded once: "no branch
+    # named" means whatever the remote considers current, not whatever it
+    # considered current the day somebody registered the URL.
+    test "follows the remote when the default moves", %{tmp_dir: tmp_dir} do
+      %{origin: origin, project: project, repo: repo} =
+        fixture(tmp_dir, default_branch: "develop")
+
+      assert {:ok, first} = Workspace.perform_checkout(project, repo)
+      assert first.branch == "develop"
+
+      git!(origin, ["symbolic-ref", "HEAD", "refs/heads/feat/x"])
+
+      assert {:ok, second} = Workspace.perform_checkout(project, repo, force: true)
+      assert second.branch == "feat/x"
+    end
+
+    test "a branch asked for wins and changes nothing about the repository",
+         %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo} = fixture(tmp_dir, default_branch: "develop")
+
+      assert {:ok, checkout} = Workspace.perform_checkout(project, repo, branch: "feat/x")
+
+      assert checkout.branch == "feat/x"
+      # Nothing to record. The next checkout asks the remote again.
+      assert {:ok, %{branch: "develop"}} = Workspace.perform_checkout(project, repo)
+    end
+
+    test "a remote naming no default is reported rather than guessed at", %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo, root: root} =
+        fixture(tmp_dir, default_branch: "develop")
+
+      # A first checkout builds the mirror; detaching its HEAD afterwards is
+      # the state a remote with no default branch would have produced, which a
+      # clone over a local path is too helpful to reproduce on its own.
+      assert {:ok, _checkout} = Workspace.perform_checkout(project, repo)
+      mirror = mirror(root, project, repo)
+      git!(mirror, ["update-ref", "--no-deref", "HEAD", head!(mirror, "refs/heads/develop")])
+
+      # Reloaded, so the TTL keeps a fetch from putting HEAD back: what is
+      # being tested is the mirror with no default branch, not git's fetch.
+      assert {:error, :no_default_branch} = Workspace.perform_checkout(project, reload(repo))
+
+      # Naming one is what fixes it, and only the caller can.
+      assert {:ok, %{branch: "feat/x"}} =
+               Workspace.perform_checkout(project, reload(repo), branch: "feat/x")
     end
   end
 
@@ -367,18 +432,29 @@ defmodule RintoPMO.WorkspaceTest do
   end
 
   describe "sync/1" do
-    test "brings a repository's own branch up to date", %{tmp_dir: tmp_dir} do
-      %{origin: origin, repo: repo} = fixture(tmp_dir)
+    test "clones the mirror, and only the mirror", %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo, root: root} = fixture(tmp_dir)
 
       assert :ok = Workspace.sync(repo.id)
 
       assert %ProjectRepo{last_synced_at: %DateTime{}, last_sync_error: nil} = reload(repo)
 
-      assert File.read!(
-               Path.join([Workspace.root(), "acme", repo.id, "worktrees", "main", "README.md"])
-             ) == "one\n"
+      # Every ref is available, which is what makes a repository usable...
+      mirror = mirror(root, project, repo)
+      assert head!(mirror, "refs/heads/main")
+      assert head!(mirror, "refs/heads/feat/x")
 
-      assert head!(origin, "main")
+      # ...and no branch was chosen, because nobody has asked about one yet.
+      refute File.exists?(Path.join([root, "acme", repo.id, "worktrees"]))
+    end
+
+    test "makes the next checkout a local operation", %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo} = fixture(tmp_dir)
+
+      assert :ok = Workspace.sync(repo.id)
+
+      assert {:ok, checkout} = Workspace.perform_checkout(project, reload(repo))
+      assert File.read!(Path.join(checkout.path, "README.md")) == "one\n"
     end
 
     test "is not a failure when the repository is already gone", %{tmp_dir: tmp_dir} do

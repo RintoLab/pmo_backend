@@ -44,7 +44,6 @@ defmodule RintoPMOWeb.V1.ProjectRepoControllerTest do
     params = %{
       "name" => "backend",
       "git_url" => "https://example.com/backend.git",
-      "branch" => "main",
       "credential_id" => credential_id
     }
 
@@ -58,13 +57,31 @@ defmodule RintoPMOWeb.V1.ProjectRepoControllerTest do
              json_response(conn, 201)["data"]
   end
 
+  # The URL is the only thing the caller has to know. The name is derived from
+  # it, and there is no branch to send: which one to read is decided per
+  # checkout, not per registration.
+  test "POST /api/v1/projects/:slug/repos takes only a git URL", %{conn: conn} do
+    project = expect_project()
+    project_repo = insert(:project_repo, project: project, name: "backend")
+    params = %{"git_url" => "https://example.com/acme/backend.git"}
+
+    expect(ProjectsMock, :create_project_repo, fn ^project, ^params ->
+      {:ok, project_repo}
+    end)
+
+    conn = post(conn, ~p"/api/v1/projects/#{project.slug}/repos", params)
+
+    assert %{"name" => "backend"} = data = json_response(conn, 201)["data"]
+    refute Map.has_key?(data, "branch")
+  end
+
   test "PATCH /api/v1/projects/:slug/repos/:id updates a repository", %{conn: conn} do
     project = expect_project()
 
-    project_repo = insert(:project_repo, project: project, branch: "main")
+    project_repo = insert(:project_repo, project: project, name: "backend")
 
-    updated = %{project_repo | branch: "next"}
-    params = %{"branch" => "next"}
+    updated = %{project_repo | name: "next"}
+    params = %{"name" => "next"}
 
     expect(ProjectsMock, :get_project_repo!, fn ^project, id ->
       assert id == project_repo.id
@@ -78,7 +95,7 @@ defmodule RintoPMOWeb.V1.ProjectRepoControllerTest do
     conn =
       patch(conn, ~p"/api/v1/projects/#{project.slug}/repos/#{project_repo.id}", params)
 
-    assert %{"branch" => "next"} = json_response(conn, 200)["data"]
+    assert %{"name" => "next"} = json_response(conn, 200)["data"]
   end
 
   test "DELETE /api/v1/projects/:slug/repos/:id returns 204", %{conn: conn} do
@@ -113,10 +130,7 @@ defmodule RintoPMOWeb.V1.ProjectRepoControllerTest do
     assert %{
              "error" => "validation_error",
              "message" => "Request validation failed.",
-             "details" => %{
-               "branch" => ["can't be blank"],
-               "git_url" => ["can't be blank"]
-             }
+             "details" => %{"git_url" => ["can't be blank"]}
            } = json_response(conn, 422)
   end
 
@@ -218,6 +232,18 @@ defmodule RintoPMOWeb.V1.ProjectRepoControllerTest do
 
       assert %{"error" => "unknown_branch", "details" => %{"branch" => "nope"}} =
                json_response(conn, 422)
+    end
+
+    test "says so when neither the repository nor its remote names a branch", %{conn: conn} do
+      %{project: project, repo: repo} = expect_repo()
+
+      expect(WorkspaceMock, :checkout, fn _project, _repo, _opts ->
+        {:error, :no_default_branch}
+      end)
+
+      conn = post(conn, ~p"/api/v1/projects/#{project.slug}/repos/#{repo.id}/checkout")
+
+      assert %{"error" => "no_default_branch"} = json_response(conn, 422)
     end
 
     test "refuses a branch name git would not take", %{conn: conn} do
