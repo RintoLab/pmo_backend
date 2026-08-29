@@ -116,6 +116,13 @@ defmodule RintoPMOWeb.ErrorJSON do
       {422, "Too many candidates to rerank in one request. Ask for a smaller recall_limit."},
     unresolvable_references:
       {422, "The body points at things that do not exist. Check the rinto:// addresses."},
+    # Asking for a branch of a repository. The first two are the request being
+    # wrong about the repository; the third is the repository being wrong about
+    # itself, and is the one case here that nobody can fix from the request.
+    invalid_branch: {422, "The branch name is not one git accepts."},
+    unknown_branch: {422, "The repository has no branch by that name."},
+    unusable_repo_name:
+      {422, "The repository name cannot be used as a directory. Rename the repository."},
     internal_server_error: {500, "An internal server error occurred."},
     agent_unavailable: {503, "The agent runtime could not be started."},
     # Searching without the service that does the searching. Told apart from
@@ -125,6 +132,17 @@ defmodule RintoPMOWeb.ErrorJSON do
     ai_not_configured:
       {503, "The server was started without RINTO_AI_TOKEN, so it cannot search."},
     ai_unavailable: {503, "The inference service could not be reached."},
+    # Asked for a working copy on a server that keeps none. Told apart from
+    # `repo_unavailable` for the same reason `ai_not_configured` is told apart
+    # from `ai_unavailable`: this one is an installation nobody finished
+    # configuring, and no amount of retrying will change it.
+    workspace_not_configured:
+      {503, "The server was started without RINTO_WORKSPACE_ROOT, so it keeps no working copies."},
+    # A repository that has never been cloned and could not be. `details` do not
+    # carry git's own words: `last_sync_error` on the repository does, and it
+    # survives the request.
+    repo_unavailable: {503, "The repository could not be cloned. See its last_sync_error."},
+    workspace_unwritable: {500, "The workspace directory could not be written."},
     attachment_unwritable: {500, "The attachment could not be stored."},
     attachment_unreadable: {500, "The attachment bytes are missing or unreadable."}
   }

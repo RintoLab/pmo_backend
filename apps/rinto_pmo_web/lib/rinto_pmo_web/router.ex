@@ -65,6 +65,11 @@ defmodule RintoPMOWeb.Router do
       param: "slug" do
       resources "/repos", ProjectRepoController, only: [:index, :show, :create, :update, :delete]
 
+      # Where a branch of this repository is on this machine, cloned or fetched
+      # first if it is not there or has gone stale. The only door to the
+      # workspace: nothing else tells a caller a path.
+      post "/repos/:id/checkout", ProjectRepoController, :checkout
+
       # The backlog is a property of a project, so filing and browsing happen
       # here. Everything done *to* one task lives at `/tasks/:id` -- an agent
       # that pulled a task out of the pool holds its id and not the slug it

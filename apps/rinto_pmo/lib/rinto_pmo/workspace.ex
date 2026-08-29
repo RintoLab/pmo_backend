@@ -96,6 +96,18 @@ defmodule RintoPMO.Workspace do
 
   @type opt :: {:branch, String.t() | nil} | {:force, boolean()}
 
+  defmodule Behaviour do
+    @moduledoc false
+
+    alias RintoPMO.Projects.Project
+    alias RintoPMO.Projects.ProjectRepo
+
+    @callback checkout(Project.t(), ProjectRepo.t(), [RintoPMO.Workspace.opt()]) ::
+                {:ok, RintoPMO.Workspace.checkout()} | {:error, RintoPMO.Workspace.error()}
+  end
+
+  @behaviour Behaviour
+
   @doc """
   Whether this installation has a workspace at all.
   """
@@ -131,10 +143,35 @@ defmodule RintoPMO.Workspace do
     * `:branch` - defaults to the repository's own `branch`
     * `:force` - fetch even if the last one was within the TTL
   """
+  @impl Behaviour
   @spec checkout(Project.t(), ProjectRepo.t(), [opt()]) ::
           {:ok, checkout()} | {:error, error()}
-  def checkout(%Project{} = project, %ProjectRepo{} = repo, opts \\ []) do
+  def checkout(%Project{} = project, %ProjectRepo{} = repo, opts) do
     Server.checkout(project, repo, opts)
+  end
+
+  @doc """
+  Brings a repository's own branch up to date, by id.
+
+  What `RintoPMO.Workspace.SyncWorker` runs when a repository is registered.
+  Answers `:ok` for a repository that has since been deleted: the job outliving
+  its subject is not a failure, and there is nothing left to clone.
+  """
+  @spec sync(UUIDv7.t()) :: :ok | {:error, error()}
+  def sync(project_repo_id) when is_binary(project_repo_id) do
+    ProjectRepo
+    |> Repo.get(project_repo_id)
+    |> Repo.preload(:project)
+    |> case do
+      nil ->
+        :ok
+
+      %ProjectRepo{project: project} = repo ->
+        case checkout(project, repo, force: true) do
+          {:ok, _checkout} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+    end
   end
 
   @doc false

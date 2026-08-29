@@ -480,6 +480,95 @@ paths:
           description: Project repository deleted
         "404":
           $ref: "#/components/responses/NotFound"
+  /projects/{slug}/repos/{id}/checkout:
+    parameters:
+      - $ref: "#/components/parameters/ProjectSlug"
+      - $ref: "#/components/parameters/ProjectRepoId"
+    post:
+      tags: [Project Repositories]
+      operationId: checkoutProjectRepo
+      summary: Where a branch of this repository is on the server
+      description: >
+        Makes a branch available in the server's workspace and answers with its
+        path, the commit it is at, and when the mirror was last known to match
+        the remote. Clones the repository if it has never been cloned, and
+        fetches if the last fetch was longer ago than the server's interval, so
+        freshness is a postcondition of being told a path rather than something
+        a caller arranges separately.
+
+
+        This is the only endpoint that reports a path. The directory is
+        read-only: nothing writes in it, and a caller that does will have its
+        changes thrown away by the next checkout.
+
+
+        A `sync_error` alongside a `200` means the copy could be served but not
+        refreshed -- the path is real and the code in it is older than the
+        remote. Say so rather than describing it as current.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                branch:
+                  type: string
+                  description: >
+                    Defaults to the repository's own `branch`. Validated against
+                    what git accepts as a ref, so a name that could be read as a
+                    flag is refused rather than passed on.
+                force:
+                  type: boolean
+                  default: false
+                  description: >
+                    Fetch even if the last one was recent. For a person who has
+                    just pushed, or has just fixed a credential -- not for a
+                    caller reading code, which should let the interval do its
+                    work.
+              additionalProperties: false
+      responses:
+        "200":
+          description: Where the branch is, and how current
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectRepoCheckoutResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            `invalid_branch` -- the name is not one git accepts, with the name in
+            `details.branch`; `unknown_branch` -- the repository has no branch by
+            that name; or `unusable_repo_name` -- the repository's own name
+            cannot be a directory, which is fixed by renaming the repository.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "500":
+          description: >
+            `workspace_unwritable` -- the workspace directory could not be
+            written. An operator's problem: the root is missing, or not writable
+            by the user the release runs as.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "503":
+          description: >
+            `workspace_not_configured` -- this server was started without
+            `RINTO_WORKSPACE_ROOT`, so it keeps no working copies and never will
+            until somebody configures one; or `repo_unavailable` -- the
+            repository has never been cloned and could not be.
+
+
+            git's own words are not in the response. They are on the repository
+            as `last_sync_error`, which survives the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /projects/{slug}/tasks:
     parameters:
       - $ref: "#/components/parameters/ProjectSlug"
@@ -4530,7 +4619,10 @@ components:
           format: uuid
         name:
           type: string
-          description: Directory name in the future agent workspace.
+          description: >
+            Directory name in the agent workspace. Also a git argument, so it
+            has to start with a letter or digit and hold only letters, digits,
+            `.`, `_` and `-`.
         git_url:
           type: string
           format: uri
@@ -4557,6 +4649,41 @@ components:
           type: string
           format: date-time
           nullable: true
+      additionalProperties: false
+    ProjectRepoCheckout:
+      type: object
+      required: [path, branch, commit]
+      properties:
+        path:
+          type: string
+          description: >
+            Absolute path on the server. Meaningful only to something running on
+            that machine, which is what this endpoint is for.
+        branch:
+          type: string
+        commit:
+          type: string
+          description: >
+            The commit the working copy is at. What makes a statement about this
+            code attributable to a version of it.
+        synced_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the mirror was last known to match the remote.
+        sync_error:
+          type: string
+          nullable: true
+          description: >
+            Present when this copy was served but could not be refreshed. The
+            path is real; the code in it is older than the remote.
+      additionalProperties: false
+    ProjectRepoCheckoutResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/ProjectRepoCheckout"
       additionalProperties: false
     ProjectRepoCreateInput:
       type: object
@@ -6662,7 +6789,13 @@ components:
         - no_chunks
         - task_before_chunk
         - corrupt_image
+        - invalid_branch
+        - unknown_branch
+        - unusable_repo_name
         - internal_server_error
+        - workspace_unwritable
+        - workspace_not_configured
+        - repo_unavailable
         - attachment_unwritable
         - attachment_unreadable
     APIError:

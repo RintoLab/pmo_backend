@@ -324,11 +324,40 @@ defmodule RintoPMO.WorkspaceTest do
     end
   end
 
+  describe "sync/1" do
+    test "brings a repository's own branch up to date", %{tmp_dir: tmp_dir} do
+      %{origin: origin, repo: repo} = fixture(tmp_dir)
+
+      assert :ok = Workspace.sync(repo.id)
+
+      assert %ProjectRepo{last_synced_at: %DateTime{}, last_sync_error: nil} = reload(repo)
+
+      assert File.read!(
+               Path.join([Workspace.root(), "acme", "backend", "worktrees", "main", "README.md"])
+             ) == "one\n"
+
+      assert head!(origin, "main")
+    end
+
+    test "is not a failure when the repository is already gone", %{tmp_dir: tmp_dir} do
+      %{repo: repo} = fixture(tmp_dir)
+      Repo.delete!(repo)
+
+      assert :ok = Workspace.sync(repo.id)
+    end
+
+    test "reports a repository that could never be cloned", %{tmp_dir: tmp_dir} do
+      %{repo: repo} = fixture(tmp_dir, git_url: Path.join(tmp_dir, "nowhere"))
+
+      assert {:error, {:git, _reason}} = Workspace.sync(repo.id)
+    end
+  end
+
   describe "the queue" do
     test "runs a checkout in the server process", %{tmp_dir: tmp_dir} do
       %{origin: origin, project: project, repo: repo} = fixture(tmp_dir)
 
-      assert {:ok, checkout} = Workspace.checkout(project, repo)
+      assert {:ok, checkout} = Workspace.checkout(project, repo, [])
 
       assert checkout.commit == head!(origin, "main")
     end

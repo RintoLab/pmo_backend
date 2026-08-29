@@ -110,6 +110,16 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     task_before_chunk:
       {422, "A task heading stands above the first chunk heading, so it belongs to nothing.", %{}},
     corrupt_image: {422, "The image header could not be read.", %{}},
+    invalid_branch: {422, "The branch name is not one git accepts.", %{branch: "--upload-pack"}},
+    unknown_branch: {422, "The repository has no branch by that name.", %{branch: "nope"}},
+    unusable_repo_name:
+      {422, "The repository name cannot be used as a directory. Rename the repository.",
+       %{name: "../etc"}},
+    workspace_not_configured:
+      {503, "The server was started without RINTO_WORKSPACE_ROOT, so it keeps no working copies.",
+       %{}},
+    repo_unavailable: {503, "The repository could not be cloned. See its last_sync_error.", %{}},
+    workspace_unwritable: {500, "The workspace directory could not be written.", %{}},
     too_many_references:
       {422, "Too many references in one request. Ask in smaller batches.",
        %{max: 200, given: 201}},

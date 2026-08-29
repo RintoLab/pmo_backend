@@ -1,9 +1,48 @@
 defmodule RintoPMO.ProjectsTest do
   use RintoPMO.DataCase, async: true
+  use Oban.Testing, repo: RintoPMO.Repo
 
   alias RintoPMO.Projects
   alias RintoPMO.Projects.Project
   alias RintoPMO.Projects.ProjectRepo
+  alias RintoPMO.Workspace.SyncWorker
+
+  describe "registering a repository" do
+    setup do
+      %{project: insert(:project, slug: "acme")}
+    end
+
+    test "queues its first clone", %{project: project} do
+      assert {:ok, project_repo} =
+               Projects.create_project_repo(project, %{
+                 name: "backend",
+                 git_url: "https://example.com/backend.git",
+                 branch: "main"
+               })
+
+      assert_enqueued(worker: SyncWorker, args: %{project_repo_id: project_repo.id})
+    end
+
+    test "queues nothing when the repository was refused", %{project: project} do
+      assert {:error, %Ecto.Changeset{}} =
+               Projects.create_project_repo(project, %{name: "backend"})
+
+      refute_enqueued(worker: SyncWorker)
+    end
+
+    test "refuses a name that cannot be a directory", %{project: project} do
+      for name <- ["../etc", ".git", "-oops", "back/end"] do
+        assert {:error, changeset} =
+                 Projects.create_project_repo(project, %{
+                   name: name,
+                   git_url: "https://example.com/backend.git",
+                   branch: "main"
+                 })
+
+        assert %{name: [_message]} = errors_on(changeset), "#{name} was not refused"
+      end
+    end
+  end
 
   describe "projects" do
     test "creates a project and fetches details with multiple repositories" do

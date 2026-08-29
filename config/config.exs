@@ -23,6 +23,9 @@ config :rinto_pmo,
     projects: RintoPMO.Projects,
     repo_credentials: RintoPMO.RepoCredentials,
     tasks: RintoPMO.Tasks,
+    # The on-disk copies of a project's repositories. Injected so a controller
+    # test can be about the endpoint rather than about git.
+    workspace: RintoPMO.Workspace,
     # Each layer of pi model discovery, so a test of one mocks the next.
     rpc: RintoPMO.Agent.Rpc,
     os_process: RintoPMO.OSProcess,

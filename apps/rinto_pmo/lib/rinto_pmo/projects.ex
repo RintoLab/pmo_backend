@@ -17,8 +17,11 @@ defmodule RintoPMO.Projects do
 
   use RintoPMO, :context
 
+  require Logger
+
   alias RintoPMO.Projects.Project
   alias RintoPMO.Projects.ProjectRepo
+  alias RintoPMO.Workspace.SyncWorker
 
   @default_slug "personal"
 
@@ -161,12 +164,41 @@ defmodule RintoPMO.Projects do
 
   @doc """
   Creates a repository under an active project.
+
+  Queues the first clone, so that a wrong URL or a wrong credential is visible
+  in `last_sync_error` shortly after registering rather than in the middle of
+  the first conversation about the project. Installations with no workspace
+  configured run the job and it refuses, which costs a row and nothing else.
   """
   @impl true
   def create_project_repo(%Project{} = project, attrs) do
-    %ProjectRepo{project_id: project.id}
-    |> ProjectRepo.changeset(attrs)
-    |> Repo.insert()
+    with {:ok, project_repo} <-
+           %ProjectRepo{project_id: project.id}
+           |> ProjectRepo.changeset(attrs)
+           |> Repo.insert() do
+      queue_first_sync(project_repo)
+      {:ok, project_repo}
+    end
+  end
+
+  # The repository is worth more than its working copy. A queue that will not
+  # take the job leaves the row with nothing cloned, which `POST
+  # .../repos/:id/checkout` fixes whenever somebody asks.
+  defp queue_first_sync(%ProjectRepo{} = project_repo) do
+    %{project_repo_id: project_repo.id}
+    |> SyncWorker.new()
+    |> Oban.insert()
+    |> case do
+      {:ok, _job} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "could not queue the first clone of #{project_repo.id}: #{inspect(reason)}"
+        )
+
+        :ok
+    end
   end
 
   @doc """

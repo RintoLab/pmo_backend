@@ -41,7 +41,7 @@ defmodule RintoPMO.Workspace.Server do
   """
   @spec checkout(Project.t(), ProjectRepo.t(), [Workspace.opt()]) ::
           {:ok, Workspace.checkout()} | {:error, Workspace.error()}
-  def checkout(%Project{} = project, %ProjectRepo{} = repo, opts \\ []) do
+  def checkout(%Project{} = project, %ProjectRepo{} = repo, opts) do
     GenServer.call(__MODULE__, {:checkout, project, repo, opts}, @call_timeout)
   end
 
