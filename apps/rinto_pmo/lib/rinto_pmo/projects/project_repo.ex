@@ -26,9 +26,12 @@ defmodule RintoPMO.Projects.ProjectRepo do
     timestamps()
   end
 
-  # The name is also a directory under the workspace root and an argument to
-  # git, so it cannot lead with a dash or climb out of where it belongs.
-  # Requiring an alphanumeric first character settles all of it at once.
+  # Hygiene rather than safety. The workspace addresses a repository by id
+  # precisely so that this name can be edited without orphaning a directory
+  # (`RintoPMO.Workspace`), so nothing downstream depends on its shape -- but it
+  # is what a person types to ask for a repository and what the CLI prints back,
+  # and a name that starts with a dash or a dot reads as a mistake wherever it
+  # appears.
   @name ~r{\A[A-Za-z0-9][A-Za-z0-9._-]*\z}
 
   @doc false

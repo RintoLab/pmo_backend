@@ -4620,9 +4620,10 @@ components:
         name:
           type: string
           description: >
-            Directory name in the agent workspace. Also a git argument, so it
-            has to start with a letter or digit and hold only letters, digits,
-            `.`, `_` and `-`.
+            How people and the CLI name this repository within its project;
+            unique there, and editable. Has to start with a letter or digit and
+            hold only letters, digits, `.`, `_` and `-`. Not where the working
+            copy lives -- that is addressed by id, so renaming costs nothing.
         git_url:
           type: string
           format: uri

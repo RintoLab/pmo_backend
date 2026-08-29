@@ -15,9 +15,17 @@ defmodule RintoPMO.Workspace do
 
   ## One mirror per repository, one worktree per branch
 
-      <root>/<project-slug>/<repo-name>/.mirror/        the only thing that talks to the network
-      <root>/<project-slug>/<repo-name>/worktrees/main/
-      <root>/<project-slug>/<repo-name>/worktrees/feat/x/
+      <root>/<project-slug>/<repo-id>/.mirror/        the only thing that talks to the network
+      <root>/<project-slug>/<repo-id>/worktrees/main/
+      <root>/<project-slug>/<repo-id>/worktrees/feat/x/
+
+  The repository is addressed by id and the project by slug, because those are
+  the two things that cannot change under it. A repository's `name` can be
+  edited, and a name in the path would mean a rename silently orphaned the
+  mirror and re-cloned the whole repository from scratch. A project's slug
+  cannot -- `RintoPMO.Projects.Project` says why -- so it stays, and keeps the
+  layout readable to whoever is looking at the directory to find out what is
+  eating the disk.
 
   A single checkout that switched branches would let two conversations tread on
   each other: one asks about `main`, the other switches to a topic branch, and
@@ -63,10 +71,14 @@ defmodule RintoPMO.Workspace do
   alias RintoPMO.Workspace.Git
   alias RintoPMO.Workspace.Server
 
-  # Both a path component and a git argument, so: no leading dash (which git
-  # would read as a flag), and no component that could climb out of the root.
+  # A path component and a git argument, so: no leading dash (which git would
+  # read as a flag), and no component that could climb out of the root.
   # Requiring an alphanumeric first character settles all of it at once --
   # `..`, `.git` and `-oops` are the same rejection.
+  #
+  # Both values checked with it come from this system rather than from a
+  # caller -- a project's slug and a repository's id. Checked anyway: the cost
+  # is one regular expression, and the thing it would let through is a path.
   @segment ~r{\A[A-Za-z0-9][A-Za-z0-9._-]*\z}
   @branch ~r{\A[A-Za-z0-9][A-Za-z0-9._/-]*\z}
   @max_branch_bytes 200
@@ -193,12 +205,12 @@ defmodule RintoPMO.Workspace do
   def perform_checkout(%Project{} = project, %ProjectRepo{} = repo, opts \\ []) do
     with {:ok, root} <- ensure_root(),
          {:ok, slug} <- validate_segment(project.slug),
-         {:ok, name} <- validate_segment(repo.name),
+         {:ok, id} <- validate_segment(repo.id),
          {:ok, branch} <- validate_branch(Keyword.get(opts, :branch) || repo.branch),
          {:ok, askpass} <- ensure_askpass(root) do
       repo = Repo.preload(repo, :credential)
-      mirror = Path.join([root, slug, name, ".mirror"])
-      worktrees = Path.join([root, slug, name, "worktrees"])
+      mirror = Path.join([root, slug, id, ".mirror"])
+      worktrees = Path.join([root, slug, id, "worktrees"])
       worktree = Path.join([worktrees | Path.split(branch)])
 
       context = %{

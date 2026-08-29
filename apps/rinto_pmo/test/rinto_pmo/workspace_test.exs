@@ -99,8 +99,24 @@ defmodule RintoPMO.WorkspaceTest do
 
       assert {:ok, checkout} = Workspace.perform_checkout(project, repo)
 
-      assert checkout.path == Path.join([root, "acme", "backend", "worktrees", "main"])
-      assert File.dir?(Path.join([root, "acme", "backend", ".mirror"]))
+      assert checkout.path == Path.join([root, "acme", repo.id, "worktrees", "main"])
+      assert File.dir?(Path.join([root, "acme", repo.id, ".mirror"]))
+    end
+
+    test "survives the repository being renamed", %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo} = fixture(tmp_dir)
+      assert {:ok, first} = Workspace.perform_checkout(project, repo)
+      %ProjectRepo{last_synced_at: cloned_at} = reload(repo)
+
+      {:ok, renamed} =
+        repo |> reload() |> ProjectRepo.changeset(%{name: "server"}) |> Repo.update()
+
+      assert {:ok, again} = Workspace.perform_checkout(project, renamed)
+
+      # Same directory, and nothing was cloned a second time: the name was never
+      # what the working copy was filed under.
+      assert again.path == first.path
+      assert %ProjectRepo{last_synced_at: ^cloned_at} = reload(repo)
     end
 
     test "records when it happened", %{tmp_dir: tmp_dir} do
@@ -259,7 +275,7 @@ defmodule RintoPMO.WorkspaceTest do
 
       assert {:error, _reason} = Workspace.perform_checkout(project, repo)
 
-      refute File.exists?(Path.join([Workspace.root(), "acme", "backend", ".mirror"]))
+      refute File.exists?(Path.join([Workspace.root(), "acme", repo.id, ".mirror"]))
     end
   end
 
@@ -288,7 +304,7 @@ defmodule RintoPMO.WorkspaceTest do
       assert recorded == "https://git-bot@127.0.0.1:1/owner/repo.git"
       refute recorded =~ "s3cr3t-token"
 
-      config = File.read!(Path.join([Workspace.root(), "acme", "backend", ".mirror", "config"]))
+      config = File.read!(Path.join([Workspace.root(), "acme", repo.id, ".mirror", "config"]))
       refute config =~ "s3cr3t-token"
     end
 
@@ -333,7 +349,7 @@ defmodule RintoPMO.WorkspaceTest do
       assert %ProjectRepo{last_synced_at: %DateTime{}, last_sync_error: nil} = reload(repo)
 
       assert File.read!(
-               Path.join([Workspace.root(), "acme", "backend", "worktrees", "main", "README.md"])
+               Path.join([Workspace.root(), "acme", repo.id, "worktrees", "main", "README.md"])
              ) == "one\n"
 
       assert head!(origin, "main")
@@ -413,7 +429,7 @@ defmodule RintoPMO.WorkspaceTest do
       assert {:ok, _main} = Workspace.perform_checkout(project, reload(repo))
 
       refute File.exists?(Path.dirname(topic.path))
-      assert File.dir?(Path.join([Workspace.root(), "acme", "backend", "worktrees"]))
+      assert File.dir?(Path.join([Workspace.root(), "acme", repo.id, "worktrees"]))
     end
 
     test "leaves the mirror able to hand out that branch again", %{tmp_dir: tmp_dir} do
