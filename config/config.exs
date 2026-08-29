@@ -161,7 +161,11 @@ config :rinto_pmo, RintoPMO.Workspace,
   clone_timeout: :timer.minutes(2),
   # Everything that touches only the disk: rev-parse, worktree, reset. Slow only
   # if the machine is in trouble.
-  local_timeout: :timer.seconds(15)
+  local_timeout: :timer.seconds(15),
+  # How long a branch nobody has asked about keeps its working tree. Short on
+  # purpose: rebuilding one is a single local `worktree add`, while keeping one
+  # is a whole checkout of disk held for a conversation that has moved on.
+  worktree_retention_ms: :timer.hours(72)
 
 config :rinto_pmo, RintoPMO.Conversations,
   # Simultaneously running pi processes. Topics are unlimited; processes are

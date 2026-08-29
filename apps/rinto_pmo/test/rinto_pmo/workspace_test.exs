@@ -353,6 +353,83 @@ defmodule RintoPMO.WorkspaceTest do
     end
   end
 
+  describe "sweeping worktrees" do
+    # Recorded, not inferred: `reset --hard` on a worktree already at the right
+    # commit leaves the directory untouched, so a test that waited for real time
+    # to pass would still be testing the wrong thing.
+    defp age!(path, days) do
+      File.touch!(path, System.os_time(:second) - days * 24 * 60 * 60)
+    end
+
+    test "removes a branch nobody has asked about in days", %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo} = fixture(tmp_dir)
+      assert {:ok, topic} = Workspace.perform_checkout(project, repo, branch: "feat/x")
+      age!(topic.path, 4)
+
+      assert {:ok, main} = Workspace.perform_checkout(project, reload(repo))
+
+      refute File.exists?(topic.path)
+      assert File.dir?(main.path)
+    end
+
+    test "keeps one that was asked about recently", %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo} = fixture(tmp_dir)
+      assert {:ok, topic} = Workspace.perform_checkout(project, repo, branch: "feat/x")
+      age!(topic.path, 2)
+
+      assert {:ok, _main} = Workspace.perform_checkout(project, reload(repo))
+
+      assert File.dir?(topic.path)
+    end
+
+    test "never sweeps the one it was just asked for", %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo} = fixture(tmp_dir)
+      assert {:ok, first} = Workspace.perform_checkout(project, repo)
+      age!(first.path, 30)
+
+      assert {:ok, again} = Workspace.perform_checkout(project, reload(repo))
+
+      assert again.path == first.path
+      assert File.dir?(again.path)
+    end
+
+    test "a checkout is what marks a branch as still wanted", %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo} = fixture(tmp_dir)
+      assert {:ok, topic} = Workspace.perform_checkout(project, repo, branch: "feat/x")
+      age!(topic.path, 30)
+
+      # Asked for again, so the next sweep must not take it.
+      assert {:ok, _topic} = Workspace.perform_checkout(project, reload(repo), branch: "feat/x")
+      assert {:ok, _main} = Workspace.perform_checkout(project, reload(repo))
+
+      assert File.dir?(topic.path)
+    end
+
+    test "takes the directories a nested branch name left behind", %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo} = fixture(tmp_dir)
+      assert {:ok, topic} = Workspace.perform_checkout(project, repo, branch: "feat/x")
+      age!(topic.path, 4)
+
+      assert {:ok, _main} = Workspace.perform_checkout(project, reload(repo))
+
+      refute File.exists?(Path.dirname(topic.path))
+      assert File.dir?(Path.join([Workspace.root(), "acme", "backend", "worktrees"]))
+    end
+
+    test "leaves the mirror able to hand out that branch again", %{tmp_dir: tmp_dir} do
+      %{origin: origin, project: project, repo: repo} = fixture(tmp_dir)
+      assert {:ok, topic} = Workspace.perform_checkout(project, repo, branch: "feat/x")
+      age!(topic.path, 4)
+      assert {:ok, _main} = Workspace.perform_checkout(project, reload(repo))
+
+      assert {:ok, again} = Workspace.perform_checkout(project, reload(repo), branch: "feat/x")
+
+      assert again.path == topic.path
+      assert again.commit == head!(origin, "feat/x")
+      assert File.exists?(Path.join(again.path, "topic.md"))
+    end
+  end
+
   describe "the queue" do
     test "runs a checkout in the server process", %{tmp_dir: tmp_dir} do
       %{origin: origin, project: project, repo: repo} = fixture(tmp_dir)

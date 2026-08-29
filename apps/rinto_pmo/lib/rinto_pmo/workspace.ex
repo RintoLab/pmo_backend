@@ -36,6 +36,17 @@ defmodule RintoPMO.Workspace do
   is discussing costs nothing. The TTL exists because a repository may live on
   the public internet, where even a fetch that finds nothing costs a round trip.
 
+  ## Worktrees are swept, not kept
+
+  A worktree nobody has asked about in `:worktree_retention_ms` is removed on
+  the way out of the next checkout of that repository. There is no timer here
+  either: a branch is rebuilt by one local `worktree add`, so keeping one costs
+  more than losing one.
+
+  What counts as "asked about" is recorded rather than inferred -- see
+  `stamp/1`. git cannot answer it: worktrees here are detached, and
+  `worktree list` reports a commit and a path but never a branch.
+
   ## A failed fetch is reported, not fatal
 
   If the mirror already exists, a fetch that fails leaves the previous snapshot
@@ -187,13 +198,26 @@ defmodule RintoPMO.Workspace do
          {:ok, askpass} <- ensure_askpass(root) do
       repo = Repo.preload(repo, :credential)
       mirror = Path.join([root, slug, name, ".mirror"])
-      worktree = Path.join([root, slug, name, "worktrees" | Path.split(branch)])
-      context = %{repo: repo, mirror: mirror, askpass: askpass, root: root}
+      worktrees = Path.join([root, slug, name, "worktrees"])
+      worktree = Path.join([worktrees | Path.split(branch)])
+
+      context = %{
+        repo: repo,
+        mirror: mirror,
+        worktrees: worktrees,
+        askpass: askpass,
+        root: root
+      }
 
       with {:ok, repo} <- ensure_mirror(context),
            {:ok, repo} <- refresh(%{context | repo: repo}, Keyword.get(opts, :force, false)),
            {:ok, commit} <- resolve(context, branch),
            {:ok, path} <- ensure_worktree(context, worktree, branch) do
+        # In that order: the one just asked for is stamped before anything is
+        # judged old, so it can never be swept by the same call that made it.
+        stamp(path)
+        sweep(context, path)
+
         {:ok,
          %{
            path: path,
@@ -357,6 +381,16 @@ defmodule RintoPMO.Workspace do
     add_worktree(context, path, branch)
   end
 
+  # `--detach` is not a style choice. In a `--mirror` clone `refs/heads/*` are
+  # the upstream's own refs, and git refuses to fetch into a branch that a
+  # worktree has checked out:
+  #
+  #     fatal: refusing to fetch into branch 'refs/heads/main' checked out at ...
+  #
+  # So a worktree attached to its branch would break the next fetch of the whole
+  # repository -- and only the *next* one, which is the kind of failure that
+  # gets attributed to anything but the worktree that caused it. Detached, the
+  # branch is only ever a starting point that `reset --hard` re-reads.
   defp add_worktree(%{mirror: mirror} = context, path, branch) do
     case File.mkdir_p(Path.dirname(path)) do
       :ok ->
@@ -370,6 +404,91 @@ defmodule RintoPMO.Workspace do
       {:error, reason} ->
         {:error, {:root_unavailable, reason}}
     end
+  end
+
+  ## Sweeping
+
+  # A worktree costs a working tree's worth of disk and is rebuilt by one local
+  # `worktree add`, so keeping one nobody has asked about is the expensive side
+  # of the trade. Swept on the way out of a checkout rather than on a timer, for
+  # the same reason fetching is lazy: a repository nobody is discussing should
+  # cost nothing at all.
+  #
+  # Nothing here can fail a checkout. The caller already has its answer, and a
+  # directory that could not be removed is worth strictly less than the path it
+  # would take down with it.
+  defp sweep(%{mirror: mirror, worktrees: worktrees} = context, keep) do
+    cutoff = System.os_time(:second) - div(setting(:worktree_retention_ms), 1_000)
+
+    case Enum.filter(existing(worktrees), &(&1 != keep and last_used(&1) < cutoff)) do
+      [] ->
+        :ok
+
+      stale ->
+        Enum.each(stale, &File.rm_rf/1)
+        _ = Git.run(["-C", mirror, "worktree", "prune"], local_opts(context))
+        collect_empty(worktrees)
+        :ok
+    end
+  rescue
+    # File.stat on something that vanished mid-walk, a permission change, a
+    # layout from an older version of this module. None of it is the caller's
+    # problem, and all of it comes back next time.
+    _error -> :ok
+  end
+
+  # Every worktree under `dir`, found by the `.git` file git leaves in each one.
+  # git itself cannot answer this: `worktree list` reports a detached HEAD and a
+  # path, never the branch, so which directory belongs to which branch is this
+  # module's convention rather than something to ask about.
+  defp existing(dir) do
+    case File.ls(dir) do
+      {:ok, entries} -> entries |> Enum.map(&Path.join(dir, &1)) |> Enum.flat_map(&under/1)
+      {:error, _reason} -> []
+    end
+  end
+
+  defp under(path) do
+    cond do
+      not File.dir?(path) -> []
+      File.exists?(Path.join(path, ".git")) -> [path]
+      # A branch name with a slash is a directory of worktrees.
+      true -> existing(path)
+    end
+  end
+
+  # Recorded rather than inferred: `reset --hard` on a worktree that is already
+  # at the right commit changes nothing on disk, so a directory's own mtime says
+  # when its contents last *changed*, not when anybody last asked for it. Only
+  # the directory is touched -- a marker file inside a worktree would be read as
+  # part of the project.
+  defp stamp(path), do: File.touch(path)
+
+  defp last_used(path) do
+    case File.stat(path, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} -> mtime
+      # Unreadable counts as fresh: refusing to judge is the safe direction,
+      # because the mistake this makes is keeping something a little longer.
+      {:error, _reason} -> System.os_time(:second)
+    end
+  end
+
+  # The directories a nested branch name left behind. Deepest first, so
+  # `feat/x` going away takes `feat/` with it in the same pass.
+  defp collect_empty(dir) do
+    case File.ls(dir) do
+      {:ok, entries} -> Enum.each(entries, &collect_empty_child(Path.join(dir, &1)))
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp collect_empty_child(path) do
+    if File.dir?(path) do
+      collect_empty(path)
+      if File.ls(path) == {:ok, []}, do: File.rmdir(path)
+    end
+
+    :ok
   end
 
   ## Recording
@@ -479,4 +598,5 @@ defmodule RintoPMO.Workspace do
   defp default(:fetch_timeout), do: :timer.seconds(5)
   defp default(:clone_timeout), do: :timer.minutes(2)
   defp default(:local_timeout), do: :timer.seconds(15)
+  defp default(:worktree_retention_ms), do: :timer.hours(72)
 end
