@@ -258,6 +258,47 @@ defmodule RintoPMOWeb.V1.ProjectRepoControllerTest do
     end
   end
 
+  describe "POST /api/v1/projects/:slug/repos/:id/sync" do
+    test "queues the work and answers with the job", %{conn: conn} do
+      %{project: project, repo: repo} = expect_repo()
+
+      expect(WorkspaceMock, :request_sync, fn ^repo ->
+        {:ok, queued_job(repo)}
+      end)
+
+      conn = post(conn, ~p"/api/v1/projects/#{project.slug}/repos/#{repo.id}/sync")
+
+      assert %{"id" => 42, "worker" => "RintoPMO.Workspace.SyncWorker", "status" => "running"} =
+               json_response(conn, 202)["data"]
+    end
+
+    test "says so when this server keeps no working copies", %{conn: conn} do
+      %{project: project, repo: repo} = expect_repo()
+
+      expect(WorkspaceMock, :request_sync, fn _repo -> {:error, :not_configured} end)
+
+      conn = post(conn, ~p"/api/v1/projects/#{project.slug}/repos/#{repo.id}/sync")
+
+      assert %{"error" => "workspace_not_configured"} = json_response(conn, 503)
+    end
+  end
+
+  # Built rather than inserted: the controller only reads it, and Oban's queues
+  # are off in test so nothing would run it anyway.
+  defp queued_job(repo) do
+    %Oban.Job{
+      id: 42,
+      worker: "RintoPMO.Workspace.SyncWorker",
+      queue: "default",
+      state: "available",
+      args: %{"project_repo_id" => repo.id},
+      errors: [],
+      priority: 0,
+      inserted_at: ~U[2026-08-29 10:00:00.000000Z],
+      scheduled_at: ~U[2026-08-29 10:00:00.000000Z]
+    }
+  end
+
   defp checkout(overrides) do
     Enum.into(overrides, %{
       path: "/srv/workspace/acme/backend/worktrees/main",

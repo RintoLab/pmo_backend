@@ -49,6 +49,17 @@ config :rinto_pmo, RintoPMO.Attachments,
       "rinto-pmo-attachments-test#{System.get_env("MIX_TEST_PARTITION")}"
     )
 
+# Configured, so that the paths which only queue work -- registering a
+# repository -- behave here the way they do on a server with a workspace.
+# Nothing writes here unless a test asks for a checkout, and the tests that do
+# point the root at their own temporary directory.
+config :rinto_pmo, RintoPMO.Workspace,
+  root:
+    Path.join(
+      System.tmp_dir!(),
+      "rinto-pmo-workspace-test#{System.get_env("MIX_TEST_PARTITION")}"
+    )
+
 # Keeps the application's own catalog off pi. Tests that exercise discovery
 # start a catalog of their own with a `:discover` of their choosing.
 config :rinto_pmo, RintoPMO.Agent.ModelCatalog, load_on_start: false

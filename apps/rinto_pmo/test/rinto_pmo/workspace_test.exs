@@ -2,9 +2,11 @@ defmodule RintoPMO.WorkspaceTest do
   # Not async: the workspace root is application configuration, and the server
   # this exercises is the one the supervision tree started.
   use RintoPMO.DataCase, async: false
+  use Oban.Testing, repo: RintoPMO.Repo
 
   alias RintoPMO.Projects.ProjectRepo
   alias RintoPMO.Workspace
+  alias RintoPMO.Workspace.SyncWorker
 
   @moduletag :tmp_dir
 
@@ -337,6 +339,30 @@ defmodule RintoPMO.WorkspaceTest do
 
       assert second.path == first.path
       assert File.read!(Path.join(second.path, "README.md")) == "one\n"
+    end
+  end
+
+  describe "request_sync/1" do
+    test "queues the work and answers with the job", %{tmp_dir: tmp_dir} do
+      %{repo: repo} = fixture(tmp_dir)
+
+      assert {:ok, %Oban.Job{}} = Workspace.request_sync(repo)
+      assert_enqueued(worker: SyncWorker, args: %{project_repo_id: repo.id})
+    end
+
+    test "answers the same when one is already queued", %{tmp_dir: tmp_dir} do
+      %{repo: repo} = fixture(tmp_dir)
+
+      assert {:ok, %Oban.Job{id: id}} = Workspace.request_sync(repo)
+      assert {:ok, %Oban.Job{id: ^id}} = Workspace.request_sync(repo)
+    end
+
+    test "queues nothing on a server that keeps no working copies", %{tmp_dir: tmp_dir} do
+      %{repo: repo} = fixture(tmp_dir)
+      configure(root: nil)
+
+      assert {:error, :not_configured} = Workspace.request_sync(repo)
+      refute_enqueued(worker: SyncWorker)
     end
   end
 

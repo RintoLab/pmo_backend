@@ -1,7 +1,9 @@
 defmodule RintoPMOWeb.V1.ProjectRepoController do
   use RintoPMOWeb, :controller
 
+  alias RintoPMO.Jobs
   alias RintoPMO.Utils
+  alias RintoPMOWeb.V1.JobJSON
 
   def index(conn, %{"project_slug" => project_slug}) do
     context = Utils.module(:projects)
@@ -42,6 +44,36 @@ defmodule RintoPMOWeb.V1.ProjectRepoController do
     end
   end
 
+  @doc """
+  Asks for this repository's working copy to be brought up to date.
+
+  Answers `202` with the *job*, not the result: a first clone of a repository on
+  the public internet is tens of seconds, and nothing should hold a browser open
+  for it. Watch `last_synced_at` and `last_sync_error` on the repository itself
+  for the outcome, or `GET /jobs/{job_id}` for the attempt.
+
+  This is the one somebody presses after fixing a credential.
+  `POST .../checkout` is the agent's: it waits, because it needs the path.
+  """
+  def sync(conn, %{"project_slug" => project_slug, "id" => id}) do
+    context = Utils.module(:projects)
+    project = context.get_active_project_by_slug!(project_slug)
+    project_repo = context.get_project_repo!(project, id)
+
+    case Utils.module(:workspace).request_sync(project_repo) do
+      # Answered the same whether this call queued the job or found one already
+      # queued: a second press is one clone.
+      {:ok, job} ->
+        conn
+        |> put_status(:accepted)
+        |> put_view(JobJSON)
+        |> render(:show, job: Jobs.describe(job))
+
+      {:error, reason} ->
+        refusal(reason)
+    end
+  end
+
   # Where a branch of this repository is on this machine. Clones or fetches
   # first when it has to, so freshness is a postcondition of being told a path
   # rather than something a caller has to arrange separately.
@@ -72,6 +104,8 @@ defmodule RintoPMOWeb.V1.ProjectRepoController do
   defp refusal({:invalid_name, name}), do: {:error, :unusable_repo_name, %{name: name}}
   defp refusal({:root_unavailable, _reason}), do: {:error, :workspace_unwritable}
   defp refusal({:git, _reason}), do: {:error, :repo_unavailable}
+  # Oban answering with a changeset. Nothing the caller did.
+  defp refusal(%Ecto.Changeset{}), do: {:error, :internal_server_error}
 
   def delete(conn, %{"project_slug" => project_slug, "id" => id}) do
     context = Utils.module(:projects)

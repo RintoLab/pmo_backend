@@ -70,6 +70,7 @@ defmodule RintoPMO.Workspace do
   alias RintoPMO.Projects.ProjectRepo
   alias RintoPMO.Workspace.Git
   alias RintoPMO.Workspace.Server
+  alias RintoPMO.Workspace.SyncWorker
 
   # A path component and a git argument, so: no leading dash (which git would
   # read as a flag), and no component that could climb out of the root.
@@ -127,6 +128,8 @@ defmodule RintoPMO.Workspace do
 
     @callback checkout(Project.t(), ProjectRepo.t(), [RintoPMO.Workspace.opt()]) ::
                 {:ok, RintoPMO.Workspace.checkout()} | {:error, RintoPMO.Workspace.error()}
+    @callback request_sync(ProjectRepo.t()) ::
+                {:ok, Oban.Job.t()} | {:error, RintoPMO.Workspace.error()}
   end
 
   @behaviour Behaviour
@@ -171,6 +174,33 @@ defmodule RintoPMO.Workspace do
           {:ok, checkout()} | {:error, error()}
   def checkout(%Project{} = project, %ProjectRepo{} = repo, opts) do
     Server.checkout(project, repo, opts)
+  end
+
+  @doc """
+  Queues a sync of one repository, and answers with the job.
+
+  For a person: registering a repository, and the button somebody presses after
+  fixing a credential. Both want to know it was accepted, not to wait -- a first
+  clone of a repository on the public internet is tens of seconds, and nothing
+  should hold a browser open for it.
+
+  Refused rather than queued when there is no workspace: a job that exists only
+  to fail says an installation is broken when it is merely not using this.
+
+  Answered the same whether this call queued the job or found one already
+  queued. A second press is one clone, and a caller handed the same id twice
+  needs no branch for it.
+  """
+  @impl Behaviour
+  @spec request_sync(ProjectRepo.t()) :: {:ok, Oban.Job.t()} | {:error, error()}
+  def request_sync(%ProjectRepo{} = repo) do
+    if configured?() do
+      %{project_repo_id: repo.id}
+      |> SyncWorker.new()
+      |> Oban.insert()
+    else
+      {:error, :not_configured}
+    end
   end
 
   @doc """

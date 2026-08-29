@@ -569,6 +569,52 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
+  /projects/{slug}/repos/{id}/sync:
+    parameters:
+      - $ref: "#/components/parameters/ProjectSlug"
+      - $ref: "#/components/parameters/ProjectRepoId"
+    post:
+      tags: [Project Repositories]
+      operationId: syncProjectRepo
+      summary: Ask for this repository's working copy to be brought up to date
+      description: >
+        Queues the work and answers `202` with the *job*, not the result. A first
+        clone of a repository on the public internet is tens of seconds, and
+        nothing should hold a browser open for it.
+
+
+        This is the one a person presses -- after fixing a credential, or after
+        registering a repository on a server that could not reach it the first
+        time. Watch `last_synced_at` and `last_sync_error` on the repository for
+        the outcome, or `GET /jobs/{job_id}` for the attempt.
+
+
+        `POST .../checkout` is the agent's version: it waits, because it needs
+        the path. A caller that does not need a path should use this one.
+
+
+        Answered the same whether this call queued the job or found one already
+        queued: a second press is one clone, and a caller handed the same id
+        twice needs no branch for it.
+      responses:
+        "202":
+          description: The sync was queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: >
+            `workspace_not_configured` -- this server was started without
+            `RINTO_WORKSPACE_ROOT`, so it keeps no working copies. Refused rather
+            than queued: a job that exists only to fail says an installation is
+            broken when it is merely not using this.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /projects/{slug}/tasks:
     parameters:
       - $ref: "#/components/parameters/ProjectSlug"

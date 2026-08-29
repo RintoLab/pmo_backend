@@ -70,6 +70,10 @@ defmodule RintoPMOWeb.Router do
       # workspace: nothing else tells a caller a path.
       post "/repos/:id/checkout", ProjectRepoController, :checkout
 
+      # The same work, asked for by a person: queued, answered with the job.
+      # See the controller for why the two are not one endpoint.
+      post "/repos/:id/sync", ProjectRepoController, :sync
+
       # The backlog is a property of a project, so filing and browsing happen
       # here. Everything done *to* one task lives at `/tasks/:id` -- an agent
       # that pulled a task out of the pool holds its id and not the slug it
