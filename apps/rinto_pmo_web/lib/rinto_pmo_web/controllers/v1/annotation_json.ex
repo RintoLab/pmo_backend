@@ -19,8 +19,11 @@ defmodule RintoPMOWeb.V1.AnnotationJSON do
       block_text: annotation.block_text,
       selected_text: annotation.selected_text,
       content: annotation.content,
-      status: annotation.status,
-      resolved_by_revision_id: annotation.resolved_by_revision_id,
+      # Null is "nobody has said this is over". There is no third value and no
+      # derived one: what a person has not got to yet is not something the
+      # server is in a position to know.
+      confirmed_at: annotation.confirmed_at,
+      confirmed_by_revision_id: annotation.confirmed_by_revision_id,
       inserted_at: annotation.inserted_at,
       updated_at: annotation.updated_at
     }

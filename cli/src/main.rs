@@ -16,6 +16,7 @@ mod config;
 mod doc;
 mod error;
 mod project;
+mod repo;
 mod schedule;
 mod search;
 mod skill;
@@ -47,6 +48,9 @@ enum Command {
     /// Discover projects and their repositories
     #[command(subcommand)]
     Project(project::ProjectCommand),
+    /// Put a project's code on this machine and say where it is
+    #[command(subcommand)]
+    Repo(repo::RepoCommand),
     /// Find, claim, and update project tasks
     #[command(subcommand)]
     Task(task::TaskCommand),
@@ -72,6 +76,7 @@ fn main() {
         Command::Config(command) => config::run(command),
         Command::Doc(command) => doc::run(command),
         Command::Project(command) => project::run(command),
+        Command::Repo(command) => repo::run(command),
         Command::Task(command) => task::run(command),
         Command::Schedule(args) => schedule::run(args),
         Command::History(args) => schedule::run_history(args),

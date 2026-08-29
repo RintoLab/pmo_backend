@@ -480,6 +480,149 @@ paths:
           description: Project repository deleted
         "404":
           $ref: "#/components/responses/NotFound"
+  /projects/{slug}/repos/{id}/checkout:
+    parameters:
+      - $ref: "#/components/parameters/ProjectSlug"
+      - $ref: "#/components/parameters/ProjectRepoId"
+    post:
+      tags: [Project Repositories]
+      operationId: checkoutProjectRepo
+      summary: Where a branch of this repository is on the server
+      description: >
+        Makes a branch available in the server's workspace and answers with its
+        path, the commit it is at, and when the mirror was last known to match
+        the remote. Clones the repository if it has never been cloned, and
+        fetches if the last fetch was longer ago than the server's interval, so
+        freshness is a postcondition of being told a path rather than something
+        a caller arranges separately.
+
+
+        This is the only endpoint that reports a path. The directory is
+        read-only: nothing writes in it, and a caller that does will have its
+        changes thrown away by the next checkout.
+
+
+        A `sync_error` alongside a `200` means the copy could be served but not
+        refreshed -- the path is real and the code in it is older than the
+        remote. Say so rather than describing it as current.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                branch:
+                  type: string
+                  description: >
+                    Which branch is being asked about. A repository has no
+                    branch of its own -- that is a property of the question, not
+                    of the registration, and nothing else holds one either --
+                    so leaving this out means whatever the remote currently
+                    calls its default, read fresh each time. It applies to this
+                    call only: nothing carries a branch between requests, which
+                    is what makes the same arguments always mean the same code.
+                    Validated against what git accepts as a ref, so a name that
+                    could be read as a flag is refused rather than passed on.
+                force:
+                  type: boolean
+                  default: false
+                  description: >
+                    Fetch even if the last one was recent. For a person who has
+                    just pushed, or has just fixed a credential -- not for a
+                    caller reading code, which should let the interval do its
+                    work.
+              additionalProperties: false
+      responses:
+        "200":
+          description: Where the branch is, and how current
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectRepoCheckoutResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            `invalid_branch` -- the name is not one git accepts, with the name in
+            `details.branch`; `unknown_branch` -- the repository has no branch by
+            that name; `no_default_branch` -- no `branch` was given and the
+            remote names no default to fall back on, which is fixed by naming
+            one; or `unusable_repo_name` -- the repository's own name cannot be
+            a directory, which is fixed by renaming the repository.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "500":
+          description: >
+            `workspace_unwritable` -- the workspace directory could not be
+            written. An operator's problem: the root is missing, or not writable
+            by the user the release runs as.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "503":
+          description: >
+            `workspace_not_configured` -- this server was started without
+            `RINTO_WORKSPACE_ROOT`, so it keeps no working copies and never will
+            until somebody configures one; or `repo_unavailable` -- the
+            repository has never been cloned and could not be.
+
+
+            git's own words are not in the response. They are on the repository
+            as `last_sync_error`, which survives the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+  /projects/{slug}/repos/{id}/sync:
+    parameters:
+      - $ref: "#/components/parameters/ProjectSlug"
+      - $ref: "#/components/parameters/ProjectRepoId"
+    post:
+      tags: [Project Repositories]
+      operationId: syncProjectRepo
+      summary: Ask for this repository's working copy to be brought up to date
+      description: >
+        Queues the work and answers `202` with the *job*, not the result. A first
+        clone of a repository on the public internet is tens of seconds, and
+        nothing should hold a browser open for it.
+
+
+        This is the one a person presses -- after fixing a credential, or after
+        registering a repository on a server that could not reach it the first
+        time. Watch `last_synced_at` and `last_sync_error` on the repository for
+        the outcome, or `GET /jobs/{job_id}` for the attempt.
+
+
+        `POST .../checkout` is the agent's version: it waits, because it needs
+        the path. A caller that does not need a path should use this one.
+
+
+        Answered the same whether this call queued the job or found one already
+        queued: a second press is one clone, and a caller handed the same id
+        twice needs no branch for it.
+      responses:
+        "202":
+          description: The sync was queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: >
+            `workspace_not_configured` -- this server was started without
+            `RINTO_WORKSPACE_ROOT`, so it keeps no working copies. Refused rather
+            than queued: a job that exists only to fail says an installation is
+            broken when it is merely not using this.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /projects/{slug}/tasks:
     parameters:
       - $ref: "#/components/parameters/ProjectSlug"
@@ -1195,22 +1338,14 @@ paths:
                 format: uuid
               - type: string
                 enum: [none]
-        - name: status
-          in: query
-          required: false
-          description: Filter by lifecycle status. Combines with `block_id`.
-          schema:
-            type: string
-            enum: [open, resolved, dismissed]
-        - name: pending_conclusion
+        - name: confirmed
           in: query
           required: false
           description: >
-            When true, returns only annotations still `open` that carry a reply
-            drawn from a conversation -- the AI has finished and a human has
-            not decided. Deliberately not keyed on whether anyone has read it:
-            clearing the marker on read would hide it at exactly the moment
-            intervention matters most.
+            `false` returns the threads nobody has marked as over, which is
+            what "still unsettled on this document" means. Combines with
+            `block_id`. There is no third value and nothing derived: what a
+            person has not got to yet is not something the server knows.
           schema:
             type: boolean
       responses:
@@ -1302,26 +1437,38 @@ paths:
           description: Annotation deleted
         "404":
           $ref: "#/components/responses/NotFound"
-  /documents/{document_id}/annotations/{id}/resolve:
+  /documents/{document_id}/annotations/{id}/confirm:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
       - $ref: "#/components/parameters/AnnotationId"
     post:
       tags: [Annotations]
-      operationId: resolveAnnotation
-      summary: Mark an annotation resolved
+      operationId: confirmAnnotation
+      summary: Mark an annotation as settled
       description: >
-        Status lives behind its own actions rather than the update payload, so
-        that editing an annotation's wording cannot silently close it.
+        A person saying this thread is over. It lives behind its own action
+        rather than in the update payload, so that editing an annotation's
+        wording cannot silently close it.
+
+
+        One verb and not two. `confirmed_by_revision_id` present means a change
+        to the document answered this; absent means somebody looked and decided
+        none was needed. Both are the same decision, so the difference is the
+        pointer rather than a second state name.
+
+
+        Confirming an already-confirmed annotation leaves `confirmed_at` where
+        it was and only updates the pointer: the mark records when somebody
+        first said this was over, and saying it again is not a second ending.
       requestBody:
         required: false
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AnnotationResolveInput"
+              $ref: "#/components/schemas/AnnotationConfirmInput"
       responses:
         "200":
-          description: Annotation resolved
+          description: Annotation confirmed
           content:
             application/json:
               schema:
@@ -1330,39 +1477,20 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
-  /documents/{document_id}/annotations/{id}/dismiss:
-    parameters:
-      - $ref: "#/components/parameters/DocumentId"
-      - $ref: "#/components/parameters/AnnotationId"
-    post:
+    delete:
       tags: [Annotations]
-      operationId: dismissAnnotation
-      summary: Mark an annotation dismissed
+      operationId: unconfirmAnnotation
+      summary: Take the mark off an annotation
       description: >
-        Considered and declined: the "no" that is not a deletion. The opinion
-        and its replies survive, and the topics that discussed it keep pointing
-        at something real. Clears `resolved_by_revision_id`, since no revision
-        settled an annotation nobody acted on.
-      responses:
-        "200":
-          description: Annotation dismissed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AnnotationResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-  /documents/{document_id}/annotations/{id}/reopen:
-    parameters:
-      - $ref: "#/components/parameters/DocumentId"
-      - $ref: "#/components/parameters/AnnotationId"
-    post:
-      tags: [Annotations]
-      operationId: reopenAnnotation
-      summary: Return an annotation to open
-      description: Clears `resolved_by_revision_id`; nothing settles the annotation any more.
+        The thread is open again. Clears `confirmed_by_revision_id` with it:
+        whatever settled this no longer does, and a pointer left behind would
+        claim a decision that has been taken back.
+
+
+        `DELETE` on the same path rather than a third verb, the way a day's
+        leave is set and cleared. Deleting the *annotation* is a different
+        thing and stays a different thing -- it takes the replies with it and
+        leaves the topics that cited it pointing at nothing.
       responses:
         "200":
           description: Annotation reopened
@@ -1374,6 +1502,55 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/annotations/{id}/reply:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/AnnotationId"
+    post:
+      tags: [Annotations]
+      operationId: replyToAnnotationWithAI
+      summary: Ask the AI to answer this annotation
+      description: >
+        The only thing that writes a reply here that is not a person. One
+        request, one reply, appended to the thread like any other and credited
+        to whichever actor holds the `annotation_actor` role.
+
+
+        Nothing works out on its own whether a discussion has concluded,
+        because the asking is the boundary: somebody clicked, so somebody wants
+        an answer to this note. Conversations never write here -- a topic
+        produces proposals against the document, which is a different output on
+        a different resource.
+
+
+        Answers with the **job**, before the model has been asked. What a
+        client does next is watch `document:{id}` for `annotation_reply`;
+        `GET /jobs/{job_id}` is the way back if it was not listening. The reply
+        itself is read with `GET .../annotations/{id}`.
+
+
+        Asking twice appends twice -- replies are a list, and a second opinion
+        is a second opinion. A double-click is not two calls: while one is in
+        flight, the job already queued comes back. A confirmed annotation is
+        not refused; wanting the model's read on a decision already taken is
+        nobody else's business.
+      responses:
+        "202":
+          description: The reply was queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            No actor holds the `annotation_actor` role. Set one with
+            `PUT /settings/annotation_actor`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /documents/{document_id}/annotations/{id}/conversations:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -1478,12 +1655,13 @@ paths:
       summary: Turn the chosen proposals into a revision
       description: >
         One call, three things, one transaction: the revision is written, the
-        annotations named in `resolve_annotation_ids` are resolved against it,
+        annotations named in `confirm_annotation_ids` are confirmed against it,
         and the proposals it used become `accepted`. Commit is the only moment
         at which somebody has both decided and changed the document, so it is
-        the only natural place to resolve an annotation -- and a revision
-        written without its resolutions, or resolutions pointing at a revision
-        that failed to write, would each leave the record lying.
+        the only natural place to confirm an annotation *with a revision* --
+        and a revision written without its confirmations, or confirmations
+        pointing at a revision that failed to write, would each leave the
+        record lying.
 
 
         Omit `block_ids` to take every block holding exactly one live proposal.
@@ -3347,7 +3525,7 @@ components:
       description: The system-wide role being filled.
       schema:
         type: string
-        enum: [title_actor, decomposition_actor, estimation_actor]
+        enum: [title_actor, decomposition_actor, estimation_actor, annotation_actor]
     ActorId:
       name: id
       in: path
@@ -4484,7 +4662,7 @@ components:
       additionalProperties: false
     ProjectRepo:
       type: object
-      required: [id, project_id, name, git_url, branch]
+      required: [id, project_id, name, git_url]
       properties:
         id:
           type: string
@@ -4495,12 +4673,15 @@ components:
           format: uuid
         name:
           type: string
-          description: Directory name in the future agent workspace.
+          description: >
+            How people and the CLI name this repository within its project;
+            unique there, and editable. Has to start with a letter or digit and
+            hold only letters, digits, `.`, `_` and `-`. Not where the working
+            copy lives -- that is addressed by id, so renaming costs nothing.
+            Derived from `git_url` when a registration does not choose one.
         git_url:
           type: string
           format: uri
-        branch:
-          type: string
         credential_id:
           type: string
           format: uuid
@@ -4523,18 +4704,56 @@ components:
           format: date-time
           nullable: true
       additionalProperties: false
+    ProjectRepoCheckout:
+      type: object
+      required: [path, branch, commit]
+      properties:
+        path:
+          type: string
+          description: >
+            Absolute path on the server. Meaningful only to something running on
+            that machine, which is what this endpoint is for.
+        branch:
+          type: string
+        commit:
+          type: string
+          description: >
+            The commit the working copy is at. What makes a statement about this
+            code attributable to a version of it.
+        synced_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the mirror was last known to match the remote.
+        sync_error:
+          type: string
+          nullable: true
+          description: >
+            Present when this copy was served but could not be refreshed. The
+            path is real; the code in it is older than the remote.
+      additionalProperties: false
+    ProjectRepoCheckoutResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/ProjectRepoCheckout"
+      additionalProperties: false
     ProjectRepoCreateInput:
       type: object
-      required: [name, git_url, branch]
+      required: [git_url]
       properties:
         name:
           type: string
+          description: >
+            Optional. Left out, it is derived from the last segment of
+            `git_url` and suffixed if that is already taken in this project --
+            which is what somebody would have typed anyway. Send one only to
+            override that.
         git_url:
           type: string
           format: uri
           description: Must use HTTPS when credential_id is set.
-        branch:
-          type: string
         credential_id:
           type: string
           format: uuid
@@ -4549,8 +4768,6 @@ components:
           type: string
           format: uri
           description: Must use HTTPS when credential_id is set.
-        branch:
-          type: string
         credential_id:
           type: string
           format: uuid
@@ -5720,8 +5937,8 @@ components:
           block_text,
           selected_text,
           content,
-          status,
-          resolved_by_revision_id,
+          confirmed_at,
+          confirmed_by_revision_id,
           inserted_at,
           updated_at
         ]
@@ -5750,18 +5967,23 @@ components:
         content:
           type: string
           description: Opening opinion for the annotation thread.
-        status:
+        confirmed_at:
           type: string
-          enum: [open, resolved, dismissed]
+          format: date-time
+          nullable: true
           description: >
-            Lifecycle of the annotation. Only an explicit human decision moves
-            it, via the resolve, dismiss, and reopen actions; being discussed
-            never changes it, and it is ignored on create and update.
-        resolved_by_revision_id:
+            When a person marked this thread as over. Null is unconfirmed, and
+            that is the whole of it -- there is no third value and nothing
+            derived. Only the confirm and unconfirm actions move it; being
+            discussed never does, and it is ignored on create and update.
+        confirmed_by_revision_id:
           type: string
           format: uuid
           nullable: true
-          description: The revision that settled this annotation, when one is named.
+          description: >
+            The revision that settled this, when the confirmation came with a
+            change to the document. Absent alongside a set `confirmed_at` means
+            somebody looked and decided no change was needed.
         inserted_at:
           type: string
           format: date-time
@@ -5769,14 +5991,17 @@ components:
           type: string
           format: date-time
       additionalProperties: false
-    AnnotationResolveInput:
+    AnnotationConfirmInput:
       type: object
       properties:
-        resolved_by_revision_id:
+        confirmed_by_revision_id:
           type: string
           format: uuid
           nullable: true
-          description: The revision that settled this annotation, when the caller knows it.
+          description: >
+            The revision that settled this, when there was one. Omit when the
+            answer was that no change was needed -- that is a confirmation too,
+            and its absence is what says which of the two happened.
       additionalProperties: false
     Annotation:
       allOf:
@@ -6026,13 +6251,13 @@ components:
           items:
             type: string
             format: uuid
-        resolve_annotation_ids:
+        confirm_annotation_ids:
           type: array
           description: >
-            Annotations this commit settles. Each is resolved with
-            `resolved_by_revision_id` pointing at the new revision. One
-            discussion may touch three annotations and settle two, so these are
-            named rather than inferred.
+            Annotations this commit settles. Each is confirmed with
+            `confirmed_by_revision_id` pointing at the new revision. One commit
+            may touch three annotations and settle two, so these are named
+            rather than inferred from what the revision changed.
           items:
             type: string
             format: uuid
@@ -6060,6 +6285,7 @@ components:
           assistant_actor_id,
           hot,
           replay_pending,
+
           inserted_at,
           updated_at
         ]
@@ -6185,7 +6411,7 @@ components:
       additionalProperties: false
     Settings:
       type: object
-      required: [title_actor, decomposition_actor, estimation_actor]
+      required: [title_actor, decomposition_actor, estimation_actor, annotation_actor]
       properties:
         title_actor:
           allOf:
@@ -6215,6 +6441,15 @@ components:
             The actor that rates a task's difficulty or produces its three-point
             estimate. Same as decomposition: the job belongs to no conversation,
             so an empty role is a refusal rather than a fallback.
+        annotation_actor:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: >
+            The actor that answers an annotation when somebody asks it to. Same
+            as the two above: a person clicked a button on a note rather than
+            spoke inside a topic, so there is no assistant to inherit from and
+            an empty role is a refusal.
       additionalProperties: false
     SettingsResponse:
       type: object
@@ -6434,7 +6669,6 @@ components:
           actor_id,
           content,
           position,
-          source_message_id,
           inserted_at,
           updated_at
         ]
@@ -6454,11 +6688,6 @@ components:
           type: integer
           minimum: 0
           description: Monotonic order within the annotation. Gaps remain after deletions.
-        source_message_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: The conversation message this conclusion was drawn from, when it came from one.
         inserted_at:
           type: string
           format: date-time
@@ -6476,11 +6705,6 @@ components:
         content:
           type: string
           minLength: 1
-        source_message_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: The conversation message this conclusion was drawn from.
       additionalProperties: false
     AnnotationReplyUpdateInput:
       type: object
@@ -6617,10 +6841,18 @@ components:
         - decomposition_in_flight
         - no_estimation_actor
         - nothing_to_estimate
+        - no_annotation_actor
         - no_chunks
         - task_before_chunk
         - corrupt_image
+        - invalid_branch
+        - unknown_branch
+        - no_default_branch
+        - unusable_repo_name
         - internal_server_error
+        - workspace_unwritable
+        - workspace_not_configured
+        - repo_unavailable
         - attachment_unwritable
         - attachment_unreadable
     APIError:

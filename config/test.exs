@@ -27,11 +27,13 @@ config :rinto_pmo, :injectors,
   projects: RintoPMO.ProjectsMock,
   repo_credentials: RintoPMO.RepoCredentialsMock,
   tasks: RintoPMO.TasksMock,
+  workspace: RintoPMO.WorkspaceMock,
   rpc: RintoPMO.Agent.RpcMock,
   os_process: RintoPMO.OSProcessMock,
   title_generator: RintoPMO.Agent.TitleGeneratorMock,
   wbs_generator: RintoPMO.Agent.WbsGeneratorMock,
   task_estimator: RintoPMO.Agent.TaskEstimatorMock,
+  annotation_responder: RintoPMO.Agent.AnnotationResponderMock,
   reference_resolver: RintoPMO.References.ResolverMock,
   links: RintoPMO.LinksMock,
   ai: RintoPMO.AIMock,
@@ -45,6 +47,17 @@ config :rinto_pmo, RintoPMO.Attachments,
     Path.join(
       System.tmp_dir!(),
       "rinto-pmo-attachments-test#{System.get_env("MIX_TEST_PARTITION")}"
+    )
+
+# Configured, so that the paths which only queue work -- registering a
+# repository -- behave here the way they do on a server with a workspace.
+# Nothing writes here unless a test asks for a checkout, and the tests that do
+# point the root at their own temporary directory.
+config :rinto_pmo, RintoPMO.Workspace,
+  root:
+    Path.join(
+      System.tmp_dir!(),
+      "rinto-pmo-workspace-test#{System.get_env("MIX_TEST_PARTITION")}"
     )
 
 # Keeps the application's own catalog off pi. Tests that exercise discovery

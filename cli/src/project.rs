@@ -90,11 +90,12 @@ fn detail(project: &Value) -> String {
     } else {
         let _ = writeln!(output, "repositories:");
         for repo in repos {
+            // No branch here: a repository has none. Which branch to read is
+            // decided per question, by `repo checkout --branch`.
             let _ = writeln!(
                 output,
-                "  {}  branch={}  {}",
+                "  {}  {}",
                 string(repo, "name", "(unnamed)"),
-                string(repo, "branch", "?"),
                 string(repo, "git_url", "?")
             );
         }
@@ -152,14 +153,13 @@ mod tests {
             "description": "Project management",
             "repos": [{
                 "name": "backend",
-                "branch": "main",
                 "git_url": "https://github.com/RintoLab/pmo_backend.git"
             }]
         });
         let rendered = detail(&project);
 
         assert!(rendered.contains("slug: pmo"));
-        assert!(rendered.contains("backend  branch=main"));
+        assert!(rendered.contains("backend  https://"));
         assert!(rendered.contains("https://github.com/RintoLab/pmo_backend.git"));
     }
 }

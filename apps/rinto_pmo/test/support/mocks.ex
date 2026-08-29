@@ -6,6 +6,7 @@ Hammox.defmock(RintoPMO.DocumentsMock, for: RintoPMO.Documents.Behaviour)
 Hammox.defmock(RintoPMO.ProjectsMock, for: RintoPMO.Projects.Behaviour)
 Hammox.defmock(RintoPMO.RepoCredentialsMock, for: RintoPMO.RepoCredentials.Behaviour)
 Hammox.defmock(RintoPMO.TasksMock, for: RintoPMO.Tasks.Behaviour)
+Hammox.defmock(RintoPMO.WorkspaceMock, for: RintoPMO.Workspace.Behaviour)
 Hammox.defmock(RintoPMO.AIMock, for: RintoPMO.AI.Behaviour)
 Hammox.defmock(RintoPMO.LinksMock, for: RintoPMO.Links.Behaviour)
 Hammox.defmock(RintoPMO.SearchMock, for: RintoPMO.Search.Behaviour)
@@ -15,4 +16,9 @@ Hammox.defmock(RintoPMO.Agent.RpcMock, for: RintoPMO.Agent.Rpc.Behaviour)
 Hammox.defmock(RintoPMO.Agent.TitleGeneratorMock, for: RintoPMO.Agent.TitleGenerator.Behaviour)
 Hammox.defmock(RintoPMO.Agent.WbsGeneratorMock, for: RintoPMO.Agent.WbsGenerator.Behaviour)
 Hammox.defmock(RintoPMO.Agent.TaskEstimatorMock, for: RintoPMO.Agent.TaskEstimator.Behaviour)
+
+Hammox.defmock(RintoPMO.Agent.AnnotationResponderMock,
+  for: RintoPMO.Agent.AnnotationResponder.Behaviour
+)
+
 Hammox.defmock(RintoPMO.Calendar.HolidaysMock, for: RintoPMO.Calendar.Holidays.Behaviour)

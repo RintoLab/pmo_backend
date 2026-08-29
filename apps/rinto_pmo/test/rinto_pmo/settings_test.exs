@@ -91,7 +91,12 @@ defmodule RintoPMO.SettingsTest do
   end
 
   defp empty_settings do
-    %{"title_actor" => nil, "decomposition_actor" => nil, "estimation_actor" => nil}
+    %{
+      "title_actor" => nil,
+      "decomposition_actor" => nil,
+      "estimation_actor" => nil,
+      "annotation_actor" => nil
+    }
   end
 
   defp ai_actor(attrs \\ []) do

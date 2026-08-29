@@ -23,6 +23,9 @@ config :rinto_pmo,
     projects: RintoPMO.Projects,
     repo_credentials: RintoPMO.RepoCredentials,
     tasks: RintoPMO.Tasks,
+    # The on-disk copies of a project's repositories. Injected so a controller
+    # test can be about the endpoint rather than about git.
+    workspace: RintoPMO.Workspace,
     # Each layer of pi model discovery, so a test of one mocks the next.
     rpc: RintoPMO.Agent.Rpc,
     os_process: RintoPMO.OSProcess,
@@ -32,6 +35,7 @@ config :rinto_pmo,
     title_generator: RintoPMO.Agent.TitleGenerator,
     wbs_generator: RintoPMO.Agent.WbsGenerator,
     task_estimator: RintoPMO.Agent.TaskEstimator,
+    annotation_responder: RintoPMO.Agent.AnnotationResponder,
     # Reading what a `rinto://` reference points at. Only the read side is
     # injected: parsing a reference is pure and belongs to every write path,
     # and mocking it would let a document test lie about what it stored.
@@ -135,6 +139,34 @@ config :rinto_pmo, RintoPMO.Attachments,
   # sizes providers reject outright; clients should downscale for cost.
   max_dimension: 8_000
 
+config :rinto_pmo, RintoPMO.Workspace,
+  # Where the repositories registered against a project are kept on disk, so the
+  # agent answering questions about a project can read its code. `nil` turns the
+  # whole thing off: nothing is cloned and every call refuses. Set in
+  # `config/runtime.exs` from RINTO_WORKSPACE_ROOT.
+  #
+  # Must not sit inside the release directory -- a deploy swaps that, and every
+  # clone would be thrown away or orphaned with it.
+  root: nil,
+  # How long a mirror is trusted before the next checkout re-fetches. There is
+  # no timer behind this: a project nobody is discussing is never fetched at
+  # all. It exists because a repository may live on the public internet, where
+  # even a fetch that finds nothing costs a round trip in front of a person.
+  ttl_ms: :timer.minutes(5),
+  # A fetch sits in front of somebody waiting for an answer, so it gives up
+  # early and the stale snapshot is served with a note. A first clone has no
+  # snapshot to fall back to and happens when a repository is registered rather
+  # than in a conversation, so it may take as long as it takes.
+  fetch_timeout: :timer.seconds(5),
+  clone_timeout: :timer.minutes(2),
+  # Everything that touches only the disk: rev-parse, worktree, reset. Slow only
+  # if the machine is in trouble.
+  local_timeout: :timer.seconds(15),
+  # How long a branch nobody has asked about keeps its working tree. Short on
+  # purpose: rebuilding one is a single local `worktree add`, while keeping one
+  # is a whole checkout of disk held for a conversation that has moved on.
+  worktree_retention_ms: :timer.hours(72)
+
 config :rinto_pmo, RintoPMO.Conversations,
   # Simultaneously running pi processes. Topics are unlimited; processes are
   # not, and nothing else in the system stops one from being started.
@@ -190,6 +222,11 @@ config :rinto_pmo, RintoPMO.Agent.TaskEstimator,
   # Silence, not duration, same as `WbsGenerator`: a model that is still
   # producing is still working. Three minutes of complete silence is well past
   # anything a working call does.
+  idle_timeout: 180_000
+
+config :rinto_pmo, RintoPMO.Agent.AnnotationResponder,
+  # Same as the two above: the actor is the `annotation_actor` role, and the
+  # timeout is on silence rather than on how long an answer takes.
   idle_timeout: 180_000
 
 config :rinto_pmo, RintoPMO.Agent.PromptBuilder,

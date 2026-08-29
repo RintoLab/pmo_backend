@@ -5,17 +5,21 @@ defmodule RintoPMO.Annotations.AnnotationReply do
   Replies are a single flat list under an annotation (no reply-to-reply tree).
   `position` increases monotonically; deletions leave gaps and never renumber.
 
-  A reply carries a *conclusion*, never chat transcript -- the transcript lives
-  in `RintoPMO.Conversations`. When the conclusion was drawn from a topic,
-  `source_message_id` points at the message it came from, so the annotation can
-  offer a way back to that exact point in the discussion.
+  A reply carries an *opinion*, never chat transcript. Two kinds of author
+  write them and `actor_id` is how they are told apart: a person, and the AI
+  that somebody asked to answer this one annotation
+  (`RintoPMO.Annotations.request_reply/1`).
+
+  Conversations do not write here at all. A topic is where proposals come
+  from; what it concluded lands in the document, not on the note that started
+  it. There was once a `source_message_id` pointing back at a message, and
+  nothing wrote it -- see the migration that dropped it.
   """
 
   use RintoPMO, :schema
 
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Annotations.Annotation
-  alias RintoPMO.Conversations.Message
   alias RintoPMO.Embeddings
 
   @type t :: %__MODULE__{}
@@ -31,7 +35,6 @@ defmodule RintoPMO.Annotations.AnnotationReply do
 
     belongs_to :annotation, Annotation
     belongs_to :actor, Actor
-    belongs_to :source_message, Message
 
     timestamps()
   end
@@ -39,13 +42,12 @@ defmodule RintoPMO.Annotations.AnnotationReply do
   @doc false
   def changeset(%__MODULE__{} = reply \\ %__MODULE__{}, attrs) do
     reply
-    |> cast(attrs, [:annotation_id, :actor_id, :content, :position, :source_message_id])
+    |> cast(attrs, [:annotation_id, :actor_id, :content, :position])
     |> validate_required([:annotation_id, :actor_id, :content, :position])
     |> validate_length(:content, min: 1)
     |> validate_number(:position, greater_than_or_equal_to: 0)
     |> foreign_key_constraint(:annotation_id)
     |> foreign_key_constraint(:actor_id)
-    |> foreign_key_constraint(:source_message_id)
     |> unique_constraint(:position, name: :annotation_replies_annotation_id_position_index)
     |> Embeddings.invalidate([:content])
   end

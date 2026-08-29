@@ -1,8 +1,15 @@
 defmodule RintoPMO.AnnotationsTest do
   use RintoPMO.DataCase, async: true
 
+  use Oban.Testing, repo: RintoPMO.Repo
+
+  alias RintoPMO.Agent.AnnotationResponderMock
   alias RintoPMO.Annotations
   alias RintoPMO.Annotations.Annotation
+  alias RintoPMO.Annotations.ReplyWorker
+  alias RintoPMO.Documents.Notifier
+  alias RintoPMO.DocumentsMock
+  alias RintoPMO.Settings
 
   describe "annotations" do
     test "creates an annotation with optional anchor snapshots" do
@@ -103,113 +110,104 @@ defmodule RintoPMO.AnnotationsTest do
     end
   end
 
-  describe "status" do
-    test "starts open" do
+  describe "confirmation" do
+    test "starts unconfirmed" do
       document = insert(:document)
       actor = insert(:actor)
 
       assert {:ok, annotation} =
                Annotations.create_annotation(document, %{actor_id: actor.id, content: "Note"})
 
-      assert annotation.status == :open
-      assert annotation.resolved_by_revision_id == nil
+      assert annotation.confirmed_at == nil
+      assert annotation.confirmed_by_revision_id == nil
     end
 
-    test "round-trips resolve, reopen, resolve and clears the revision on reopen" do
+    test "round-trips confirm, unconfirm, confirm and clears the revision on the way back" do
       annotation = insert(:annotation)
       revision = insert(:document_revision, document: annotation.document)
 
-      assert {:ok, resolved} =
-               Annotations.resolve_annotation(annotation, %{
-                 resolved_by_revision_id: revision.id
+      assert {:ok, confirmed} =
+               Annotations.confirm_annotation(annotation, %{
+                 confirmed_by_revision_id: revision.id
                })
 
-      assert resolved.status == :resolved
-      assert resolved.resolved_by_revision_id == revision.id
+      assert confirmed.confirmed_at
+      assert confirmed.confirmed_by_revision_id == revision.id
 
-      assert {:ok, reopened} = Annotations.reopen_annotation(resolved)
-      assert reopened.status == :open
-      assert reopened.resolved_by_revision_id == nil
+      assert {:ok, reopened} = Annotations.unconfirm_annotation(confirmed)
+      assert reopened.confirmed_at == nil
+      assert reopened.confirmed_by_revision_id == nil
 
-      assert {:ok, resolved_again} = Annotations.resolve_annotation(reopened, %{})
-      assert resolved_again.status == :resolved
-      assert resolved_again.resolved_by_revision_id == nil
+      assert {:ok, again} = Annotations.confirm_annotation(reopened, %{})
+      assert again.confirmed_at
+      assert again.confirmed_by_revision_id == nil
     end
 
-    test "resolves without naming a revision" do
+    # "I looked and it needs no change" is a confirmation like any other.
+    # Which of the two it was is the pointer's presence, not a second state.
+    test "confirms without naming a revision" do
       annotation = insert(:annotation)
 
-      assert {:ok, resolved} = Annotations.resolve_annotation(annotation, %{})
-      assert resolved.status == :resolved
-      assert resolved.resolved_by_revision_id == nil
+      assert {:ok, confirmed} = Annotations.confirm_annotation(annotation, %{})
+      assert confirmed.confirmed_at
+      assert confirmed.confirmed_by_revision_id == nil
     end
 
-    test "dismisses an annotation" do
-      annotation = insert(:annotation)
-
-      assert {:ok, dismissed} = Annotations.dismiss_annotation(annotation)
-      assert dismissed.status == :dismissed
-
-      assert {:ok, reopened} = Annotations.reopen_annotation(dismissed)
-      assert reopened.status == :open
-    end
-
-    test "dismissing clears the resolving revision" do
+    test "confirming twice keeps the moment it was first confirmed" do
       annotation = insert(:annotation)
       revision = insert(:document_revision, document: annotation.document)
 
-      {:ok, resolved} =
-        Annotations.resolve_annotation(annotation, %{resolved_by_revision_id: revision.id})
+      {:ok, first} = Annotations.confirm_annotation(annotation, %{})
 
-      # Dismissed means declined without the document changing, so a revision
-      # left here would claim a change that never happened.
-      assert {:ok, dismissed} = Annotations.dismiss_annotation(resolved)
-      assert dismissed.status == :dismissed
-      assert dismissed.resolved_by_revision_id == nil
-      assert Repo.get!(Annotation, annotation.id).resolved_by_revision_id == nil
+      # Naming the revision afterwards is not a second ending.
+      assert {:ok, second} =
+               Annotations.confirm_annotation(first, %{confirmed_by_revision_id: revision.id})
+
+      assert second.confirmed_at == first.confirmed_at
+      assert second.confirmed_by_revision_id == revision.id
     end
 
-    test "only resolved ever carries a resolving revision" do
+    test "unconfirming clears both columns in the database" do
       annotation = insert(:annotation)
       revision = insert(:document_revision, document: annotation.document)
 
-      for terminal <- [&Annotations.dismiss_annotation/1, &Annotations.reopen_annotation/1] do
-        {:ok, resolved} =
-          Annotations.resolve_annotation(annotation, %{resolved_by_revision_id: revision.id})
+      {:ok, confirmed} =
+        Annotations.confirm_annotation(annotation, %{confirmed_by_revision_id: revision.id})
 
-        assert resolved.resolved_by_revision_id == revision.id
+      assert {:ok, _reopened} = Annotations.unconfirm_annotation(confirmed)
 
-        assert {:ok, moved} = terminal.(resolved)
-        assert moved.resolved_by_revision_id == nil
-      end
+      stored = Repo.get!(Annotation, annotation.id)
+      assert stored.confirmed_at == nil
+      assert stored.confirmed_by_revision_id == nil
     end
 
-    test "rejects a resolving revision that does not exist" do
+    test "rejects a confirming revision that does not exist" do
       annotation = insert(:annotation)
 
       assert {:error, changeset} =
-               Annotations.resolve_annotation(annotation, %{
-                 resolved_by_revision_id: UUIDv7.generate()
+               Annotations.confirm_annotation(annotation, %{
+                 confirmed_by_revision_id: UUIDv7.generate()
                })
 
-      assert "does not exist" in errors_on(changeset).resolved_by_revision_id
+      assert "does not exist" in errors_on(changeset).confirmed_by_revision_id
     end
 
-    test "update_annotation cannot change status" do
+    # Editing the wording must never be able to close a thread.
+    test "update_annotation cannot confirm" do
       annotation = insert(:annotation)
 
       assert {:ok, updated} =
                Annotations.update_annotation(annotation, %{
                  "content" => "New",
-                 "status" => "resolved"
+                 "confirmed_at" => DateTime.utc_now()
                })
 
       assert updated.content == "New"
-      assert updated.status == :open
-      assert Repo.get!(Annotation, annotation.id).status == :open
+      assert updated.confirmed_at == nil
+      assert Repo.get!(Annotation, annotation.id).confirmed_at == nil
     end
 
-    test "create_annotation cannot set a status other than open" do
+    test "create_annotation cannot arrive confirmed" do
       document = insert(:document)
       actor = insert(:actor)
 
@@ -217,42 +215,35 @@ defmodule RintoPMO.AnnotationsTest do
                Annotations.create_annotation(document, %{
                  "actor_id" => actor.id,
                  "content" => "Note",
-                 "status" => "resolved"
+                 "confirmed_at" => DateTime.utc_now()
                })
 
-      assert annotation.status == :open
+      assert annotation.confirmed_at == nil
     end
 
-    test "filters the list by status" do
+    test "filters the list by whether it has been confirmed" do
       document = insert(:document)
       actor = insert(:actor)
 
       {:ok, open} =
         Annotations.create_annotation(document, %{actor_id: actor.id, content: "Open"})
 
-      {:ok, to_resolve} =
-        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Resolved"})
+      {:ok, to_confirm} =
+        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Settled"})
 
-      {:ok, to_dismiss} =
-        Annotations.create_annotation(document, %{actor_id: actor.id, content: "Dismissed"})
+      {:ok, confirmed} = Annotations.confirm_annotation(to_confirm, %{})
 
-      {:ok, resolved} = Annotations.resolve_annotation(to_resolve, %{})
-      {:ok, dismissed} = Annotations.dismiss_annotation(to_dismiss)
-
-      assert annotation_ids(Annotations.list_annotations(document, %{status: :open})) ==
+      assert annotation_ids(Annotations.list_annotations(document, %{confirmed: false})) ==
                MapSet.new([open.id])
 
-      assert annotation_ids(Annotations.list_annotations(document, %{status: :resolved})) ==
-               MapSet.new([resolved.id])
-
-      assert annotation_ids(Annotations.list_annotations(document, %{status: :dismissed})) ==
-               MapSet.new([dismissed.id])
+      assert annotation_ids(Annotations.list_annotations(document, %{confirmed: true})) ==
+               MapSet.new([confirmed.id])
 
       assert annotation_ids(Annotations.list_annotations(document, %{})) ==
-               MapSet.new([open.id, resolved.id, dismissed.id])
+               MapSet.new([open.id, confirmed.id])
     end
 
-    test "combines the status and block_id filters" do
+    test "combines the confirmed and block_id filters" do
       document = insert(:document)
       actor = insert(:actor)
       block_id = UUIDv7.generate()
@@ -268,16 +259,16 @@ defmodule RintoPMO.AnnotationsTest do
         Annotations.create_annotation(document, %{
           actor_id: actor.id,
           block_id: block_id,
-          content: "Anchored resolved"
+          content: "Anchored settled"
         })
 
-      {:ok, _resolved} = Annotations.resolve_annotation(anchored_other, %{})
+      {:ok, _confirmed} = Annotations.confirm_annotation(anchored_other, %{})
 
       {:ok, _unanchored} =
         Annotations.create_annotation(document, %{actor_id: actor.id, content: "Unanchored"})
 
       assert annotation_ids(
-               Annotations.list_annotations(document, %{block_id: block_id, status: :open})
+               Annotations.list_annotations(document, %{block_id: block_id, confirmed: false})
              ) == MapSet.new([anchored_open.id])
     end
   end
@@ -361,93 +352,171 @@ defmodule RintoPMO.AnnotationsTest do
     end
   end
 
-  describe "conclusions from a conversation" do
-    test "a reply can point back at the message it came from" do
+  describe "an AI reply, when somebody asks for one" do
+    setup do
+      actor =
+        insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
+
+      {:ok, _settings} = Settings.put_actor("annotation_actor", actor.id)
+      {:ok, actor: actor}
+    end
+
+    test "answers with the job and leaves the model call to the queue" do
       annotation = insert(:annotation)
-      actor = insert(:actor)
-      message = insert(:message)
 
-      assert {:ok, reply} =
-               Annotations.create_reply(annotation, %{
-                 actor_id: actor.id,
-                 content: "§3 contradicts §1; rewrite the second clause.",
-                 source_message_id: message.id
-               })
+      assert {:ok, %Oban.Job{} = job} = Annotations.request_reply(annotation)
+      assert job.worker == "RintoPMO.Annotations.ReplyWorker"
 
-      assert reply.source_message_id == message.id
+      assert_enqueued(worker: ReplyWorker, args: %{annotation_id: annotation.id})
     end
 
-    test "a reply without a source is still fine" do
+    # A double-click is one reply. Not refused, and not a second model call:
+    # the caller is handed the job already queued.
+    test "a second ask while one is in flight is the same job" do
       annotation = insert(:annotation)
-      actor = insert(:actor)
 
-      assert {:ok, reply} =
-               Annotations.create_reply(annotation, %{actor_id: actor.id, content: "Mine"})
+      assert {:ok, first} = Annotations.request_reply(annotation)
+      assert {:ok, second} = Annotations.request_reply(annotation)
 
-      assert reply.source_message_id == nil
+      assert second.id == first.id
+      assert second.conflict?
+      assert 1 == length(all_enqueued(worker: ReplyWorker))
     end
 
-    test "rejects a source message that does not exist" do
+    # Nobody holding the role is a condition of asking, so it is answered
+    # synchronously to whoever is making the mistake -- not a job that queues
+    # and then fails somewhere they are not looking.
+    test "refuses when no actor holds the role" do
+      {:ok, _cleared} = Settings.put_actor("annotation_actor", nil)
       annotation = insert(:annotation)
-      actor = insert(:actor)
 
-      assert {:error, changeset} =
-               Annotations.create_reply(annotation, %{
-                 actor_id: actor.id,
-                 content: "From nowhere",
-                 source_message_id: UUIDv7.generate()
-               })
-
-      assert "does not exist" in errors_on(changeset).source_message_id
+      assert {:error, :no_annotation_actor, %{}} = Annotations.request_reply(annotation)
+      assert [] == all_enqueued(worker: ReplyWorker)
     end
 
-    test "filters to the annotations with a conclusion waiting on a decision" do
-      document = insert(:document)
-      actor = insert(:actor)
+    # Somebody may well want the model's read on a decision already taken.
+    # Refusing would mean this context had an opinion about why they asked.
+    test "does not refuse a confirmed annotation" do
+      annotation = insert(:annotation)
+      {:ok, confirmed} = Annotations.confirm_annotation(annotation, %{})
 
-      waiting = insert(:annotation, document: document, status: :open)
-      quiet = insert(:annotation, document: document, status: :open)
-      decided = insert(:annotation, document: document, status: :resolved)
-
-      for annotation <- [waiting, decided] do
-        {:ok, _reply} =
-          Annotations.create_reply(annotation, %{
-            actor_id: actor.id,
-            content: "Concluded",
-            source_message_id: insert(:message).id
-          })
-      end
-
-      # A reply with no conversation behind it is somebody's own opinion, not
-      # a conclusion the AI is handing over.
-      {:ok, _reply} =
-        Annotations.create_reply(quiet, %{actor_id: actor.id, content: "Just a thought"})
-
-      assert annotation_ids(Annotations.list_annotations(document, %{pending_conclusion: true})) ==
-               MapSet.new([waiting.id])
-
-      assert annotation_ids(Annotations.list_annotations(document, %{pending_conclusion: false})) ==
-               MapSet.new([quiet.id, decided.id])
+      assert {:ok, %Oban.Job{}} = Annotations.request_reply(confirmed)
     end
 
-    test "resolving clears the pending marker without anything being read" do
-      document = insert(:document)
-      actor = insert(:actor)
-      annotation = insert(:annotation, document: document, status: :open)
+    test "appends the model's answer as an ordinary reply, credited to the AI actor" do
+      %{actor: actor} = ai_context()
+      annotation = insert(:annotation)
+      stub_document(annotation)
 
-      {:ok, _reply} =
-        Annotations.create_reply(annotation, %{
-          actor_id: actor.id,
-          content: "Concluded",
-          source_message_id: insert(:message).id
-        })
+      expect(AnnotationResponderMock, :respond, fn _input, _opts ->
+        {:ok, "The objection is right: §3 contradicts §1."}
+      end)
 
-      assert annotation_ids(Annotations.list_annotations(document, %{pending_conclusion: true})) ==
-               MapSet.new([annotation.id])
+      assert :ok = Annotations.run_reply(1, annotation.id)
 
-      {:ok, _resolved} = Annotations.resolve_annotation(annotation, %{})
+      assert [reply] = Repo.preload(annotation, :replies).replies
+      assert reply.content == "The objection is right: §3 contradicts §1."
+      assert reply.actor_id == actor.id
+      assert reply.position == 0
+    end
 
-      assert Annotations.list_annotations(document, %{pending_conclusion: true}) == []
+    test "the model is given the note, what is already under it, and the document" do
+      ai_context()
+      block = insert(:document_block, content: "Deploys are rolled back in one step.")
+      revision = insert(:document_revision, blocks: [block])
+      annotation = insert(:annotation, document: revision.document, selected_text: "one step")
+      other = insert(:actor)
+
+      {:ok, _earlier} =
+        Annotations.create_reply(annotation, %{actor_id: other.id, content: "I disagree."})
+
+      stub_document(annotation)
+
+      expect(AnnotationResponderMock, :respond, fn input, _opts ->
+        assert input.annotation.content == annotation.content
+        assert input.annotation.selected_text == "one step"
+        assert input.annotation.replies == ["I disagree."]
+        assert input.document.blocks == ["Deploys are rolled back in one step."]
+        {:ok, "Answered."}
+      end)
+
+      assert :ok = Annotations.run_reply(1, annotation.id)
+    end
+
+    test "tells whoever is watching the document that it is over" do
+      ai_context()
+      annotation = insert(:annotation)
+      stub_document(annotation)
+      :ok = Notifier.subscribe(annotation.document_id)
+
+      expect(AnnotationResponderMock, :respond, fn _input, _opts -> {:ok, "Answered."} end)
+
+      assert :ok = Annotations.run_reply(7, annotation.id)
+
+      assert_receive {:annotation_reply, 7, annotation_id, :succeeded, nil}
+      assert annotation_id == annotation.id
+    end
+
+    # `:cancel` and not `:error`: asking the identical question nineteen more
+    # times is nineteen more model calls, not a retry policy.
+    test "a failed model call cancels the job and says why on the socket" do
+      ai_context()
+      annotation = insert(:annotation)
+      stub_document(annotation)
+      :ok = Notifier.subscribe(annotation.document_id)
+
+      expect(AnnotationResponderMock, :respond, fn _input, _opts ->
+        {:error, {:provider_refused, "quota exhausted"}}
+      end)
+
+      assert {:cancel, "quota exhausted"} = Annotations.run_reply(9, annotation.id)
+
+      assert_receive {:annotation_reply, 9, _id, :failed, "quota exhausted"}
+      assert [] == Repo.preload(annotation, :replies).replies
+    end
+
+    # Deleted while the job waited. There is nothing to answer and no thread
+    # left to answer into, so this is over rather than failed.
+    test "an annotation deleted before the job ran is not an error" do
+      assert :ok = Annotations.run_reply(1, UUIDv7.generate())
+    end
+
+    test "the role being cleared between asking and running fails the job" do
+      annotation = insert(:annotation)
+      {:ok, _cleared} = Settings.put_actor("annotation_actor", nil)
+
+      assert {:cancel, reason} = Annotations.run_reply(1, annotation.id)
+      assert reason =~ "annotation role"
+    end
+  end
+
+  # The role, re-read inside a test that also needs the actor struct back.
+  defp ai_context do
+    actor = Settings.get_actor("annotation_actor")
+    %{actor: actor}
+  end
+
+  # `run_reply/2` reads the document through the injector, so a test of it has
+  # to say what that read answers.
+  defp stub_document(annotation) do
+    document =
+      RintoPMO.Repo.get!(RintoPMO.Documents.Document, annotation.document_id)
+      |> then(&%{&1 | latest_revision: latest_revision(&1)})
+
+    stub(DocumentsMock, :get_document!, fn _id -> document end)
+  end
+
+  defp latest_revision(document) do
+    import Ecto.Query
+
+    RintoPMO.Documents.DocumentRevision
+    |> where([revision], revision.document_id == ^document.id)
+    |> order_by([revision], desc: revision.id)
+    |> limit(1)
+    |> RintoPMO.Repo.one()
+    |> case do
+      nil -> %RintoPMO.Documents.DocumentRevision{title: "Untitled", blocks: []}
+      revision -> RintoPMO.Repo.preload(revision, :blocks)
     end
   end
 

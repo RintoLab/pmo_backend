@@ -100,6 +100,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     no_estimation_actor:
       {422, "No actor holds the estimation role. Set one with `PUT /settings/estimation_actor`.",
        %{}},
+    no_annotation_actor:
+      {422, "No actor holds the annotation role. Set one with `PUT /settings/annotation_actor`.",
+       %{}},
     nothing_to_estimate:
       {422, "There is nothing left to estimate on this task.",
        %{kind: "difficulty", reason: "every work item already has a difficulty"}},
@@ -107,6 +110,18 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     task_before_chunk:
       {422, "A task heading stands above the first chunk heading, so it belongs to nothing.", %{}},
     corrupt_image: {422, "The image header could not be read.", %{}},
+    invalid_branch: {422, "The branch name is not one git accepts.", %{branch: "--upload-pack"}},
+    unknown_branch: {422, "The repository has no branch by that name.", %{branch: "nope"}},
+    no_default_branch:
+      {422, "The remote names no default branch. Ask for a branch by name.", %{}},
+    unusable_repo_name:
+      {422, "The repository name cannot be used as a directory. Rename the repository.",
+       %{name: "../etc"}},
+    workspace_not_configured:
+      {503, "The server was started without RINTO_WORKSPACE_ROOT, so it keeps no working copies.",
+       %{}},
+    repo_unavailable: {503, "The repository could not be cloned. See its last_sync_error.", %{}},
+    workspace_unwritable: {500, "The workspace directory could not be written.", %{}},
     too_many_references:
       {422, "Too many references in one request. Ask in smaller batches.",
        %{max: 200, given: 201}},

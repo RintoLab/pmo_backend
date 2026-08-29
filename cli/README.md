@@ -63,20 +63,27 @@ different things:
   environment and no config file. Writes are credited to that topic's assistant,
   and changes to documents can only be *proposed*, never committed.
 
+`repo checkout` belongs to the second one only. The path it prints is the
+server's own, and the directory behind it is **read-only**: the agent reading a
+project's code is not the developer changing it, and the next checkout throws
+away anything written there. On a developer's machine the repository to be in is
+`project show`'s business, and the checkout is the developer's own.
+
 | Group | Commands |
 |---|---|
 | `config` | `init`, `show` |
-| `project` | `list`, `show` -- repositories, directory names, default branches |
+| `project` | `list`, `show` -- repositories, directory names, git URLs |
+| `repo` | `checkout` -- puts a branch on the *server's* disk and says where; only useful there |
 | `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `split`, `start`, `complete`, `cancel`, `reopen`, `delete` |
 | `schedule` | one command; what each week holds and what did not fit in it |
 | `history` | one command; what was actually worked, with the plan beside it |
 | `calibration` | one command; what the estimates turned out to be worth |
-| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `contentions`, `rebase` |
+| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `annotations`, `annotation`, `contentions`, `rebase` |
 | `search` | one command; finds things by meaning and answers with `rinto://` addresses |
-| `skill` | `list`, `install`, `sync` |
+| `skill` | `list`, `install`, `sync` -- see "Skills" below |
 | `update` | self-update from the Gitea package registry |
 
-Four things are worth knowing before writing anything:
+Six things are worth knowing before writing anything:
 
 **The pool is not a project's.** `task list` takes a project slug, and without
 one it lists every project at once -- which is the right question, because
@@ -109,10 +116,35 @@ text it replaced -- and proposing again from that overwrites its earlier
 proposal, because a topic holds one live proposal per block. Read `--working`
 before changing the same document twice.
 
+**What people wrote about a document is not in the document.** An annotation is
+somebody pointing at a paragraph and saying it is wrong, and neither `doc show`
+nor `--working` carries one. `doc annotations <id> --unconfirmed` lists the ones
+nobody has marked as settled, with the block each is anchored to; `doc
+annotation <id> <annotation-id>` reads one thread in full. The thread is where
+it matters -- what a discussion landed on is at the bottom of it, and is often
+not what the opening objection asked for. Changing a document without reading
+these re-argues settled points, or silently overwrites the thing somebody
+objected to.
+
+An annotation has two states and nothing derives them: confirmed, or not.
+Replies come from people and, when somebody clicks for one, from the AI; this
+binary does not distinguish them, because who said a thing does not change
+whether it is right.
+
+**A skill's version is this binary's version.** `skill list` says which version
+it carries, and for anything installed, which version wrote the copy on disk and
+whether that copy is still current -- without writing anything. Before, the only
+way to find out was `skill sync`, which writes. Nothing declares a version: the
+skills are compiled into the binary and describe its own commands, so a
+`version:` in each `SKILL.md` would be a second number to keep in step and the
+first edit that forgot to bump it would make it wrong. "written by 0.1.0 --
+current" is a real state and means the text did not change between those
+releases; nobody maintained a number to say so.
+
 **Committing and deciding are not here, on purpose.** An agent proposes; a
-person commits the proposal and settles arguments between competing ones. There
-is no CLI verb for either, and that is the point of the proposal flow rather
-than a gap in this binary.
+person commits the proposal, settles arguments between competing ones, and
+confirms annotations. There is no CLI verb for any of those, and that is the
+point of the proposal flow rather than a gap in this binary.
 
 ## Update
 

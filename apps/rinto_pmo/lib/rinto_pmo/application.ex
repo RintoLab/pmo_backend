@@ -20,6 +20,9 @@ defmodule RintoPMO.Application do
       RintoPMO.Conversations.Recorder.Supervisor,
       RintoPMO.Documents.Session.Supervisor,
       RintoPMO.Agent.ModelCatalog,
+      # The queue that keeps two git checkouts out of one directory. Started
+      # whether or not a workspace is configured; see its moduledoc.
+      RintoPMO.Workspace.Server,
       # The dependency edges, held in memory so the cycle check never queries.
       # After the Repo, because it loads from it on start.
       RintoPMO.Tasks.DependencyGraph

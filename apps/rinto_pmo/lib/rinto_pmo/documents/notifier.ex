@@ -17,7 +17,7 @@ defmodule RintoPMO.Documents.Notifier do
   document it is looking at but would have to go and find the new attempt id
   before it could resubscribe.
 
-  ## Two kinds of message
+  ## Three kinds of message
 
     * `{:decomposition_updated, decomposition}` -- the attempt's row moved.
       The whole row, so a new field never needs a new message.
@@ -25,6 +25,10 @@ defmodule RintoPMO.Documents.Notifier do
       from the model. Carries the attempt's id rather than the row, because
       thousands of these go past and re-reading the row for each would be a
       query per chunk to say something the subscriber already knows.
+    * `{:annotation_reply, job_id, annotation_id, status, error}` -- the AI
+      reply somebody asked for is over, one way or the other. Carries the ids
+      and not the reply: what changed is a thread the client re-reads, the way
+      an estimation announces itself without carrying the numbers.
 
   Output is **not** replayed to somebody who joins late: it is broadcast as it
   arrives and kept nowhere. What a late joiner gets is the row, which is enough
@@ -33,6 +37,7 @@ defmodule RintoPMO.Documents.Notifier do
   not this one.
   """
 
+  alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Documents.Decomposition
 
   @pubsub RintoPMO.PubSub
@@ -76,6 +81,38 @@ defmodule RintoPMO.Documents.Notifier do
       pubsub,
       topic(decomposition.source_document_id),
       {:decomposition_output, decomposition.id, chunk}
+    )
+  end
+
+  @doc """
+  Says that an asked-for AI reply is over, and whether it worked.
+
+  Addressed to the document rather than to the annotation, because that is the
+  subscription a client already holds: somebody reading a document has one
+  socket for it, not one per note they might click.
+
+  No streaming counterpart. A decomposition is minutes of text a person watches
+  arrive; a reply is a paragraph, and a spinner that ends with the thread
+  redrawn is the whole of what there is to show.
+  """
+  @spec broadcast_annotation_reply(
+          integer(),
+          Annotation.t(),
+          :succeeded | :failed,
+          String.t() | nil,
+          atom()
+        ) :: :ok | {:error, term()}
+  def broadcast_annotation_reply(
+        job_id,
+        %Annotation{} = annotation,
+        status,
+        error,
+        pubsub \\ @pubsub
+      ) do
+    Phoenix.PubSub.broadcast(
+      pubsub,
+      topic(annotation.document_id),
+      {:annotation_reply, job_id, annotation.id, status, error}
     )
   end
 end

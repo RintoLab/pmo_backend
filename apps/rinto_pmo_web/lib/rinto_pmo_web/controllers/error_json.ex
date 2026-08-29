@@ -83,6 +83,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     no_estimation_actor:
       {422, "No actor holds the estimation role. Set one with `PUT /settings/estimation_actor`."},
     nothing_to_estimate: {422, "There is nothing left to estimate on this task."},
+    # Asking the AI to answer one annotation. The only condition of asking, so
+    # the only thing that can be refused before the model call is queued.
+    no_annotation_actor:
+      {422, "No actor holds the annotation role. Set one with `PUT /settings/annotation_actor`."},
     # Filing one as a work breakdown. Both mean the document is not the shape a
     # breakdown is, which is a thing to fix in the document.
     no_chunks: {422, "The document has no headings, so there is no work in it to file."},
@@ -112,6 +116,17 @@ defmodule RintoPMOWeb.ErrorJSON do
       {422, "Too many candidates to rerank in one request. Ask for a smaller recall_limit."},
     unresolvable_references:
       {422, "The body points at things that do not exist. Check the rinto:// addresses."},
+    # Asking for a branch of a repository. The first two are the request being
+    # wrong about the repository; the last two are the repository being wrong
+    # about itself, and are the cases here nobody can fix from the request.
+    invalid_branch: {422, "The branch name is not one git accepts."},
+    unknown_branch: {422, "The repository has no branch by that name."},
+    # A checkout that named no branch falls back to the remote's default, and
+    # this remote names none. Nothing about the repository can be changed to
+    # fix it; naming a branch can, and only the caller can do that.
+    no_default_branch: {422, "The remote names no default branch. Ask for a branch by name."},
+    unusable_repo_name:
+      {422, "The repository name cannot be used as a directory. Rename the repository."},
     internal_server_error: {500, "An internal server error occurred."},
     agent_unavailable: {503, "The agent runtime could not be started."},
     # Searching without the service that does the searching. Told apart from
@@ -121,6 +136,17 @@ defmodule RintoPMOWeb.ErrorJSON do
     ai_not_configured:
       {503, "The server was started without RINTO_AI_TOKEN, so it cannot search."},
     ai_unavailable: {503, "The inference service could not be reached."},
+    # Asked for a working copy on a server that keeps none. Told apart from
+    # `repo_unavailable` for the same reason `ai_not_configured` is told apart
+    # from `ai_unavailable`: this one is an installation nobody finished
+    # configuring, and no amount of retrying will change it.
+    workspace_not_configured:
+      {503, "The server was started without RINTO_WORKSPACE_ROOT, so it keeps no working copies."},
+    # A repository that has never been cloned and could not be. `details` do not
+    # carry git's own words: `last_sync_error` on the repository does, and it
+    # survives the request.
+    repo_unavailable: {503, "The repository could not be cloned. See its last_sync_error."},
+    workspace_unwritable: {500, "The workspace directory could not be written."},
     attachment_unwritable: {500, "The attachment could not be stored."},
     attachment_unreadable: {500, "The attachment bytes are missing or unreadable."}
   }

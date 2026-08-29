@@ -92,8 +92,7 @@ defmodule RintoPMO.Factory do
     %ProjectRepo{
       project: build(:project),
       name: sequence(:project_repo_name, &"repo-#{&1}"),
-      git_url: "https://example.com/owner/repo.git",
-      branch: "main"
+      git_url: "https://example.com/owner/repo.git"
     }
   end
 
@@ -109,8 +108,7 @@ defmodule RintoPMO.Factory do
     %Annotation{
       document: build(:document),
       actor: build(:actor),
-      content: sequence(:annotation_content, &"Annotation #{&1}"),
-      status: :open
+      content: sequence(:annotation_content, &"Annotation #{&1}")
     }
   end
 

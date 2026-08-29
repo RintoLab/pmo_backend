@@ -19,6 +19,10 @@ pub enum DocCommand {
     Propose(ProposeArgs),
     /// List the changes standing on a document, awaiting review
     Proposals(ProposalsArgs),
+    /// List the notes people left on a document
+    Annotations(AnnotationsArgs),
+    /// Show one note and the conclusions written under it
+    Annotation(AnnotationArgs),
     /// Show where two topics want the same text to say different things
     Contentions(ContentionsArgs),
     /// Carry a whole-document proposal across the revisions that landed under it
@@ -114,6 +118,46 @@ pub struct ProposalsArgs {
     block: Option<String>,
 }
 
+/// What people wrote *about* a document, as opposed to in it.
+///
+/// A separate command rather than something folded into `show`, for the reason
+/// `RintoPMO.Agent.PromptBuilder` renders a document without its annotations:
+/// an annotation is a claim about the text, not part of it, and printing the
+/// two as one body would leave a model unable to tell which it is being asked
+/// to honour.
+///
+/// The listing is the entry point and `doc annotation` reads one thread in
+/// full, which is the same split as `doc list` and `doc show`. It has to be a
+/// split: the list endpoint does not carry replies, and what was decided about
+/// an objection is further down the thread rather than in the note that opened
+/// it.
+#[derive(Args)]
+pub struct AnnotationsArgs {
+    /// Document id
+    document_id: String,
+
+    /// Only notes anchored to this block; pass `none` for the unanchored ones
+    #[arg(long, value_name = "BLOCK_ID|none")]
+    block: Option<String>,
+
+    /// Only the notes nobody has marked as settled yet
+    #[arg(long, conflicts_with = "confirmed")]
+    unconfirmed: bool,
+
+    /// Only the notes somebody has marked as settled
+    #[arg(long)]
+    confirmed: bool,
+}
+
+#[derive(Args)]
+pub struct AnnotationArgs {
+    /// Document id
+    document_id: String,
+
+    /// The note to read, with its replies
+    annotation_id: String,
+}
+
 #[derive(Args)]
 pub struct ContentionsArgs {
     /// Document id
@@ -151,6 +195,8 @@ pub fn run(command: DocCommand) -> Result<()> {
         DocCommand::List(args) => list(client, args),
         DocCommand::Propose(args) => propose(client, &config, args),
         DocCommand::Proposals(args) => proposals(client, &config, args),
+        DocCommand::Annotations(args) => annotations(client, args),
+        DocCommand::Annotation(args) => annotation(client, args),
         DocCommand::Contentions(args) => contentions(client, args),
         DocCommand::Rebase(args) => rebase(client, args),
     }
@@ -533,6 +579,187 @@ fn proposal_summary(proposal: &Value) -> String {
     format!("{id}  {status}  {slot}  {summary}")
 }
 
+/// Which filters this asks for, using the server's own parameter names.
+///
+/// The server takes one boolean, and this offers it as two flags because a
+/// model reading `--help` should not have to work out that "still open" is
+/// spelled `--confirmed false`. Neither flag means no opinion, which is every
+/// note -- the same "no hidden default" rule `doc list --status` follows.
+fn annotations_query(args: &AnnotationsArgs) -> Vec<(&str, &str)> {
+    let mut query = Vec::new();
+
+    // `none` is the server's own spelling of "unanchored", passed through as
+    // written rather than translated here.
+    if let Some(block) = args.block.as_deref() {
+        query.push(("block_id", block));
+    }
+
+    if args.unconfirmed {
+        query.push(("confirmed", "false"));
+    }
+
+    if args.confirmed {
+        query.push(("confirmed", "true"));
+    }
+
+    query
+}
+
+/// The notes standing on a document, one line each.
+///
+/// Wanted before changing anything: a note is somebody saying this text is
+/// wrong, and a proposal written without reading them re-argues a point that
+/// was already settled, or quietly overwrites the thing somebody objected to.
+/// Nothing else in this binary could reach them -- `search --type annotation`
+/// finds one by meaning, which cannot answer "what is still open on *this*
+/// document".
+///
+/// Needs no topic. A note belongs to the document rather than to whoever is
+/// reading it, and its being open is a fact about the document.
+fn annotations(client: &Client, args: AnnotationsArgs) -> Result<()> {
+    let path = format!("/documents/{}/annotations", args.document_id);
+    let query = annotations_query(&args);
+    let annotations = client::data(client.get(&path, &query)?)?;
+    let annotations = annotations
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+
+    if annotations.is_empty() {
+        println!("no annotations");
+        return Ok(());
+    }
+
+    for annotation in annotations {
+        println!("{}", annotation_summary(annotation));
+    }
+
+    // The listing carries no replies, so a note whose conclusion was drawn in a
+    // topic looks exactly like one nobody has answered. Saying where to look
+    // beats leaving that to be discovered.
+    println!(
+        "\n(replies are not shown above: \
+         rinto-pmo doc annotation {} <annotation-id>)",
+        args.document_id
+    );
+
+    Ok(())
+}
+
+/// One line per note: whether anybody has settled it, where it is anchored,
+/// and how it opens. The rest of the thread is `doc annotation` -- twenty notes
+/// printed in full is the document again, at which point the list stops being
+/// one.
+///
+/// `confirmed_at` is a timestamp and prints as one word, because what a reader
+/// wants off a list is whether this argument is over. When it happened is on
+/// the note itself.
+fn annotation_summary(annotation: &Value) -> String {
+    let id = string(annotation, "id", "?");
+    let state = match annotation.get("confirmed_at").and_then(Value::as_str) {
+        Some(_settled) => "confirmed",
+        None => "open",
+    };
+    let anchor = match annotation.get("block_id").and_then(Value::as_str) {
+        Some(block_id) => format!("block {block_id}"),
+        None => "unanchored".to_string(),
+    };
+
+    format!(
+        "{id}  {state}  {anchor}  {}",
+        opening_of(string(annotation, "content", ""))
+    )
+}
+
+/// The first line of a body, saying so when there is more.
+///
+/// A silent first line reads as the whole note, and a model acting on half an
+/// objection is worse off than one that knows it has half.
+fn opening_of(content: &str) -> String {
+    let mut lines = content.lines().filter(|line| !line.trim().is_empty());
+    let opening = lines.next().unwrap_or("").trim().to_string();
+
+    match lines.next() {
+        Some(_more) => format!("{opening} (more below)"),
+        None => opening,
+    }
+}
+
+/// One note and everything written under it.
+///
+/// The replies are the point of reading a single one: a note records an
+/// objection, and what was decided about it is further down the thread. Acting
+/// on the opening line alone means answering a complaint that has already been
+/// answered.
+///
+/// Who wrote each reply is not marked. A person and the AI both write here,
+/// and which is which does not change what the argument says -- deciding is a
+/// person's action either way, and this binary is never the one deciding.
+fn annotation(client: &Client, args: AnnotationArgs) -> Result<()> {
+    let path = format!(
+        "/documents/{}/annotations/{}",
+        args.document_id, args.annotation_id
+    );
+    let annotation = client::data(client.get(&path, &[])?)?;
+
+    match annotation.get("confirmed_at").and_then(Value::as_str) {
+        Some(confirmed_at) => println!(
+            "{}  confirmed {confirmed_at}",
+            string(&annotation, "id", "?")
+        ),
+        None => println!("{}  open", string(&annotation, "id", "?")),
+    }
+
+    match annotation.get("block_id").and_then(Value::as_str) {
+        Some(block_id) => println!("anchored to block {block_id}"),
+        None => println!("anchored to nothing in particular"),
+    }
+
+    // What the person had highlighted. The block's text is deliberately not
+    // printed beside it: it is a snapshot from when the note was written, and
+    // the current text is what `doc show` is for.
+    if let Some(selected) = annotation.get("selected_text").and_then(Value::as_str) {
+        println!("about: {selected}");
+    }
+
+    // Present only alongside a confirmation, and its absence there is somebody
+    // having decided the document needed no change. That is the whole of the
+    // difference between the two ways a thread ends.
+    if let Some(revision_id) = annotation
+        .get("confirmed_by_revision_id")
+        .and_then(Value::as_str)
+    {
+        println!("settled by revision {revision_id}");
+    }
+
+    println!("\n{}", string(&annotation, "content", ""));
+
+    let replies = annotation
+        .get("replies")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+
+    for reply in replies {
+        println!("\n{}", reply_heading(reply));
+        for line in string(reply, "content", "").lines() {
+            println!("  {line}");
+        }
+    }
+
+    Ok(())
+}
+
+fn reply_heading(reply: &Value) -> String {
+    let position = reply
+        .get("position")
+        .and_then(Value::as_u64)
+        .map(|position| position.to_string())
+        .unwrap_or_else(|| "?".to_string());
+
+    format!("reply {position}:")
+}
+
 /// Where two topics want the same text to say different things.
 ///
 /// Needs no topic of its own: an argument is a fact about the document, and a
@@ -717,7 +944,8 @@ fn read(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        list_query, marks, proposal_summary, proposals_query, scope, ListArgs, ProposalsArgs,
+        annotation_summary, annotations_query, list_query, marks, opening_of, proposal_summary,
+        proposals_query, reply_heading, scope, AnnotationsArgs, ListArgs, ProposalsArgs,
         ProposeArgs,
     };
     use serde_json::json;
@@ -730,6 +958,108 @@ mod tests {
         }
     }
 
+    fn annotations_args(
+        block: Option<&str>,
+        unconfirmed: bool,
+        confirmed: bool,
+    ) -> AnnotationsArgs {
+        AnnotationsArgs {
+            document_id: "doc-1".to_string(),
+            block: block.map(str::to_string),
+            unconfirmed,
+            confirmed,
+        }
+    }
+
+    #[test]
+    fn annotation_filters_use_the_servers_own_names() {
+        let args = annotations_args(Some("block-1"), true, false);
+
+        assert_eq!(
+            annotations_query(&args),
+            vec![("block_id", "block-1"), ("confirmed", "false")]
+        );
+    }
+
+    /// Two flags over one boolean, so that "still open" is not spelled
+    /// `--confirmed false` in a `--help` a model is reading.
+    #[test]
+    fn confirmed_and_unconfirmed_are_the_two_sides_of_one_parameter() {
+        let settled = annotations_args(None, false, true);
+
+        assert_eq!(annotations_query(&settled), vec![("confirmed", "true")]);
+    }
+
+    /// No hidden default: an unfiltered listing asks for every note, the same
+    /// rule `doc list` and `doc proposals` follow.
+    #[test]
+    fn an_unfiltered_annotation_listing_asks_for_nothing() {
+        assert!(annotations_query(&annotations_args(None, false, false)).is_empty());
+    }
+
+    #[test]
+    fn an_unanchored_annotation_says_so_rather_than_printing_an_empty_slot() {
+        let line = annotation_summary(&json!({
+            "id": "note-1",
+            "confirmed_at": null,
+            "block_id": null,
+            "content": "This contradicts the deployment doc."
+        }));
+
+        assert_eq!(
+            line,
+            "note-1  open  unanchored  This contradicts the deployment doc."
+        );
+    }
+
+    #[test]
+    fn an_anchored_annotation_names_the_block_a_change_would_go_to() {
+        let line = annotation_summary(&json!({
+            "id": "note-1",
+            "confirmed_at": null,
+            "block_id": "block-9",
+            "content": "Wrong order."
+        }));
+
+        assert!(line.contains("block block-9"));
+    }
+
+    /// The list says whether the argument is over, not when. A timestamp in a
+    /// column of ids is noise, and the note itself carries the moment.
+    #[test]
+    fn a_settled_note_reads_as_one_word() {
+        let line = annotation_summary(&json!({
+            "id": "note-1",
+            "confirmed_at": "2026-08-28T09:00:00Z",
+            "block_id": null,
+            "content": "Fixed in the rewrite."
+        }));
+
+        assert!(line.starts_with("note-1  confirmed  unanchored"));
+    }
+
+    /// A first line printed silently reads as the whole note.
+    #[test]
+    fn a_multi_line_note_says_that_the_line_is_not_all_of_it() {
+        assert_eq!(
+            opening_of("First point.\n\nSecond point."),
+            "First point. (more below)"
+        );
+        assert_eq!(opening_of("Only this."), "Only this.");
+        assert_eq!(
+            opening_of("\n\nLeading blanks are not the note.\n"),
+            "Leading blanks are not the note."
+        );
+    }
+
+    /// Replies are numbered and nothing else. Who wrote one does not change
+    /// what the argument says, and this binary is never the one deciding.
+    #[test]
+    fn a_reply_is_headed_by_its_position() {
+        assert_eq!(reply_heading(&json!({"position": 0})), "reply 0:");
+        assert_eq!(reply_heading(&json!({"position": 3})), "reply 3:");
+    }
+
     /// What each document command puts on the wire, against a real socket.
     ///
     /// The four working-copy commands especially: they were added to stop a
@@ -737,8 +1067,9 @@ mod tests {
     /// checked that they ask the endpoints that show it what it has standing.
     mod api {
         use super::super::{
-            contentions, create, proposals, propose, rebase, working, ContentionsArgs, CreateArgs,
-            ProposalsArgs, ProposeArgs, RebaseArgs, ShowArgs,
+            annotation, annotations, contentions, create, proposals, propose, rebase, working,
+            AnnotationArgs, AnnotationsArgs, ContentionsArgs, CreateArgs, ProposalsArgs,
+            ProposeArgs, RebaseArgs, ShowArgs,
         };
         use crate::config::Config;
         use crate::testing::{client, Reply, StubServer};
@@ -922,6 +1253,64 @@ mod tests {
                 "/api/v1/documents/doc-1/proposals?conversation_id=conversation-id&status=live"
             );
             assert_eq!(requests[1].target, "/api/v1/documents/doc-1/proposals");
+        }
+
+        /// The listing a topic reads before proposing anything. No topic of its
+        /// own: what is unsettled on a document is not a fact about who asks.
+        #[test]
+        fn annotations_are_read_off_the_document_with_the_filters_as_written() {
+            let server = StubServer::start(vec![Reply::json(200, json!({"data": []}))]);
+
+            annotations(
+                &client(&server),
+                AnnotationsArgs {
+                    document_id: "doc-1".to_string(),
+                    block: Some("none".to_string()),
+                    unconfirmed: true,
+                    confirmed: false,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                server.only_request()[0].target,
+                "/api/v1/documents/doc-1/annotations?block_id=none&confirmed=false"
+            );
+        }
+
+        /// The replies are the reason to read one, and they arrive only from
+        /// the endpoint for a single note -- the listing does not carry them.
+        #[test]
+        fn one_annotation_is_read_through_its_own_endpoint_and_prints_its_thread() {
+            let server = StubServer::start(vec![Reply::json(
+                200,
+                json!({"data": {
+                    "id": "note-1",
+                    "confirmed_at": null,
+                    "block_id": "block-9",
+                    "selected_text": "rolled back in one step",
+                    "content": "This is not what we agreed.",
+                    "replies": [
+                        {"position": 0, "content": "Agreed, it should be two."}
+                    ]
+                }}),
+            )]);
+
+            annotation(
+                &client(&server),
+                AnnotationArgs {
+                    document_id: "doc-1".to_string(),
+                    annotation_id: "note-1".to_string(),
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].method, "GET");
+            assert_eq!(
+                requests[0].target,
+                "/api/v1/documents/doc-1/annotations/note-1"
+            );
         }
 
         #[test]
