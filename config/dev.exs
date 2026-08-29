@@ -26,6 +26,8 @@ config :rinto_pmo_web, RintoPMOWeb.Endpoint,
   secret_key_base: "D4HqeTxQqXTu4gKiCIebVYd3rueCIBV9RsvBMMW0Le2Vz6qIELpbSQN0hzzkP80l",
   watchers: []
 
+config :rinto_pmo, RintoPMO.Workspace, root: Path.expand("~/Downloads/workspace_root")
+
 # ## SSL Support
 #
 # In order to use HTTPS in development, a self-signed
