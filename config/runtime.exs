@@ -48,6 +48,24 @@ if ai_token != "" do
   config :rinto_pmo, :ai, token: ai_token
 end
 
+# Where the repositories registered against a project are kept on disk, so the
+# agent can read a project's code while discussing its documents.
+#
+# Absent means the feature is off: nothing is cloned, and a request for a
+# checkout is refused. That is the right default -- a machine that has not been
+# told where to put working copies should not invent a location -- and it makes
+# turning this on a configuration change rather than a deploy.
+#
+# Blank counts as absent, for the same reason RINTO_AI_TOKEN does: an
+# environment file written from a template has `RINTO_WORKSPACE_ROOT=` in it,
+# and an empty string would otherwise become a path relative to the release
+# directory, which a deploy replaces.
+workspace_root = "RINTO_WORKSPACE_ROOT" |> System.get_env("") |> String.trim()
+
+if workspace_root != "" do
+  config :rinto_pmo, RintoPMO.Workspace, root: workspace_root
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

@@ -26,16 +26,36 @@ defmodule RintoPMO.Projects.ProjectRepo do
     timestamps()
   end
 
+  # The name is also a directory under the workspace root and an argument to
+  # git, so it cannot lead with a dash or climb out of where it belongs.
+  # Requiring an alphanumeric first character settles all of it at once.
+  @name ~r{\A[A-Za-z0-9][A-Za-z0-9._-]*\z}
+
   @doc false
   def changeset(%__MODULE__{} = project_repo, attrs) do
     project_repo
     |> cast(attrs, [:name, :git_url, :branch, :credential_id])
     |> validate_required([:name, :git_url, :branch])
+    |> validate_format(:name, @name,
+      message: "must start with a letter or digit and contain only letters, digits, . _ -"
+    )
     |> validate_git_url()
     |> validate_https_when_credential_present()
     |> foreign_key_constraint(:project_id)
     |> foreign_key_constraint(:credential_id)
     |> unique_constraint(:name, name: :project_repos_project_id_name_index)
+  end
+
+  @doc """
+  Records what a synchronisation found.
+
+  Separate from `changeset/2` because these two columns are not configuration:
+  `RintoPMO.Workspace` is the only thing that writes them, and nothing offered
+  at the API boundary should be able to claim a repository is current.
+  """
+  @spec sync_changeset(t(), map()) :: Ecto.Changeset.t()
+  def sync_changeset(%__MODULE__{} = project_repo, attrs) do
+    cast(project_repo, attrs, [:last_synced_at, :last_sync_error])
   end
 
   defp validate_git_url(changeset) do
