@@ -47,9 +47,15 @@ defmodule RintoPMO.Workspace do
   ## Worktrees are swept, not kept
 
   A worktree nobody has asked about in `:worktree_retention_ms` is removed on
-  the way out of the next checkout of that repository. There is no timer here
-  either: a branch is rebuilt by one local `worktree add`, so keeping one costs
-  more than losing one.
+  the way out of the next checkout -- of any repository, not only its own, so
+  that a repository deleted from `project_repos` does not leave working trees
+  nothing will ever come back for. There is no timer here either: a branch is
+  rebuilt by one local `worktree add`, so keeping one costs more than losing
+  one.
+
+  Mirrors are the exception and outlive their repository. A mirror is the
+  expensive thing to rebuild, and nothing here decides on its own that a clone
+  is not coming back.
 
   What counts as "asked about" is recorded rather than inferred -- see
   `stamp/1`. git cannot answer it: worktrees here are detached, and
@@ -456,27 +462,74 @@ defmodule RintoPMO.Workspace do
   # the same reason fetching is lazy: a repository nobody is discussing should
   # cost nothing at all.
   #
+  # ## Every repository, not just this one
+  #
+  # A checkout sweeps the whole workspace. Scoped to the repository being asked
+  # about, the directories that most need collecting would be exactly the ones
+  # never collected: a repository deleted from `project_repos` is never checked
+  # out again, so its worktrees would sit there for good. Deleting the row does
+  # not touch the disk, deliberately -- a metadata operation that reaches into
+  # the filesystem is a surprise -- and this is what makes that affordable.
+  #
+  # Only mirrors outlive their repository. That is the deliberate half: a mirror
+  # is the expensive thing to rebuild, and nothing here decides on its own that
+  # a clone is not coming back.
+  #
   # Nothing here can fail a checkout. The caller already has its answer, and a
   # directory that could not be removed is worth strictly less than the path it
   # would take down with it.
-  defp sweep(%{mirror: mirror, worktrees: worktrees} = context, keep) do
+  defp sweep(%{root: root} = context, keep) do
     cutoff = System.os_time(:second) - div(setting(:worktree_retention_ms), 1_000)
 
+    Enum.each(worktree_dirs(root), &sweep_one(context, &1, keep, cutoff))
+  rescue
+    # File.stat on something that vanished mid-walk, a permission change, a
+    # layout from an older version of this module. None of it is the caller's
+    # problem, and all of it comes back next time.
+    _error -> :ok
+  end
+
+  defp sweep_one(context, worktrees, keep, cutoff) do
     case Enum.filter(existing(worktrees), &(&1 != keep and last_used(&1) < cutoff)) do
       [] ->
         :ok
 
       stale ->
         Enum.each(stale, &File.rm_rf/1)
-        _ = Git.run(["-C", mirror, "worktree", "prune"], local_opts(context))
+        prune(context, Path.join(Path.dirname(worktrees), ".mirror"))
         collect_empty(worktrees)
         :ok
     end
-  rescue
-    # File.stat on something that vanished mid-walk, a permission change, a
-    # layout from an older version of this module. None of it is the caller's
-    # problem, and all of it comes back next time.
-    _error -> :ok
+  end
+
+  # A mirror whose repository was deleted still prunes, and should: the removed
+  # worktrees left administrative files inside it. One that is gone entirely has
+  # nothing to prune and no repository to run git in.
+  defp prune(context, mirror) do
+    if File.dir?(mirror) do
+      _ = Git.run(["-C", mirror, "worktree", "prune"], local_opts(context))
+    end
+
+    :ok
+  end
+
+  # `<root>/<project-slug>/<repo-id>/worktrees`, enumerated rather than walked.
+  # The layout is known, and a blind walk would descend into `.mirror`, where
+  # git keeps a `worktrees/` directory of its own bookkeeping -- collecting the
+  # empty directories out of *that* would break the repository.
+  defp worktree_dirs(root) do
+    for project <- entries(root),
+        repo <- entries(project),
+        worktrees = Path.join(repo, "worktrees"),
+        File.dir?(worktrees),
+        do: worktrees
+  end
+
+  defp entries(dir) do
+    case File.ls(dir) do
+      {:ok, entries} -> entries |> Enum.map(&Path.join(dir, &1)) |> Enum.filter(&File.dir?/1)
+      {:error, _reason} -> []
+    end
   end
 
   # Every worktree under `dir`, found by the `.git` file git leaves in each one.

@@ -458,6 +458,41 @@ defmodule RintoPMO.WorkspaceTest do
       assert File.dir?(Path.join([Workspace.root(), "acme", repo.id, "worktrees"]))
     end
 
+    test "reaches a repository that was deleted, whose own checkout will never come", %{
+      tmp_dir: tmp_dir
+    } do
+      %{project: project, repo: gone} = fixture(tmp_dir)
+      assert {:ok, orphan} = Workspace.perform_checkout(project, gone, branch: "feat/x")
+      age!(orphan.path, 4)
+
+      # The row goes; the disk is deliberately left alone by the delete itself.
+      Repo.delete!(gone)
+      other = insert(:project_repo, project: project, git_url: Path.join(tmp_dir, "origin"))
+
+      assert {:ok, _checkout} = Workspace.perform_checkout(project, other)
+
+      refute File.exists?(orphan.path)
+      # The mirror stays: it is the expensive thing, and nothing here decides a
+      # clone is not coming back.
+      assert File.dir?(Path.join([Workspace.root(), "acme", gone.id, ".mirror"]))
+    end
+
+    test "leaves git's own bookkeeping inside a mirror alone", %{tmp_dir: tmp_dir} do
+      %{project: project, repo: repo} = fixture(tmp_dir)
+      assert {:ok, topic} = Workspace.perform_checkout(project, repo, branch: "feat/x")
+      admin = Path.join([Workspace.root(), "acme", repo.id, ".mirror", "worktrees"])
+      assert File.dir?(admin)
+      age!(topic.path, 4)
+
+      assert {:ok, _main} = Workspace.perform_checkout(project, reload(repo))
+
+      # A blind walk would have found `.mirror/worktrees` and collected the empty
+      # directories out of git's own bookkeeping. The repository still answers.
+      mirror = Path.join([Workspace.root(), "acme", repo.id, ".mirror"])
+      assert mirror |> git!(["rev-parse", "--verify", "refs/heads/main"]) |> String.trim() != ""
+      assert File.exists?(Path.join(mirror, "HEAD"))
+    end
+
     test "leaves the mirror able to hand out that branch again", %{tmp_dir: tmp_dir} do
       %{origin: origin, project: project, repo: repo} = fixture(tmp_dir)
       assert {:ok, topic} = Workspace.perform_checkout(project, repo, branch: "feat/x")
