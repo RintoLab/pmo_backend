@@ -63,10 +63,17 @@ different things:
   environment and no config file. Writes are credited to that topic's assistant,
   and changes to documents can only be *proposed*, never committed.
 
+`repo checkout` belongs to the second one only. The path it prints is the
+server's own, and the directory behind it is **read-only**: the agent reading a
+project's code is not the developer changing it, and the next checkout throws
+away anything written there. On a developer's machine the repository to be in is
+`project show`'s business, and the checkout is the developer's own.
+
 | Group | Commands |
 |---|---|
 | `config` | `init`, `show` |
 | `project` | `list`, `show` -- repositories, directory names, default branches |
+| `repo` | `checkout` -- puts a branch on the *server's* disk and says where; only useful there |
 | `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `split`, `start`, `complete`, `cancel`, `reopen`, `delete` |
 | `schedule` | one command; what each week holds and what did not fit in it |
 | `history` | one command; what was actually worked, with the plan beside it |
