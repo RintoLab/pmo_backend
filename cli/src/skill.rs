@@ -7,8 +7,8 @@
 //!   the same artifact as `--help`. A binary can no longer be paired with a
 //!   skill written for a different version of itself.
 //! * **deployment that lives in someone's memory** -- `rinto-pmo skill install`
-//!   is one line in a Dockerfile, where copying a directory tree is a step
-//!   somebody forgets when rebuilding an image.
+//!   is one line in `deploy/provision_agent.sh`, where copying a directory tree
+//!   would be a step somebody forgets when rebuilding a machine.
 //!
 //! This does not contradict "fetch teaching material from the server": that
 //! rule covers the vocabulary a model constructs *data* against (block schema),

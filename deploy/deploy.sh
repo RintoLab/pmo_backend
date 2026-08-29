@@ -27,6 +27,12 @@ cleanup() {
       echo "the current release path ${app_root} was left untouched" >&2
     fi
     echo "database migrations and the installed environment/unit were not rolled back" >&2
+    # provision_agent.sh runs before this script, so by the time anything here
+    # can fail the agent side is already this attempt's. Named because it is the
+    # one part of a failed deploy that answers requests: a topic's pi keeps
+    # working, against whichever release ends up serving.
+    echo "neither is the agent side -- provision_agent.sh ran first, so the CLI," >&2
+    echo "its skill and ~deploy/.pi/agent/AGENTS.md are already this attempt's" >&2
   fi
   exit "${status}"
 }
