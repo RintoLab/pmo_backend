@@ -183,14 +183,20 @@ After publication, the workflow writes `CLI_COMMIT` and then `CLI_VERSION`;
 VERSION is the main-branch completion marker, so a partial state write retries.
 Tag names do not supply or validate the CLI version.
 
-`.gitea/workflows/release-cli.yml` serializes CLI releases without blocking the
-independent Server release group. It builds locked optimized binaries on the
-`amd64` and `darwin-arm64` runners, executes each native binary and checks its
+`.gitea/workflows/release.yml` builds locked optimized binaries on the `amd64`
+and `darwin-arm64` runners, executes each native binary and checks its
 version/architecture, stages it under a run-and-attempt-specific identity, and
 publishes binaries, `SHA256SUMS`, and `manifest.json` (last) under the version
-from `cli/VERSION`.
+from `cli/VERSION`. The published package is linked to this repository, so it is
+listed under the repository's Packages tab rather than only the org's.
 
 It then republishes that same `manifest.json` under the mutable `latest` pointer
 version, which is what `rinto-pmo update` reads. The pointer is written after the
 versioned assets, so it never advertises a partial publication, and the pointer
 name is kept in step with `POINTER_VERSION` in `cli/src/update.rs`.
+
+The Server release lives in the same workflow and waits on the CLI, because the
+deploy installs the CLI onto the server's own host. A push that leaves
+`cli/VERSION` alone skips every CLI job and the Server still releases; a CLI job
+that *fails* holds the Server back, since `latest` would still be the previous
+CLI.
