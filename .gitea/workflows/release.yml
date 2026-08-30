@@ -365,8 +365,15 @@ jobs:
           esac
           exit 0
 
-  notify:
-    needs: [plan, build-linux, build-darwin, publish, cleanup-staging]
+  # The CLI's own card, closed the moment the CLI is done. The Server closes its
+  # card from inside its own job, so each half reports when that half finishes
+  # rather than when the run does. Deliberately not waiting on cleanup-staging:
+  # deleting the staging package says nothing about whether the CLI was
+  # released, and waiting for it held this card open past the point where the
+  # Server had already opened its own -- two cards reading "running" for one
+  # release that was half over.
+  notify-cli:
+    needs: [plan, build-linux, build-darwin, publish]
     if: always()
     runs-on: rust-1.97.1
     steps:
