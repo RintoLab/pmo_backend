@@ -10,7 +10,7 @@ the selected asset to a temporary file and atomically installs it as the stable
 command `~/.local/bin/rinto-pmo`:
 
 ```sh
-CLI_VERSION=0.2.0 # keep this aligned with cli/VERSION
+CLI_VERSION=0.2.1 # keep this aligned with cli/VERSION
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64) asset=rinto-pmo-linux-amd64 ;;
   Darwin/arm64) asset=rinto-pmo-darwin-arm64 ;;
