@@ -15,6 +15,10 @@ printf 'machine %s\nlogin %s\npassword %s\n' "${host}" "${PACKAGE_PUBLISH_USER}"
 
 url() { printf '%s/api/packages/%s/generic/%s/%s%s' "${base}" "${PACKAGE_OWNER}" "$1" "$2" "${3:-}"; }
 
+# The upload endpoint lives under /api/packages; package administration lives
+# under the regular /api/v1 surface.
+admin_url() { printf '%s/api/v1/packages/%s/generic/%s%s' "${base}" "${PACKAGE_OWNER}" "$1" "$2"; }
+
 put_file() {
   local package="$1" version="$2" file="$3" name="$4" endpoint code existing
   endpoint="$(url "${package}" "${version}" "/${name}")"
@@ -52,10 +56,27 @@ publish_pointer() {
   put_file "$1" "$2" "$3" "$4"
 }
 
+# A generic package belongs to the owner, not to a repository, so without this
+# it is only reachable through the org's Packages tab. The link is stored once
+# per package rather than per version, and re-linking the same repository
+# overwrites the existing row, so this is safe to repeat on every release.
+# The repository must belong to PACKAGE_OWNER; a repository under another owner
+# answers 404 here.
+link_repo() {
+  local package="$1" repo="$2" code
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --netrc-file "${netrc}" \
+    -X POST "$(admin_url "${package}" "/-/link/${repo}")")" || code=000
+  case "${code}" in
+    201) ;;
+    *) echo "package link failed for ${package} -> ${repo} (HTTP ${code})" >&2; exit 1 ;;
+  esac
+}
+
 case "${1:-}" in
   put) [ "$#" -eq 5 ] || exit 64; put_file "$2" "$3" "$4" "$5" ;;
   get) [ "$#" -eq 5 ] || exit 64; get_file "$2" "$3" "$4" "$5" ;;
   pointer) [ "$#" -eq 5 ] || exit 64; publish_pointer "$2" "$3" "$4" "$5" ;;
   delete) [ "$#" -eq 3 ] || exit 64; delete_version "$2" "$3" ;;
-  *) echo "usage: package_registry.sh put <package> <version> <file> <name> | get <package> <version> <name> <output> | pointer <package> <pointer> <file> <name> | delete <package> <version>" >&2; exit 64 ;;
+  link) [ "$#" -eq 3 ] || exit 64; link_repo "$2" "$3" ;;
+  *) echo "usage: package_registry.sh put <package> <version> <file> <name> | get <package> <version> <name> <output> | pointer <package> <pointer> <file> <name> | delete <package> <version> | link <package> <repo>" >&2; exit 64 ;;
 esac

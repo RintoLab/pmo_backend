@@ -318,6 +318,16 @@ jobs:
           deploy/nacos.sh put "${CLI_COMMIT_DATA_ID}" "${SHA}"
           deploy/nacos.sh put "${CLI_VERSION_DATA_ID}" "${VERSION}"
 
+      # Deliberately its own step, after the release is complete: the link only
+      # decides where the package is listed, so a failure here should turn the
+      # run red without leaving a half-published release behind. The repaired-
+      # pointer path above exits the previous step early and still lands here,
+      # so a missing link is re-established by re-running the release.
+      - name: Link the package to this repository
+        env:
+          REPO: ${{ gitea.repository }}
+        run: deploy/package_registry.sh link "${PACKAGE_NAME}" "${REPO##*/}"
+
   cleanup-staging:
     needs: [plan, build-linux, build-darwin, publish]
     if: always()
