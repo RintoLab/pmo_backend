@@ -64,6 +64,17 @@ config :rinto_pmo,
 # `token` is deliberately absent from this file. It is a credential, and
 # credentials are read at runtime -- see `config/runtime.exs`, and
 # `config/dev.secret.exs` for a developer's own copy.
+#
+# Everything here that names *where the service is and what it serves* -- the
+# base URL, the three URIs, the three model names -- is a default rather than a
+# decision. `config/runtime.exs` reads a `RINTO_AI_*` variable for each, so an
+# installation can be moved to another gateway, or asked for a bigger model,
+# without a rebuild. Absent or blank leaves the value below in place.
+#
+# `query_instruction` and `timeout` are the exception, on purpose: they are
+# tuning knobs of how this system searches, the same on every installation, and
+# a per-deployment override of them would mean two servers of the same version
+# quietly retrieving differently.
 config :rinto_pmo, :ai,
   base_url: "https://ai.kenton.wang/v1",
   embedding_uri: "/embeddings",
@@ -74,7 +85,9 @@ config :rinto_pmo, :ai,
   #
   #   * `/embeddings` -- Qwen3-Embedding-0.6B, whose 1024 dimensions are what
   #     every `embedding` column is declared as. Changing it means rewriting
-  #     those columns, so it is not a setting to flip casually.
+  #     those columns, so it is not a setting to flip casually -- and since
+  #     `RINTO_AI_EMBEDDING_MODEL` now makes flipping it a one-line edit to an
+  #     environment file, `config/runtime.exs` spells out what that costs.
   #   * `/rerank` -- Qwen3-Reranker-0.6B, a separate model in that family
   #     rather than the embedding model scoring pairs.
   #

@@ -48,6 +48,85 @@ if ai_token != "" do
   config :rinto_pmo, :ai, token: ai_token
 end
 
+# The rest of the same service: where it answers and what it serves. Compiled
+# defaults are in `config/config.exs`; each of these overrides one of them, so
+# pointing an installation at a different gateway -- or asking it for a bigger
+# model -- is a configuration change rather than a rebuild.
+#
+# Absent leaves the compiled default in place, and blank counts as absent, for
+# the reason RINTO_AI_TOKEN does: an environment file written from a template
+# carries every key with nothing after the `=`, and an empty base URL would
+# turn every call into a request against a relative path.
+#
+# Nothing here can fail a boot. These name an address; whether anything answers
+# there is not a question this file can ask, and a release that refused to
+# start over a typo'd URI would take the whole API down for the one feature
+# that degrades gracefully anyway.
+ai_env = fn name -> name |> System.get_env("") |> String.trim() end
+
+ai_base_url =
+  case ai_env.("RINTO_AI_BASE_URL") do
+    "" ->
+      []
+
+    # `post/2` builds a call by concatenating a URI onto this, and a base URL
+    # copied out of a browser ends in a slash as often as not. `/v1//embeddings`
+    # is a 404 whose cause is one character wide.
+    url ->
+      [base_url: String.trim_trailing(url, "/")]
+  end
+
+ai_uris =
+  Enum.flat_map(
+    [
+      embedding_uri: "RINTO_AI_EMBEDDING_URI",
+      rerank_uri: "RINTO_AI_RERANK_URI",
+      score_uri: "RINTO_AI_SCORE_URI"
+    ],
+    fn {key, name} ->
+      case ai_env.(name) do
+        "" -> []
+        "/" <> _ = uri -> [{key, uri}]
+        # The other half of that concatenation: a URI written without its
+        # leading slash grafts itself onto the last segment of the base URL.
+        uri -> [{key, "/" <> uri}]
+      end
+    end
+  )
+
+# Three names rather than one because the endpoints are free to serve different
+# models, and `config/config.exs` explains why they eventually will.
+#
+# `RINTO_AI_EMBEDDING_MODEL` is the one to be careful with, and it is careful in
+# a way the other two are not: every `embedding` column is declared with the
+# dimensions of the model that filled it. Point this at a model of a different
+# size and the next write fails on a dimension mismatch -- loud, and recoverable
+# by putting the name back. Point it at a *different model of the same size* and
+# nothing fails at all: the new vectors are simply not comparable with the old
+# ones, and search quietly returns worse answers over a corpus embedded by two
+# models. Changing this means clearing every `embedding` column and letting the
+# worker refill them. See docs/deployment.md §1.
+ai_models =
+  Enum.flat_map(
+    [
+      embedding_model: "RINTO_AI_EMBEDDING_MODEL",
+      rerank_model: "RINTO_AI_RERANK_MODEL",
+      score_model: "RINTO_AI_SCORE_MODEL"
+    ],
+    fn {key, name} ->
+      case ai_env.(name) do
+        "" -> []
+        model -> [{key, model}]
+      end
+    end
+  )
+
+ai_overrides = ai_base_url ++ ai_uris ++ ai_models
+
+if ai_overrides != [] do
+  config :rinto_pmo, :ai, ai_overrides
+end
+
 # Where the repositories registered against a project are kept on disk, so the
 # agent can read a project's code while discussing its documents.
 #
