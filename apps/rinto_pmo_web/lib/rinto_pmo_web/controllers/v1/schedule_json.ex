@@ -1,5 +1,4 @@
 defmodule RintoPMOWeb.V1.ScheduleJSON do
-  alias RintoPMO.Calendar
   alias RintoPMOWeb.V1.TaskJSON
 
   @doc """
@@ -63,23 +62,35 @@ defmodule RintoPMOWeb.V1.ScheduleJSON do
   # without showing this is presenting a guess as a fact.
   defp week(%{week: week, capacity: capacity, allocations: allocations} = plan) do
     days = Enum.group_by(allocations, & &1.day)
+    capacities = Map.new(plan.capacities)
 
     %{
       week: week,
       capacity: capacity,
       calendar_known: plan.calendar_known,
       allocated: Enum.sum_by(allocations, & &1.minutes),
-      days: Enum.map(Enum.sort(Map.keys(days), Date), &day(&1, Map.fetch!(days, &1))),
+      days:
+        Enum.map(
+          Enum.sort(Map.keys(days), Date),
+          &day(&1, Map.fetch!(days, &1), Map.fetch!(capacities, &1))
+        ),
       overflow: Enum.map(plan.overflow, &TaskJSON.data/1),
       blocked: Enum.map(plan.blocked, &TaskJSON.data/1)
     }
   end
 
-  defp day(day, allocations) do
+  # `capacity` is this day's, not `Calendar.daily_capacity/0`. Leave comes off
+  # a day by the minute, so a Tuesday somebody is away for two hours of is 360
+  # minutes long, and a bar drawn against a hardcoded 480 would show it as
+  # comfortably under when it was full.
+  #
+  # A day with no minutes left is not here at all -- it received no work, so it
+  # has no entry. Which day that is, and why, is `GET /calendar/days`.
+  defp day(day, allocations, capacity) do
     %{
       day: day,
       allocated: Enum.sum_by(allocations, & &1.minutes),
-      capacity: Calendar.daily_capacity(),
+      capacity: capacity,
       tasks: Enum.map(allocations, &allocation/1)
     }
   end

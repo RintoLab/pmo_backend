@@ -178,7 +178,15 @@ defmodule RintoPMO.ScheduleTest do
 
       plan = current |> Schedule.pack(current) |> for_week(current)
 
-      assert plan.allocations != [] or Calendar.workdays_in(Calendar.none(), current) == []
+      # Nothing lands only when the week has nothing left to offer, which on a
+      # weekend is the whole of it -- comparing against the week's workdays in
+      # the abstract made this fail every Saturday and Sunday.
+      remaining =
+        Calendar.none()
+        |> Calendar.capacities_in(current)
+        |> Enum.reject(fn {day, _minutes} -> Date.before?(day, today) end)
+
+      assert plan.allocations != [] or remaining == []
       assert Enum.all?(plan.allocations, &(not Date.before?(&1.day, today)))
     end
 

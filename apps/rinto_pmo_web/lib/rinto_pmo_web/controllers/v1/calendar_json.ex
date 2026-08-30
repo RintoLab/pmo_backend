@@ -1,9 +1,9 @@
 defmodule RintoPMOWeb.V1.CalendarJSON do
-  alias RintoPMO.Calendar.Day
   alias RintoPMO.Calendar.Import
+  alias RintoPMO.Calendar.Leave
 
   @doc """
-  The exceptions in a span, and which years are actually behind them.
+  The days in a span that are not ordinary, and which years are behind them.
 
   `imports` is not decoration. A day missing from `days` means "ordinary" only
   for a year that appears here; for any other year it means nobody has looked,
@@ -18,13 +18,41 @@ defmodule RintoPMOWeb.V1.CalendarJSON do
 
   def show(%{day: day}), do: %{data: data(day)}
 
-  defp data(%Day{} = day) do
+  # Two facts about a day, kept apart because they have different owners and
+  # different answers. `kind` and `name` are the announcement's, null on a day
+  # it said nothing about; `leave` is the person's, null when they are here.
+  # They used to be one `kind` field with `leave` as a third value, which meant
+  # a day could not be both -- and taking a make-up Saturday off erased the
+  # fact that it had been one.
+  #
+  # The two capacities are derived, and both are given so that a client can
+  # show the subtraction rather than reproduce it. `capacity_minutes` is the
+  # number that matters: it is what `GET /schedule` packs against.
+  defp data(view) do
     %{
-      day: day.day,
-      kind: day.kind,
-      name: day.name,
-      inserted_at: day.inserted_at,
-      updated_at: day.updated_at
+      day: view.day,
+      kind: view.base && view.base.kind,
+      name: view.base && view.base.name,
+      leave: leave_data(view.leave),
+      base_capacity_minutes: view.base_capacity_minutes,
+      capacity_minutes: view.capacity_minutes,
+      inserted_at: view.base && view.base.inserted_at,
+      updated_at: view.base && view.base.updated_at
+    }
+  end
+
+  # `minutes` is what the person said, not what it came to. It can exceed the
+  # day -- 1440 is the convention for a whole day off -- and a client showing it
+  # against `base_capacity_minutes` is showing both halves of the comparison
+  # that produced `capacity_minutes`.
+  defp leave_data(nil), do: nil
+
+  defp leave_data(%Leave{} = leave) do
+    %{
+      minutes: leave.minutes,
+      name: leave.name,
+      inserted_at: leave.inserted_at,
+      updated_at: leave.updated_at
     }
   end
 

@@ -67,10 +67,16 @@ tags:
       asking for a project's own schedule.
   - name: Calendar
     description: >
-      Which days are not what the weekend rule says. Statutory holidays and the
-      weekends worked to make up for them are fetched daily from published
-      State Council announcements and are read-only here; leave is the half a
-      person writes.
+      Which days are not what the weekend rule says, and how many minutes each
+      one is left holding. Statutory holidays and the weekends worked to make up
+      for them are fetched daily from published State Council announcements and
+      are read-only here; leave is the half a person writes, and it is measured
+      in minutes rather than in whole days.
+
+      The two are independent, and the order matters: the announcement sets what
+      a day starts with, and leave subtracts from it. Neither can overwrite the
+      other, so an amended holiday finds the leave still there and a deleted
+      leave gives the day its minutes back.
   - name: Conversations
     description: >
       Topics: the process layer of collaborative review, as opposed to the
@@ -2731,8 +2737,15 @@ paths:
       operationId: listCalendarDays
       summary: The days that depart from Monday-to-Friday
       description: >
-        Only exceptions. The default stands on its own -- Monday through Friday,
-        480 minutes each -- so a year with no departures is an empty list.
+        Only departures. The default stands on its own -- Monday through
+        Friday, 480 minutes each -- so a span with nothing said about it is an
+        empty list.
+
+        A day is here because the announcement said something about it
+        (`kind`), or because the person is away for part of it (`leave`), or
+        both. The two are independent: leave never overwrites the calendar
+        underneath, and taking a make-up Saturday off leaves it a `workday`
+        that happens to hold no minutes.
 
         `imports` is not decoration. A day missing from `data` means "ordinary"
         only for a year that appears there; for any other year it means nobody
@@ -2776,22 +2789,47 @@ paths:
     put:
       tags: [Calendar]
       operationId: putCalendarLeave
-      summary: Record that the person is away on a day
+      summary: Record how many minutes of a day the person is away for
       description: >
-        Idempotent, and it wins over an imported holiday: being away on a day
-        that was already off is not a conflict, and the row that survives is
-        the one a person wrote. Imports may never overwrite it.
+        Idempotent on the date: asking twice replaces rather than accumulates,
+        so a correction is a second `PUT` and not a sum of every time somebody
+        changed their mind.
 
-        For one person this is the kind that matters most. A statutory holiday
-        arrives a few times a year and is the same for everybody; being away is
-        neither, and no announcement covers it.
+        It does not touch the calendar underneath. Being away on a day that was
+        already off is recorded, subtracts from a day that holds nothing, and
+        is still there if that day is later amended into one that does. Imports
+        never see it and can never overwrite it -- they are separate tables.
+
+        For one person this is the record that matters most. A statutory
+        holiday arrives a few times a year and is the same for everybody; being
+        away for two hours on Tuesday is neither, and no announcement covers
+        it.
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [minutes]
               properties:
+                minutes:
+                  type: integer
+                  minimum: 1
+                  description: >
+                    How much of the day is gone. **There is no upper bound, and
+                    that is deliberate.** Whether a number covers the whole day
+                    is a comparison against what that day holds, made every time
+                    capacity is asked -- `max(base_capacity_minutes - minutes,
+                    0)` -- rather than a property fixed when the row was
+                    written. Validating against 480 here would freeze today's
+                    daily capacity into rows that outlive it.
+
+                    **A whole day off is 1440**, every minute of a calendar day.
+                    Send that rather than 480: it is a fact about calendar days
+                    instead of a copy of the daily capacity, so it still means
+                    a whole day if that number ever moves. Nothing enforces the
+                    convention; any value at or above what the day holds leaves
+                    zero.
                 name:
                   type: string
                   nullable: true
@@ -2811,8 +2849,12 @@ paths:
       operationId: deleteCalendarLeave
       summary: Remove a day of leave
       description: >
-        Only leave. A holiday is not a person's to delete, and the next import
-        would put it back regardless -- so this succeeds without removing one.
+        Only leave -- a holiday is in another table and out of reach, so this
+        succeeds without removing one.
+
+        The day goes back to whatever the announcement says about it. A make-up
+        Saturday that was taken off is a 480-minute Saturday again, which is
+        the whole reason leave and the calendar are kept apart.
       responses:
         "204":
           description: Leave gone, or was never there
@@ -5568,9 +5610,10 @@ components:
           type: integer
           minimum: 0
           description: >
-            Minutes this week had to give. In the current week the days already
-            behind us are not counted, so this is smaller than a full week --
-            compare `allocated` against this rather than against 5 x 480.
+            Minutes this week had to give, with leave already taken off. In the
+            current week the days already behind us are not counted either, so
+            this is smaller than a full week -- compare `allocated` against this
+            rather than against 5 x 480, which is now wrong for two reasons.
         calendar_known:
           type: boolean
           description: >
@@ -5587,10 +5630,12 @@ components:
           type: array
           description: >
             One entry per day that received work, earliest first. A day is a
-            shared 480-minute bar, not a per-task lane: a task that does not fit
-            in what is left of a day continues into the next one, and appears
-            under each with its own share. The shares sum to its estimate,
-            never more.
+            shared bar, not a per-task lane: a task that does not fit in what is
+            left of a day continues into the next one, and appears under each
+            with its own share. The shares sum to its estimate, never more.
+
+            How long the bar is comes from `capacity` on each entry, not from a
+            constant -- leave shortens a day without taking it out of the week.
           items:
             $ref: "#/components/schemas/ScheduleDay"
         overflow:
@@ -5632,7 +5677,14 @@ components:
         capacity:
           type: integer
           minimum: 0
-          description: Always one working day's minutes.
+          description: >
+            **This day's minutes, which is no longer always 480.** Leave comes
+            off a day by the minute, so a Tuesday somebody is away two hours of
+            is 360 minutes long, and a bar drawn against a hardcoded 480 shows
+            a full day as comfortably under.
+
+            A day with nothing left has no entry here at all -- it received no
+            work. Which day that is, and why, is `GET /calendar/days`.
         tasks:
           type: array
           items:
@@ -5651,23 +5703,77 @@ components:
       additionalProperties: false
     CalendarDay:
       type: object
-      required: [day, kind]
+      required: [day, kind, leave, base_capacity_minutes, capacity_minutes]
       properties:
         day:
           type: string
           format: date
         kind:
           type: string
-          enum: [holiday, workday, leave]
+          nullable: true
+          enum: [holiday, workday, null]
           description: >
-            `holiday` is a statutory day off on a day the weekend rule would
-            have worked. `workday` is the Saturday or Sunday worked to make up
-            for one -- the same field in the same source produces both, which is
-            why they share a table. `leave` is the person being away, and is the
-            only one a client writes.
+            What the announcement said about this day, and null when it said
+            nothing. `holiday` is a statutory day off on a day the weekend rule
+            would have worked; `workday` is the Saturday or Sunday worked to
+            make up for one -- the same field in the same source produces both.
+
+            Read-only. Leave is no longer a value here: a day can be both a
+            make-up `workday` and a day somebody is away for, and while `leave`
+            was a third kind it could not be, so taking that Saturday off
+            erased the fact that it had been one.
         name:
           type: string
           nullable: true
+          description: What the source called the day -- "春节". Not the leave's name.
+        leave:
+          $ref: "#/components/schemas/CalendarLeave"
+        base_capacity_minutes:
+          type: integer
+          minimum: 0
+          description: >
+            What the day starts with, before leave: 480 on a working day, 0 on
+            a weekend or a statutory holiday.
+        capacity_minutes:
+          type: integer
+          minimum: 0
+          description: >
+            What is left of it -- `max(base_capacity_minutes - leave.minutes,
+            0)`. This is the number `GET /schedule` packs against. Both halves
+            of the subtraction are given so a client can show it rather than
+            reproduce it.
+        inserted_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Of the imported row, null when the day has none.
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Of the imported row, null when the day has none.
+      additionalProperties: false
+    CalendarLeave:
+      type: object
+      nullable: true
+      required: [minutes]
+      description: >
+        How much of the day the person is away for, or null when they are
+        there. Written only through `PUT /calendar/days/{day}/leave`; an import
+        can neither create nor destroy it.
+      properties:
+        minutes:
+          type: integer
+          minimum: 1
+          description: >
+            What the person said, not what it came to. It may exceed the day --
+            1440 is the convention for a whole day off -- because whether it
+            covers the day is decided by comparing it against
+            `base_capacity_minutes`, not when it was recorded.
+        name:
+          type: string
+          nullable: true
+          description: Free text -- "看医生". Shown rather than reasoned about.
         inserted_at:
           type: string
           format: date-time

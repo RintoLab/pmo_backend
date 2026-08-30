@@ -2,10 +2,16 @@ defmodule RintoPMO.Schedule do
   @moduledoc """
   Fills a week's minutes with the work that was selected into it.
 
-  A week holds `RintoPMO.Calendar.week_capacity/1` minutes. `pack/2` walks the
+  A week holds `RintoPMO.Calendar.week_capacity/2` minutes. `pack/2` walks the
   tasks that were selected into it, in priority order, and gives each one the
   minutes it needs until the week runs out. What is left over is *reported*,
   not pushed forward into a week it was never selected for.
+
+  A day is worth whatever the calendar says it is worth, which is no longer the
+  same number for every workday: leave comes off it by the minute, so two hours
+  away on Tuesday is a 360-minute Tuesday and the fill sees it as one. Nothing
+  here knows that -- it asks `RintoPMO.Calendar.capacities_in/2` and packs what
+  it is handed.
 
   ## Filling, not forecasting
 
@@ -135,6 +141,11 @@ defmodule RintoPMO.Schedule do
   filled. `overflow` is in priority order, so the first entry is the one that
   came closest to making it in.
 
+  `capacities` is what each day of the week had to give before any of it was
+  spent, and `capacity` is their sum. Days holding nothing are not in it at
+  all, whether because the announcement took them or because somebody is away
+  for the whole of them.
+
   `calendar_known` is false when this week sits in a year whose holidays were
   never imported. The week is still planned -- refusing to answer helps nobody
   -- but Monday to Friday is all that is behind it, so anything presenting
@@ -143,6 +154,7 @@ defmodule RintoPMO.Schedule do
   @type week_plan :: %{
           week: Calendar.week(),
           capacity: non_neg_integer(),
+          capacities: [{Date.t(), pos_integer()}],
           calendar_known: boolean(),
           allocations: [allocation()],
           overflow: [Task.t()],
@@ -392,11 +404,14 @@ defmodule RintoPMO.Schedule do
   defp fill(week, tasks, edges, calendar) do
     today = Date.utc_today()
 
+    # `capacities_in/2` has already taken leave off, and already dropped the
+    # days that were left holding nothing -- a day taken off in full is not a
+    # short day, it is not a day work can go into at all, and a zero bucket
+    # would still have been somewhere a weightless task could land.
     buckets =
       calendar
-      |> Calendar.workdays_in(week)
-      |> Enum.reject(&Date.before?(&1, today))
-      |> Enum.map(&{&1, Calendar.daily_capacity()})
+      |> Calendar.capacities_in(week)
+      |> Enum.reject(fn {day, _minutes} -> Date.before?(day, today) end)
 
     # `tasks` is already in topological order, so by the time a task is reached
     # every prerequisite of it that is in this week has had its turn. `missing`
@@ -410,11 +425,16 @@ defmodule RintoPMO.Schedule do
       week: week,
       # What this week had to give, before any of it was spent -- the days
       # already behind us are not in `buckets` at all, so in the current week
-      # this is smaller than `Calendar.week_capacity/1`. That is the number to
+      # this is smaller than `Calendar.week_capacity/2`. That is the number to
       # compare a load against, and it is reported from here because this is
       # where the days were chosen. Recomputing it in a renderer would be a
       # second copy of the same rule, free to drift from this one.
       capacity: Enum.sum_by(buckets, fn {_day, free} -> free end),
+      # The same figure per day, for the same reason. A day is no longer worth
+      # `Calendar.daily_capacity/0` just because it is a workday -- leave takes
+      # minutes off it -- so a renderer that wants to draw a day's bar has to
+      # be told how long the bar is rather than assume 480.
+      capacities: buckets,
       calendar_known: Calendar.week_known?(calendar, week),
       # Stable, so a day's slices stay in the order they were filled.
       allocations: Enum.sort_by(allocations, &Date.to_erl(&1.day)),

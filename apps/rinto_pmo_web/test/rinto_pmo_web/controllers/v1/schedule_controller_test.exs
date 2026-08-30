@@ -112,13 +112,13 @@ defmodule RintoPMOWeb.V1.ScheduleControllerTest do
       assert plan["capacity"] == 4 * Calendar.daily_capacity()
     end
 
-    test "leave takes a day out the same way a holiday does", %{
+    test "a whole day of leave takes a day out the same way a holiday does", %{
       conn: conn,
       week: week,
       monday: monday
     } do
       {:ok, _} = RintoPMO.Calendar.import_year(monday.year, "test", [])
-      {:ok, _} = RintoPMO.Calendar.put_leave(monday, "away")
+      {:ok, _} = RintoPMO.Calendar.put_leave(monday, 1440, "年假")
 
       body =
         conn
@@ -126,6 +126,63 @@ defmodule RintoPMOWeb.V1.ScheduleControllerTest do
         |> json_response(200)
 
       assert week_of(body, week)["capacity"] == 4 * Calendar.daily_capacity()
+    end
+
+    test "two hours of leave takes two hours off the week, not a day", %{
+      conn: conn,
+      week: week,
+      monday: monday
+    } do
+      {:ok, _} = RintoPMO.Calendar.import_year(monday.year, "test", [])
+      {:ok, _} = RintoPMO.Calendar.put_leave(monday, 120, "看医生")
+
+      body =
+        conn
+        |> get(~p"/api/v1/schedule?from=#{Date.to_iso8601(week)}&to=#{Date.to_iso8601(week)}")
+        |> json_response(200)
+
+      assert week_of(body, week)["capacity"] == 5 * Calendar.daily_capacity() - 120
+    end
+
+    test "a day's bar is as long as that day, not as long as a workday", %{
+      conn: conn,
+      week: week,
+      monday: monday
+    } do
+      {:ok, _} = RintoPMO.Calendar.put_leave(monday, 120, "看医生")
+      scheduled(60, planned_start_on: monday)
+
+      body =
+        conn
+        |> get(~p"/api/v1/schedule?from=#{Date.to_iso8601(week)}&to=#{Date.to_iso8601(week)}")
+        |> json_response(200)
+
+      assert [%{"day" => day, "capacity" => 360, "allocated" => 60}] =
+               week_of(body, week)["days"]
+
+      assert day == Date.to_iso8601(monday)
+    end
+
+    test "work that no longer fits the shortened day is reported by name", %{
+      conn: conn,
+      week: week,
+      monday: monday
+    } do
+      {:ok, _} = RintoPMO.Calendar.import_year(monday.year, "test", [])
+      {:ok, _} = RintoPMO.Calendar.put_leave(monday, 120, "看医生")
+
+      # Four days of 480 plus a Monday of 360: the fifth 480 has nowhere to go.
+      for _ <- 1..5, do: scheduled(480, planned_start_on: monday, priority: 1)
+
+      body =
+        conn
+        |> get(~p"/api/v1/schedule?from=#{Date.to_iso8601(week)}&to=#{Date.to_iso8601(week)}")
+        |> json_response(200)
+
+      plan = week_of(body, week)
+
+      assert plan["allocated"] == 4 * Calendar.daily_capacity()
+      assert length(plan["overflow"]) == 1
     end
 
     test "refuses a date it cannot read", %{conn: conn} do
