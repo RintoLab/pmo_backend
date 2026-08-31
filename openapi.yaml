@@ -1826,6 +1826,82 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/proposals/{id}/rebase:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/BlockProposalId"
+    post:
+      tags: [Proposals]
+      operationId: rebaseProposal
+      summary: Carry a whole-document proposal across what landed under it
+      description: >
+        A whole-document proposal carries operations for blocks it did not
+        touch, so once something else commits, applying it would revert that.
+        `commit` refuses such a proposal with `409 stale_proposal`, and this is
+        the way forward: a three-way merge of the revision the proposal was
+        written against, what the proposal wants, and the revision that is now
+        current.
+
+
+        Asking the model to write it again is the wrong recovery. It costs
+        another round trip and throws away the review a person already did.
+
+
+        Per block: only the proposal changed it, use the proposal's; only
+        somebody else did, use theirs; both made the same change, use it; both
+        made different changes, conflict. A block the proposal deletes but
+        somebody else edited is also a conflict -- deleting it would silently
+        discard that edit. Blocks the proposal adds are kept.
+
+
+        Idempotent. A proposal already sitting on the current revision comes
+        back unchanged, so a caller may ask without first working out whether
+        it needs to. The proposal keeps its `id` and its original proposer:
+        carrying a proposal across a revision is a merge, not somebody writing
+        again.
+
+
+        Whole-document scope only. A block proposal's base is the latest
+        revision by construction, so there is nothing for this to do -- asking
+        for one answers `422 proposal_not_found`.
+      responses:
+        "200":
+          description: >
+            The same proposal, with `base_revision_id` moved to the current
+            revision and `content` / `block_ops` holding the merged result. It
+            can be committed as it stands.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockProposalResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            `rebase_conflict`. Nothing was changed -- the proposal still stands
+            where it was. `details.reason` is `diverged`, with `details.block_ids`
+            naming the blocks written differently on both sides; the granularity
+            is the block, the same as an ordinary contention, so a client can
+            reuse that presentation and a person makes the same kind of
+            decision. `reason` is `restructured` when blocks were added, removed
+            or reordered underneath (only a direct `POST /revisions` can do
+            that), and `details.added` / `details.removed` give the id
+            differences. A restructure does not merge; that one needs a fresh
+            proposal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          description: >
+            `proposal_not_found` when no live whole-document proposal has that
+            id, or `no_change_proposed` when the merge finds nothing left to do
+            -- somebody else already made the change this proposal wanted, and
+            it can be dropped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /documents/{document_id}/contentions:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
