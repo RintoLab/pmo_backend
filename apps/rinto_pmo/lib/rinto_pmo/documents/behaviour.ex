@@ -26,6 +26,18 @@ defmodule RintoPMO.Documents.Behaviour do
   @type contention :: %{block_id: UUIDv7.t(), proposals: [BlockProposal.t()]}
 
   @typedoc """
+  One of a topic's proposals, and whether anybody else is proposing into the
+  same slot.
+  """
+  @type standing_proposal :: %{proposal: BlockProposal.t(), contended: boolean()}
+
+  @typedoc """
+  What one topic has standing against one document. The document carries its
+  latest revision, so a review screen has a title without a second read.
+  """
+  @type working_set_entry :: %{document: Document.t(), proposals: [standing_proposal()]}
+
+  @typedoc """
   One document-level argument: a scope, and the proposals competing in it.
   """
   @type scope_contention :: %{scope: BlockProposal.scope(), proposals: [BlockProposal.t()]}
@@ -63,6 +75,7 @@ defmodule RintoPMO.Documents.Behaviour do
   @callback list_proposals(Document.t(), proposal_filter()) :: [BlockProposal.t()]
   @callback get_proposal!(Document.t(), UUIDv7.t()) :: BlockProposal.t()
   @callback live_conversation_proposals(UUIDv7.t()) :: [BlockProposal.t()]
+  @callback conversation_working_set(UUIDv7.t()) :: [working_set_entry()]
   @callback propose_block(Document.t(), map()) ::
               {:ok, proposed()}
               | {:error, Ecto.Changeset.t()}
@@ -98,6 +111,10 @@ defmodule RintoPMO.Documents.Behaviour do
               | {:error, atom(), map()}
   @callback commit_proposals(Document.t(), map()) ::
               {:ok, DocumentRevision.t()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
+  @callback commit_many([{Document.t(), map()}]) ::
+              {:ok, [DocumentRevision.t()]}
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
   @callback breakdown_of(Document.t()) :: Document.t() | nil

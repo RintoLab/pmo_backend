@@ -75,6 +75,18 @@ defmodule RintoPMOWeb.DocumentChannelTest do
     assert_push "decomposition_output", %{chunk: "text"}
   end
 
+  # Carries how many notes landed here rather than the notes themselves: the
+  # panel re-reads the list, the way it does for a reply.
+  test "says when a review covering this document is over", %{socket: socket} do
+    document = document()
+    {:ok, _reply, _socket} = subscribe_and_join(socket, "document:#{document.id}")
+    assert_push "decomposition", %{decomposition: nil}
+
+    :ok = Notifier.broadcast_review(11, document.id, :succeeded, nil, 3)
+
+    assert_push "document_review", %{job_id: 11, status: :succeeded, error: nil, count: 3}
+  end
+
   defp document do
     {:ok, document} = Documents.create_document(%{title: "Rollout plan"})
     document

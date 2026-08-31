@@ -23,6 +23,8 @@ pub enum DocCommand {
     Annotations(AnnotationsArgs),
     /// Show one note and the conclusions written under it
     Annotation(AnnotationArgs),
+    /// List what elsewhere in the system points at this document
+    Backlinks(BacklinksArgs),
     /// Show where two topics want the same text to say different things
     Contentions(ContentionsArgs),
     /// Carry a whole-document proposal across the revisions that landed under it
@@ -158,6 +160,22 @@ pub struct AnnotationArgs {
     annotation_id: String,
 }
 
+/// What would have to change with this document, and where it is.
+///
+/// The first question to ask before rewriting a document: a decision recorded
+/// here is cited elsewhere, and changing it without following the citations
+/// leaves the other end saying the old thing. `search` cannot answer this --
+/// it finds text by meaning, while this reads the reference index and answers
+/// exactly who wrote this document's address into their own body.
+///
+/// There is no outbound counterpart, deliberately. What *this* document points
+/// at is in its own text, which `doc show` already prints.
+#[derive(Args)]
+pub struct BacklinksArgs {
+    /// Document id
+    document_id: String,
+}
+
 #[derive(Args)]
 pub struct ContentionsArgs {
     /// Document id
@@ -197,6 +215,7 @@ pub fn run(command: DocCommand) -> Result<()> {
         DocCommand::Proposals(args) => proposals(client, &config, args),
         DocCommand::Annotations(args) => annotations(client, args),
         DocCommand::Annotation(args) => annotation(client, args),
+        DocCommand::Backlinks(args) => backlinks(client, args),
         DocCommand::Contentions(args) => contentions(client, args),
         DocCommand::Rebase(args) => rebase(client, args),
     }
@@ -685,6 +704,103 @@ fn opening_of(content: &str) -> String {
     }
 }
 
+/// Everything whose text points at this document, grouped by where it lives.
+///
+/// Needs no topic: who cites a document is a fact about the document.
+///
+/// The target is built here rather than taken as a URI, because every other
+/// `doc` subcommand takes a document id and a second spelling in the same
+/// command family is a thing to get wrong. The address form is still what goes
+/// over the wire, which is why the printed lines carry it -- a caller that
+/// wants to go and read one of these needs the id, not the label.
+fn backlinks(client: &Client, args: BacklinksArgs) -> Result<()> {
+    let target = format!("rinto://document/{}", args.document_id);
+    let answer = client::data(client.get("/backlinks", &[("target", target.as_str())])?)?;
+
+    let total = answer.get("total").and_then(Value::as_u64).unwrap_or(0);
+
+    if total == 0 {
+        // Said as a fact rather than as an empty list: "nothing points here" is
+        // the answer somebody is acting on, and it means this document can be
+        // rewritten without following anything.
+        println!("nothing points at this document");
+        return Ok(());
+    }
+
+    let groups = answer
+        .get("groups")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+
+    println!("{total} reference(s) point at this document\n");
+
+    for (index, group) in groups.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+
+        println!(
+            "{} ({})",
+            string(group, "source_type", "?"),
+            group.get("count").and_then(Value::as_u64).unwrap_or(0)
+        );
+
+        let entries = group
+            .get("entries")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+
+        for entry in entries {
+            for line in backlink_lines(entry) {
+                println!("{line}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Two lines per reference: where the text is, and how it named this document.
+///
+/// The label is worth printing on its own line because it is what the other
+/// end *calls* this document. A citation reading "the three-state lifecycle"
+/// has to be rewritten when the three states go, even though the address it
+/// carries still resolves -- and nothing but the label would show that.
+fn backlink_lines(entry: &Value) -> Vec<String> {
+    let name = entry
+        .get("title")
+        .and_then(Value::as_str)
+        .or_else(|| entry.get("document_title").and_then(Value::as_str))
+        .unwrap_or("(untitled)");
+
+    let archived = match entry.get("archived").and_then(Value::as_bool) {
+        Some(true) => "  archived",
+        _not_archived => "",
+    };
+
+    let mut lines = vec![format!(
+        "  {name}  ({} {}){archived}",
+        string(entry, "source_type", "?"),
+        string(entry, "source_id", "?")
+    )];
+
+    // The containing document, when the text is a block of one: a block id on
+    // its own is not somewhere a reader can go.
+    if let Some(document_id) = entry.get("document_id").and_then(Value::as_str) {
+        lines.push(format!("    in document {document_id}"));
+    }
+
+    lines.push(format!("    as \"{}\"", string(entry, "label", "")));
+
+    if let Some(excerpt) = entry.get("excerpt").and_then(Value::as_str) {
+        lines.push(format!("    {}", opening_of(excerpt)));
+    }
+
+    lines
+}
+
 /// One note and everything written under it.
 ///
 /// The replies are the point of reading a single one: a note records an
@@ -944,9 +1060,9 @@ fn read(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        annotation_summary, annotations_query, list_query, marks, opening_of, proposal_summary,
-        proposals_query, reply_heading, scope, AnnotationsArgs, ListArgs, ProposalsArgs,
-        ProposeArgs,
+        annotation_summary, annotations_query, backlink_lines, list_query, marks, opening_of,
+        proposal_summary, proposals_query, reply_heading, scope, AnnotationsArgs, ListArgs,
+        ProposalsArgs, ProposeArgs,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -995,6 +1111,59 @@ mod tests {
     #[test]
     fn an_unfiltered_annotation_listing_asks_for_nothing() {
         assert!(annotations_query(&annotations_args(None, false, false)).is_empty());
+    }
+
+    /// The label is the other end's own words for this document, and it is
+    /// what has to be rewritten when the thing it names stops being true --
+    /// even though the address it carries still resolves.
+    #[test]
+    fn a_backlink_prints_where_the_text_is_and_what_it_called_this() {
+        let lines = backlink_lines(&json!({
+            "source_type": "document_block",
+            "source_id": "block-1",
+            "document_id": "doc-2",
+            "document_title": "Deployment",
+            "title": null,
+            "excerpt": "See the three-state lifecycle for what resolved means.",
+            "label": "the three-state lifecycle",
+            "position": 0,
+            "archived": false
+        }));
+
+        assert_eq!(
+            lines,
+            vec![
+                "  Deployment  (document_block block-1)".to_string(),
+                "    in document doc-2".to_string(),
+                "    as \"the three-state lifecycle\"".to_string(),
+                "    See the three-state lifecycle for what resolved means.".to_string(),
+            ]
+        );
+    }
+
+    /// A block id on its own is nowhere a reader can go, so the containing
+    /// document is printed when there is one -- and left out when there is not.
+    #[test]
+    fn a_backlink_from_something_that_is_not_in_a_document_says_no_more_than_it_has() {
+        let lines = backlink_lines(&json!({
+            "source_type": "task",
+            "source_id": "task-1",
+            "document_id": null,
+            "document_title": null,
+            "title": "Move the rollout to the new machine",
+            "excerpt": null,
+            "label": "rollout plan",
+            "position": 0,
+            "archived": true
+        }));
+
+        assert_eq!(
+            lines,
+            vec![
+                "  Move the rollout to the new machine  (task task-1)  archived".to_string(),
+                "    as \"rollout plan\"".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -1067,9 +1236,9 @@ mod tests {
     /// checked that they ask the endpoints that show it what it has standing.
     mod api {
         use super::super::{
-            annotation, annotations, contentions, create, proposals, propose, rebase, working,
-            AnnotationArgs, AnnotationsArgs, ContentionsArgs, CreateArgs, ProposalsArgs,
-            ProposeArgs, RebaseArgs, ShowArgs,
+            annotation, annotations, backlinks, contentions, create, proposals, propose, rebase,
+            working, AnnotationArgs, AnnotationsArgs, BacklinksArgs, ContentionsArgs, CreateArgs,
+            ProposalsArgs, ProposeArgs, RebaseArgs, ShowArgs,
         };
         use crate::config::Config;
         use crate::testing::{client, Reply, StubServer};
@@ -1093,6 +1262,30 @@ mod tests {
                 with_block_ids: false,
                 working,
             }
+        }
+
+        /// The address form is what the index is keyed by, so the id has to
+        /// become one on the way out -- a client asking by type and id would be
+        /// a second spelling of the same question.
+        #[test]
+        fn backlinks_ask_by_the_documents_rinto_address() {
+            let server = StubServer::start(vec![Reply::json(
+                200,
+                json!({"data": {"total": 0, "groups": []}}),
+            )]);
+
+            backlinks(
+                &client(&server),
+                BacklinksArgs {
+                    document_id: "doc-1".to_string(),
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                server.only_request()[0].target,
+                "/api/v1/backlinks?target=rinto%3A%2F%2Fdocument%2Fdoc-1"
+            );
         }
 
         #[test]

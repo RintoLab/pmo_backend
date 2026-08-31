@@ -74,6 +74,28 @@ defmodule RintoPMOWeb.V1.ConversationController do
     end
   end
 
+  @doc """
+  Everything this topic has standing, grouped by the document it is against.
+
+  The read behind a review screen for a discussion that changed several
+  documents. `GET /documents/{id}/proposals?conversation_id=` answers the same
+  question one document at a time, which leaves a client to discover which
+  documents to ask about -- and there is nowhere it could learn that except
+  from here.
+
+  Fetches the conversation first so that a topic that does not exist is a `404`
+  rather than an empty working set. The two are not the same answer: one means
+  nothing is standing, the other means the id is wrong.
+  """
+  def proposals(conn, %{"conversation_id" => conversation_id}) do
+    _exists = conversations_context().get_conversation!(conversation_id)
+    entries = Utils.module(:documents).conversation_working_set(conversation_id)
+
+    conn
+    |> put_view(json: RintoPMOWeb.V1.WorkingSetJSON)
+    |> render(:index, entries: entries)
+  end
+
   defp conversation_filter(params) do
     case Map.get(params, "actor_id") do
       nil ->

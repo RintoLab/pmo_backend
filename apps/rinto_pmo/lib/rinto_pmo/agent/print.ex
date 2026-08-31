@@ -50,6 +50,48 @@ defmodule RintoPMO.Agent.Print do
     end
   end
 
+  # Every prompt here that asks for structured output asks for the same
+  # structure -- a JSON array of objects -- so the unwrapping lives once. Two
+  # copies of this would be two sets of rules about what counts as an answer,
+  # and they would drift the first time one of them learned about a new way a
+  # model wraps its output.
+  @spec decode_objects(String.t()) :: {:ok, [map()]} | {:error, :invalid_output}
+  def decode_objects(text) when is_binary(text) do
+    with {:ok, json} <- extract_json(text),
+         {:ok, decoded} <- JSON.decode(json),
+         true <- array_of_objects?(decoded) do
+      {:ok, Enum.map(decoded, &stringify_keys/1)}
+    else
+      _invalid -> {:error, :invalid_output}
+    end
+  end
+
+  # Models wrap arrays in fences or a sentence even when asked not to. The
+  # brackets are ASCII, so byte positions are the right cursor: finding the
+  # first `[` and the last `]` is enough, and anything that is not an array
+  # of objects is refused after decode rather than guessed at here.
+  defp extract_json(text) do
+    with {start, 1} <- :binary.match(text, "["),
+         {from_end, 1} <- :binary.match(String.reverse(text), "]") do
+      stop = byte_size(text) - from_end - 1
+
+      if stop > start do
+        {:ok, binary_part(text, start, stop - start + 1)}
+      else
+        :error
+      end
+    else
+      :nomatch -> :error
+    end
+  end
+
+  defp array_of_objects?(decoded) when is_list(decoded), do: Enum.all?(decoded, &is_map/1)
+  defp array_of_objects?(_decoded), do: false
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), value} end)
+  end
+
   defp call(system_prompt, user_message, session_dir, opts, name) do
     id = "rinto-pmo-#{name}-#{System.unique_integer([:positive, :monotonic])}"
 

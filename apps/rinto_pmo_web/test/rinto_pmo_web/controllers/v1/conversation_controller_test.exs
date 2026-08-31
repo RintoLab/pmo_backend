@@ -3,6 +3,7 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
 
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.ConversationsMock
+  alias RintoPMO.DocumentsMock
 
   test "GET conversations lists topics", %{conn: conn} do
     conversation = insert(:conversation, title: "Tighten §3")
@@ -208,6 +209,55 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
     conn = post(conn, ~p"/api/v1/conversations/#{conversation.id}/close")
 
     assert %{"pi_session_id" => nil, "hot" => false} = json_response(conn, 200)["data"]
+  end
+
+  test "GET conversations/:id/proposals groups this topic's work by document", %{conn: conn} do
+    conversation = insert(:conversation)
+    document = insert(:document)
+    revision = insert(:document_revision, document: document, title: "Deployment")
+    proposal = insert(:block_proposal, document: document, conversation: conversation)
+    proposal_id = proposal.id
+    document_id = document.id
+
+    expect(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+
+    expect(DocumentsMock, :conversation_working_set, fn _id ->
+      [
+        %{
+          document: %{document | latest_revision: revision},
+          proposals: [%{proposal: proposal, contended: true}]
+        }
+      ]
+    end)
+
+    conn = get(conn, ~p"/api/v1/conversations/#{conversation.id}/proposals")
+
+    assert %{
+             "document_count" => 1,
+             "proposal_count" => 1,
+             "documents" => [
+               %{
+                 "document" => %{
+                   "id" => ^document_id,
+                   "latest_revision" => %{"title" => "Deployment"}
+                 },
+                 "proposals" => [%{"id" => ^proposal_id, "contended" => true}]
+               }
+             ]
+           } = json_response(conn, 200)["data"]
+  end
+
+  # Not the same answer as a topic with nothing standing: one means nothing is
+  # waiting, the other means the id is wrong.
+  test "GET conversations/:id/proposals is 404 for a topic that is not there", %{conn: conn} do
+    expect(ConversationsMock, :get_conversation!, fn _id ->
+      raise Ecto.NoResultsError, queryable: Conversation
+    end)
+
+    assert {404, _headers, _body} =
+             assert_error_sent(:not_found, fn ->
+               get(conn, ~p"/api/v1/conversations/#{UUIDv7.generate()}/proposals")
+             end)
   end
 
   test "there is no open route -- sending a message is what heats a topic", %{conn: conn} do

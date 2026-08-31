@@ -151,6 +151,211 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  describe "conversation_working_set/1" do
+    test "groups a topic's standing work by the document it is against" do
+      %{document: first, blocks: [first_block | _rest]} = document_with_blocks(["One", "Two"])
+      %{document: second, blocks: [second_block | _rest]} = document_with_blocks(["Elsewhere"])
+      conversation = insert(:conversation)
+
+      {:ok, _} = propose(first, first_block.block_id, conversation, "Tighter")
+      {:ok, _} = propose(second, second_block.block_id, conversation, "Follows from the above")
+
+      assert [one, two] = Documents.conversation_working_set(conversation.id)
+
+      # The order the topic reached each document, which is the order somebody
+      # reviewing the discussion read it happen.
+      assert one.document.id == first.id
+      assert two.document.id == second.id
+
+      # The title comes with it: a review screen cannot ask somebody to approve
+      # a change to an id.
+      assert one.document.latest_revision.title == "Document"
+      assert [%{proposal: proposal, contended: false}] = two.proposals
+      assert proposal.content == "Follows from the above"
+    end
+
+    test "marks the slots somebody else is also proposing into" do
+      %{document: document, blocks: [contested, mine]} = document_with_blocks(["One", "Two"])
+      conversation = insert(:conversation)
+      theirs = insert(:conversation)
+
+      {:ok, _} = propose(document, contested.block_id, conversation, "My version")
+      {:ok, _} = propose(document, contested.block_id, theirs, "Their version")
+      {:ok, _} = propose(document, mine.block_id, conversation, "Uncontested")
+
+      assert [%{proposals: proposals}] = Documents.conversation_working_set(conversation.id)
+
+      assert [
+               %{proposal: %{block_id: first_block}, contended: true},
+               %{proposal: %{block_id: second_block}, contended: false}
+             ] = proposals
+
+      assert first_block == contested.block_id
+      assert second_block == mine.block_id
+    end
+
+    # A whole-document proposal has no block to contend over, so the slot is
+    # the document and the scope. Two of them are a contention; a document
+    # proposal and a title proposal are not.
+    test "a document-wide proposal contends only with another of its own scope" do
+      %{document: document} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      theirs = insert(:conversation)
+
+      {:ok, _} =
+        Documents.propose_document(document, %{
+          conversation_id: conversation.id,
+          content: "## Rewritten"
+        })
+
+      {:ok, _} =
+        Documents.propose_title(document, %{
+          conversation_id: theirs.id,
+          content: "A different name"
+        })
+
+      assert [%{proposals: [%{contended: false}]}] =
+               Documents.conversation_working_set(conversation.id)
+
+      {:ok, _} =
+        Documents.propose_document(document, %{
+          conversation_id: theirs.id,
+          content: "## Rewritten differently"
+        })
+
+      assert [%{proposals: [%{contended: true}]}] =
+               Documents.conversation_working_set(conversation.id)
+    end
+
+    # Not the same answer as a topic that does not exist, which is why the
+    # endpoint above this fetches the conversation first.
+    test "a topic with nothing standing has an empty working set" do
+      assert [] == Documents.conversation_working_set(insert(:conversation).id)
+    end
+
+    # A rejected proposal is the record of why something was not chosen. It is
+    # worth keeping and it is not waiting to be committed.
+    test "leaves out what has already been decided" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+      theirs = insert(:conversation)
+
+      {:ok, %{proposal: mine}} = propose(document, block.block_id, conversation, "My version")
+      {:ok, %{proposal: winner}} = propose(document, block.block_id, theirs, "Their version")
+
+      {:ok, _decided} =
+        Documents.decide_block(document, block.block_id, winner.id, insert(:actor).id)
+
+      assert Repo.get!(BlockProposal, mine.id).status == :rejected
+      assert [] == Documents.conversation_working_set(conversation.id)
+      assert [%{proposals: [%{contended: false}]}] = Documents.conversation_working_set(theirs.id)
+    end
+  end
+
+  describe "commit_many/1" do
+    test "writes one revision per document, all in one transaction" do
+      %{document: first, blocks: [first_block | _rest]} = document_with_blocks(["One"])
+      %{document: second, blocks: [second_block | _rest]} = document_with_blocks(["Two"])
+      conversation = insert(:conversation)
+      committer = insert(:actor)
+
+      {:ok, _} = propose(first, first_block.block_id, conversation, "Rewritten one")
+      {:ok, _} = propose(second, second_block.block_id, conversation, "Rewritten two")
+
+      assert {:ok, [one, two]} =
+               Documents.commit_many([
+                 {first, commit_attrs(first, committer, conversation)},
+                 {second, commit_attrs(second, committer, conversation)}
+               ])
+
+      # In the order they were asked for, which is the order the screen was in.
+      # Documents are locked in id order, and that is nobody else's business.
+      assert one.document_id == first.id
+      assert two.document_id == second.id
+
+      # One revision each, each naming the discussion that produced it. There
+      # is no batch record and nothing new was stored.
+      assert one.source_conversation_id == conversation.id
+      assert two.source_conversation_id == conversation.id
+
+      assert Enum.map(Documents.get_revision!(first, one.id).blocks, & &1.content) ==
+               ["Rewritten one"]
+
+      assert Enum.map(Documents.get_revision!(second, two.id).blocks, & &1.content) ==
+               ["Rewritten two"]
+    end
+
+    # Half of a cross-document change landing is the worst outcome available:
+    # the documents then disagree and nothing says which half is the answer.
+    test "one document failing leaves none of them written" do
+      %{document: first, blocks: [first_block | _rest]} = document_with_blocks(["One"])
+      %{document: second, blocks: [contended | _rest]} = document_with_blocks(["Two"])
+      conversation = insert(:conversation)
+      theirs = insert(:conversation)
+      committer = insert(:actor)
+
+      {:ok, _} = propose(first, first_block.block_id, conversation, "Rewritten one")
+      {:ok, _} = propose(second, contended.block_id, conversation, "My version")
+      {:ok, _} = propose(second, contended.block_id, theirs, "Their version")
+
+      before_first = latest_revision_id(first)
+      before_second = latest_revision_id(second)
+
+      assert {:error, :unresolved_contention, details} =
+               Documents.commit_many([
+                 {first, commit_attrs(first, committer, conversation)},
+                 {second,
+                  second
+                  |> commit_attrs(committer, conversation)
+                  |> Map.put(:block_ids, [contended.block_id])}
+               ])
+
+      # Which document it happened in: one entry in a batch of four is not
+      # findable from a message about a contention.
+      assert details.document_id == second.id
+
+      assert latest_revision_id(first) == before_first
+      assert latest_revision_id(second) == before_second
+    end
+
+    test "refuses the same document twice" do
+      %{document: document} = document_with_blocks(["One"])
+      committer = insert(:actor)
+      attrs = commit_attrs(document, committer, insert(:conversation))
+
+      assert {:error, :duplicate_document, %{document_id: document_id}} =
+               Documents.commit_many([{document, attrs}, {document, attrs}])
+
+      assert document_id == document.id
+    end
+
+    test "confirms each document's own annotations against its own revision" do
+      %{document: first, blocks: [first_block | _rest]} = document_with_blocks(["One"])
+      %{document: second, blocks: [second_block | _rest]} = document_with_blocks(["Two"])
+      conversation = insert(:conversation)
+      committer = insert(:actor)
+      note = insert(:annotation, document: second)
+
+      {:ok, _} = propose(first, first_block.block_id, conversation, "Rewritten one")
+      {:ok, _} = propose(second, second_block.block_id, conversation, "Rewritten two")
+
+      assert {:ok, [_one, two]} =
+               Documents.commit_many([
+                 {first, commit_attrs(first, committer, conversation)},
+                 {second,
+                  first
+                  |> commit_attrs(committer, conversation)
+                  |> Map.merge(%{
+                    base_revision_id: latest_revision_id(second),
+                    confirm_annotation_ids: [note.id]
+                  })}
+               ])
+
+      note = Repo.get!(RintoPMO.Annotations.Annotation, note.id)
+      assert note.confirmed_by_revision_id == two.id
+    end
+  end
+
   describe "decide_block/4" do
     test "rejects every proposal but one, leaving the winner pending" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
@@ -1421,5 +1626,13 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
   defp latest_revision_id(document) do
     Documents.get_document!(document.id).latest_revision.id
+  end
+
+  defp commit_attrs(document, committer, conversation) do
+    %{
+      actor_id: committer.id,
+      base_revision_id: latest_revision_id(document),
+      source_conversation_id: conversation.id
+    }
   end
 end

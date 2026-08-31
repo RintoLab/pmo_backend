@@ -989,6 +989,157 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
+  /commits:
+    post:
+      tags: [Proposals]
+      operationId: commitDocuments
+      summary: Commit several documents at once, in one transaction
+      description: >-
+        The endpoint behind one review screen and one button. A discussion that
+        changed a design usually changed more than one document, and half of
+        that landing is the worst outcome available -- the documents then
+        disagree, and nothing records which half is the new answer. So the
+        whole selection lands or none of it does.
+
+
+        **This is not a cross-document commit record.** Nothing new is stored
+        and there is no batch id: `document_revisions` gains one row per
+        document exactly as `POST /documents/{document_id}/commit` would, each
+        carrying its own `source_conversation_id`, and "what did that
+        discussion change?" stays a query. What this adds is atomicity, which
+        is a property of the write rather than an entity.
+
+
+        What to commit comes from `GET /conversations/{id}/proposals`, which is
+        the same set grouped by document.
+
+
+        Revisions come back in the order they were asked for. Documents are
+        locked in id order internally so that two batches touching the same
+        documents cannot deadlock, and that order is nobody else's business.
+
+
+        Any entry failing rolls the whole thing back, and the error carries
+        `details.document_id` -- one entry in a batch of four is not findable
+        from a message about a stale revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchCommitInput"
+      responses:
+        "201":
+          description: One revision per document, in the order asked for
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRevisionListResponse"
+        "400":
+          description: "`commits` is missing, empty, or an entry names no document"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            An entry's base revision is stale, or a selected block has a
+            contention nobody has decided. Nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          description: >
+            `duplicate_document` -- one document appears more than once; or any
+            refusal the single-document commit gives. Nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+  /reviews:
+    post:
+      tags: [Annotations]
+      operationId: requestDocumentReview
+      summary: Ask the AI to read documents end to end and leave what it finds
+      description: >-
+        The other door into annotations. `POST .../annotations/{id}/reply`
+        answers a note somebody already wrote; this one opens notes, and it is
+        the only thing in the system that writes an annotation nobody pointed
+        at a paragraph to make. Everything it writes is an ordinary annotation,
+        credited to whichever actor holds the `review_actor` role, and a
+        person confirms or deletes it like any other.
+
+
+        The role is separate from `annotation_actor`: its actor's
+        `system_prompt` customizes what the review pays attention to, while the
+        built-in id and JSON output contract remains in force.
+
+
+        It is still a person's action. Nothing decides on its own that a
+        document is due for review.
+
+
+        **It takes a set, not a document.** The findings worth the most are the
+        ones no single document contains -- two documents that cannot both be
+        true -- and reviewing them one at a time puts the comparison back on
+        whoever asked. One document is a set of one. A cross-document finding
+        lands on the document that should change and cites the other as a
+        `rinto://document/{id}` link in its text.
+
+
+        Answers with the **job**, before the model has been asked. What a
+        client does next is watch `document:{id}` for `document_review`, which
+        carries how many notes landed on *that* document; the notes themselves
+        are read with `GET /documents/{id}/annotations`. `GET /jobs/{job_id}`
+        is the way back if it was not listening.
+
+
+        A double-click is not two reviews: while one is in flight for the same
+        selection, the job already queued comes back. Order and duplicates do
+        not make a second one. A different selection, even an overlapping one,
+        is a different question and runs.
+
+
+        Findings that cannot be placed degrade rather than fail the review: a
+        block id that is not in the document's latest revision leaves the note
+        unanchored, a document id outside the selection is dropped, and a note
+        the write path refuses -- a dead `rinto://` most likely -- is skipped
+        without taking the others down.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentReviewInput"
+      responses:
+        "202":
+          description: The review was queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "400":
+          description: "`document_ids` is missing or is not a list of ids"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            `no_documents` -- the selection is empty; `too_many_documents` --
+            more than one review carries, refused rather than trimmed so that
+            nobody reads a smaller review as a clean bill of health; or
+            `no_review_actor` -- nobody holds the role, so there is nothing
+            to write as.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /references/resolve:
     post:
       tags: [References]
@@ -2068,6 +2219,50 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /conversations/{conversation_id}/proposals:
+    parameters:
+      - $ref: "#/components/parameters/ConversationNestedId"
+    get:
+      tags: [Conversations]
+      operationId: listConversationProposals
+      summary: Everything one topic has standing, across every document
+      description: >-
+        The read behind a review screen for a discussion that changed several
+        documents. `GET /documents/{id}/proposals?conversation_id=` answers the
+        same question one document at a time, which leaves a client to discover
+        which documents to ask about -- and nothing else could tell it.
+
+
+        Grouped by document, each carrying that document's current title so the
+        screen is not asking anybody to approve a change to an id. Documents
+        come back in the order the topic first touched them, which is the order
+        the discussion went in; proposals keep their own order within a
+        document.
+
+
+        Each proposal carries `contended`: somebody else's live proposal stands
+        in the same slot, so this one cannot be committed until a person
+        decides between them. The other version's text is deliberately not
+        here -- that is `GET /documents/{id}/contentions`, and comparing two
+        bodies is a different screen.
+
+
+        Only what is still live. A rejected proposal is the record of why
+        something was not chosen; it is kept, and it is not waiting for
+        anything.
+
+
+        An empty answer means nothing is standing. A topic that does not exist
+        is a `404`, which is a different fact.
+      responses:
+        "200":
+          description: What this topic has standing, grouped by document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkingSetResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /conversations/{conversation_id}/messages:
     parameters:
       - $ref: "#/components/parameters/ConversationNestedId"
@@ -3644,7 +3839,8 @@ components:
       description: The system-wide role being filled.
       schema:
         type: string
-        enum: [title_actor, decomposition_actor, estimation_actor, annotation_actor]
+        enum:
+          [title_actor, decomposition_actor, estimation_actor, annotation_actor, review_actor]
     ActorId:
       name: id
       in: path
@@ -4456,6 +4652,21 @@ components:
         archived:
           type: boolean
           description: Whether the result, or the document carrying it, has been archived.
+    DocumentReviewInput:
+      type: object
+      required: [document_ids]
+      properties:
+        document_ids:
+          type: array
+          minItems: 1
+          maxItems: 8
+          description: >
+            The documents to review together. Duplicates collapse and order is
+            not significant -- the same selection is the same job however it
+            was written. A missing document is a `404` and nothing is queued.
+          items:
+            type: string
+            format: uuid
     ResolveReferencesInput:
       type: object
       required: [uris]
@@ -6322,6 +6533,58 @@ components:
           items:
             $ref: "#/components/schemas/BlockProposal"
       additionalProperties: false
+    WorkingSetResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/WorkingSet"
+      additionalProperties: false
+    WorkingSet:
+      type: object
+      required: [document_count, proposal_count, documents]
+      properties:
+        document_count:
+          type: integer
+          description: >-
+            How many documents this topic has standing work against. Here so
+            that "3 documents, 7 changes" is not arithmetic two clients each do
+            differently.
+        proposal_count:
+          type: integer
+        documents:
+          type: array
+          description: >-
+            In the order the topic first touched each document, which is the
+            order the discussion went in.
+          items:
+            $ref: "#/components/schemas/WorkingSetDocument"
+      additionalProperties: false
+    WorkingSetDocument:
+      type: object
+      required: [document, proposals]
+      properties:
+        document:
+          $ref: "#/components/schemas/DocumentSummary"
+        proposals:
+          type: array
+          items:
+            $ref: "#/components/schemas/StandingProposal"
+      additionalProperties: false
+    StandingProposal:
+      allOf:
+        - $ref: "#/components/schemas/BlockProposal"
+        - type: object
+          required: [contended]
+          properties:
+            contended:
+              type: boolean
+              description: >-
+                Another topic has a live proposal in the same slot -- the same
+                block, or the same document-wide scope. This one cannot be
+                committed until somebody decides between them. The other
+                version's text is not here; that is
+                `GET /documents/{document_id}/contentions`.
     ProposedResponse:
       type: object
       required: [data, live_proposals, contended]
@@ -6434,6 +6697,17 @@ components:
           items:
             type: string
             format: uuid
+        document_proposal_id:
+          type: string
+          format: uuid
+          description: >
+            Commit one whole-document proposal instead. Named rather than
+            adopted by default, because it settles every block and letting one
+            land implicitly would discard other topics' work without anybody
+            choosing to. Cannot be combined with `block_ids`
+            (`conflicting_commit`), and must be compiled against the current
+            revision (`stale_proposal`). Committing one supersedes every other
+            live block and document proposal; title proposals are untouched.
         confirm_annotation_ids:
           type: array
           description: >
@@ -6456,6 +6730,32 @@ components:
           type: string
           nullable: true
       additionalProperties: false
+    BatchCommitInput:
+      type: object
+      required: [commits]
+      properties:
+        commits:
+          type: array
+          minItems: 1
+          description: >
+            One entry per document, each exactly what
+            `POST /documents/{document_id}/commit` takes plus the
+            `document_id` naming what it is against. `actor_id` and
+            `source_conversation_id` are per entry rather than shared: they are
+            already per entry there, and a second way of saying them would be a
+            second thing to keep in step. The same document twice is refused.
+          items:
+            $ref: "#/components/schemas/BatchCommitEntry"
+      additionalProperties: false
+    BatchCommitEntry:
+      allOf:
+        - type: object
+          required: [document_id]
+          properties:
+            document_id:
+              type: string
+              format: uuid
+        - $ref: "#/components/schemas/CommitInput"
     Conversation:
       type: object
       required:
@@ -6616,7 +6916,8 @@ components:
       additionalProperties: false
     Settings:
       type: object
-      required: [title_actor, decomposition_actor, estimation_actor, annotation_actor]
+      required:
+        [title_actor, decomposition_actor, estimation_actor, annotation_actor, review_actor]
       properties:
         title_actor:
           allOf:
@@ -6655,6 +6956,16 @@ components:
             as the two above: a person clicked a button on a note rather than
             spoke inside a topic, so there is no assistant to inherit from and
             an empty role is a refusal.
+        review_actor:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: >
+            The actor that reads selected documents end to end and opens
+            annotations for its findings. Separate from `annotation_actor` so
+            its persona and review criteria can be configured independently.
+            Its `system_prompt` is added to the review instructions; null means
+            a review request is refused because there is no fallback actor.
       additionalProperties: false
     SettingsResponse:
       type: object
@@ -7100,6 +7411,9 @@ components:
         - validation_error
         - task_blocked
         - review_round_open
+        - no_documents
+        - too_many_documents
+        - duplicate_document
         - invalid_block_op
         - invalid_markdown
         - default_project_missing
@@ -7114,6 +7428,7 @@ components:
         - no_estimation_actor
         - nothing_to_estimate
         - no_annotation_actor
+        - no_review_actor
         - no_chunks
         - task_before_chunk
         - corrupt_image

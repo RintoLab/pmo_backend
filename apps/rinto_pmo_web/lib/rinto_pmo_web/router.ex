@@ -97,6 +97,21 @@ defmodule RintoPMOWeb.Router do
     # holds the body and can read its own references off it.
     get "/backlinks", BacklinkController, :index
 
+    # Several documents committed together, in one transaction. Flat because it
+    # is against no single document -- and not a cross-document commit *entity*:
+    # nothing new is stored, it writes the same one revision per document the
+    # nested call does. A discussion that changed a design usually changed more
+    # than one document, and half of that landing leaves them disagreeing with
+    # nothing to say which half is the new answer.
+    post "/commits", CommitController, :create
+
+    # Asking the AI to read documents end to end and leave what it finds, as
+    # ordinary annotations. Flat and not nested under a document, because it
+    # takes a *set*: the findings worth the most are the ones no single
+    # document contains, and a URL naming one of them would say that one was
+    # special when it is not. Answers with the job -- watch `document:{id}`.
+    post "/reviews", ReviewController, :create
+
     # Finding things by meaning: an embedded query against embedded content,
     # then a reranker. One kind of thing per request -- see `RintoPMO.Search`
     # on why nothing merges a ranking across types.
@@ -177,6 +192,12 @@ defmodule RintoPMOWeb.Router do
     resources "/conversations", ConversationController, only: [:index, :show, :create, :update] do
       # Append and read only -- a conversation records what happened.
       resources "/messages", MessageController, only: [:index, :show, :create]
+
+      # Everything this topic has standing, across every document it touched.
+      # The per-document listing answers the same question one document at a
+      # time, which leaves a client to find out which documents to ask about --
+      # and nothing but this could tell it.
+      get "/proposals", ConversationController, :proposals
     end
 
     # Cooling is not deleting: the process goes, every message stays. There is

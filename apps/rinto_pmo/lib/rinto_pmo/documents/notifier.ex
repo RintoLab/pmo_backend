@@ -29,6 +29,10 @@ defmodule RintoPMO.Documents.Notifier do
       reply somebody asked for is over, one way or the other. Carries the ids
       and not the reply: what changed is a thread the client re-reads, the way
       an estimation announces itself without carrying the numbers.
+    * `{:document_review, job_id, document_id, status, error, count}` -- a
+      review that included this document is over. Carries how many notes it
+      left *here*, because a review spans several documents and each one is
+      told separately; the notes themselves are re-read like any others.
 
   Output is **not** replayed to somebody who joins late: it is broadcast as it
   arrives and kept nowhere. What a late joiner gets is the row, which is enough
@@ -113,6 +117,36 @@ defmodule RintoPMO.Documents.Notifier do
       pubsub,
       topic(annotation.document_id),
       {:annotation_reply, job_id, annotation.id, status, error}
+    )
+  end
+
+  @doc """
+  Says that a review covering this document is over, and what it left here.
+
+  Sent once per document in the review rather than once per review: a client is
+  subscribed to a document, and the selection somebody made is not a thing it
+  knows about. `count` is how many notes landed on *this* document, so a tab
+  can say what happened without diffing the list it is about to re-read.
+
+  Takes the document's id rather than the document, unlike the reply above.
+  Reviews name their documents by id all the way through -- the job carries
+  ids, and a row loaded only to be broadcast is a query for a field nobody
+  reads.
+  """
+  @spec broadcast_review(
+          integer(),
+          UUIDv7.t(),
+          :succeeded | :failed,
+          String.t() | nil,
+          non_neg_integer(),
+          atom()
+        ) :: :ok | {:error, term()}
+  def broadcast_review(job_id, document_id, status, error, count, pubsub \\ @pubsub)
+      when is_binary(document_id) and is_integer(count) do
+    Phoenix.PubSub.broadcast(
+      pubsub,
+      topic(document_id),
+      {:document_review, job_id, document_id, status, error, count}
     )
   end
 end

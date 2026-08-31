@@ -19,7 +19,8 @@ defmodule RintoPMOWeb.V1.DocumentJSON do
     %{data: %{blocks: blocks}}
   end
 
-  defp summary(%Document{} = document) do
+  @doc false
+  def summary(%Document{} = document) do
     %{
       id: document.id,
       project_id: document.project_id,

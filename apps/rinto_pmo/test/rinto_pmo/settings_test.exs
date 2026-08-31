@@ -95,7 +95,8 @@ defmodule RintoPMO.SettingsTest do
       "title_actor" => nil,
       "decomposition_actor" => nil,
       "estimation_actor" => nil,
-      "annotation_actor" => nil
+      "annotation_actor" => nil,
+      "review_actor" => nil
     }
   end
 

@@ -87,6 +87,18 @@ defmodule RintoPMOWeb.ErrorJSON do
     # the only thing that can be refused before the model call is queued.
     no_annotation_actor:
       {422, "No actor holds the annotation role. Set one with `PUT /settings/annotation_actor`."},
+    # Asking the AI to read documents end to end. A review of nothing is a
+    # request somebody meant to fill in; too many is refused rather than
+    # trimmed, for the reason `too_many_references` is -- a caller handed a
+    # smaller review than it asked for concludes the rest was clean.
+    no_review_actor:
+      {422, "No actor holds the review role. Set one with `PUT /settings/review_actor`."},
+    no_documents: {422, "A review needs at least one document."},
+    # One document named twice in one batch commit. Two ideas about what a
+    # single commit is, and the second would be against a revision the first
+    # had just replaced.
+    duplicate_document: {422, "A document appears more than once in this commit."},
+    too_many_documents: {422, "Too many documents in one review. Ask for a smaller set."},
     # Filing one as a work breakdown. Both mean the document is not the shape a
     # breakdown is, which is a thing to fix in the document.
     no_chunks: {422, "The document has no headings, so there is no work in it to file."},

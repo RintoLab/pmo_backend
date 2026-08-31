@@ -57,10 +57,13 @@ defmodule RintoPMO.Settings do
     Refuses when empty, for the same reason: a person clicked a button on a
     note, not inside a topic, so there is no assistant standing there to
     inherit from.
+  * `"review_actor"` -- reads a selected set of documents end to end and opens
+    annotations for its findings. It is separate from `annotation_actor` so
+    its persona and review criteria can be configured independently.
   """
   @type key :: String.t()
 
-  @keys ~w(title_actor decomposition_actor estimation_actor annotation_actor)
+  @keys ~w(title_actor decomposition_actor estimation_actor annotation_actor review_actor)
 
   @doc """
   The roles that exist.

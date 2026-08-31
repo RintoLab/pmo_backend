@@ -38,6 +38,12 @@ defmodule RintoPMOWeb.DocumentChannel do
       text: re-read the thread with `GET /annotations/{id}`, which is what the
       panel showing it does anyway. There is no `"annotation_reply_output"` --
       a reply is a paragraph, not minutes of streamed text
+    * `"document_review"` -- `%{"job_id" => id, "document_id" => id,
+      "status" => "succeeded" | "failed", "error" => text | null,
+      "count" => n}`, a review that included this document is over and left
+      `count` notes on it. A review can span several documents and each one is
+      told separately, so `document_id` is the one this channel is about. The
+      notes are re-read with `GET /documents/{id}/annotations`
 
   ## Output is live only
 
@@ -94,6 +100,18 @@ defmodule RintoPMOWeb.DocumentChannel do
       annotation_id: annotation_id,
       status: status,
       error: error
+    })
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:document_review, job_id, document_id, status, error, count}, socket) do
+    push(socket, "document_review", %{
+      job_id: job_id,
+      document_id: document_id,
+      status: status,
+      error: error,
+      count: count
     })
 
     {:noreply, socket}

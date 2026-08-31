@@ -474,6 +474,91 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
+  Everything one topic has standing, grouped by the document it is against.
+
+  The read behind a review screen for a discussion that changed several
+  documents. `live_conversation_proposals/1` answers the same question as a flat
+  list for a prompt; this one adds the two things a person needs before deciding
+  and a client cannot work out for itself:
+
+    * the document each group is against, with its current title -- an id is not
+      something to review against
+    * whether each proposal is **contended**: somebody else's live proposal is
+      standing in the same slot
+
+  `contended` is computed here rather than left to a caller because the
+  alternative is a request to `/contentions` per document, which is a query per
+  group to answer a boolean the same query already knows.
+
+  Documents come back in the order this topic first touched them, which is the
+  order the discussion went in. Proposals within a document keep their own
+  ascending order, for the same reason.
+
+  Only what is still live. A rejected proposal is a record of why something was
+  not chosen -- valuable, and not part of what is waiting to be committed.
+  """
+  @impl true
+  def conversation_working_set(conversation_id) when is_binary(conversation_id) do
+    mine = live_conversation_proposals(conversation_id)
+
+    case Enum.map(mine, & &1.document_id) |> Enum.uniq() do
+      [] -> []
+      document_ids -> group_working_set(mine, document_ids, conversation_id)
+    end
+  end
+
+  defp group_working_set(mine, document_ids, conversation_id) do
+    documents = Map.new(working_set_documents(document_ids), &{&1.id, &1})
+    contended = contended_slots(document_ids, conversation_id)
+
+    mine
+    |> Enum.group_by(& &1.document_id)
+    |> Enum.map(fn {document_id, proposals} ->
+      %{
+        document: Map.fetch!(documents, document_id),
+        proposals:
+          Enum.map(proposals, fn proposal ->
+            %{proposal: proposal, contended: MapSet.member?(contended, slot_key(proposal))}
+          end)
+      }
+    end)
+    # The order the topic reached each document, which is the order somebody
+    # reviewing the discussion read it happen.
+    |> Enum.sort_by(fn %{proposals: [%{proposal: first} | _rest]} -> first.id end)
+  end
+
+  defp working_set_documents(document_ids) do
+    Document
+    |> from(as: :document)
+    |> where([document], document.id in ^document_ids)
+    |> join(:inner, [document: document], revision in subquery(Revisions.latest()),
+      on: revision.document_id == document.id
+    )
+    |> select([document, revision], {document, revision})
+    |> Repo.all()
+    |> Enum.map(fn {document, revision} -> %{document | latest_revision: revision} end)
+  end
+
+  # Every slot in these documents that somebody *else* is also proposing into.
+  # One query for the whole set rather than one per document: the answer is a
+  # membership test, and the set is small.
+  defp contended_slots(document_ids, conversation_id) do
+    BlockProposal
+    |> where([proposal], proposal.document_id in ^document_ids)
+    |> where([proposal], proposal.status == :live)
+    |> where([proposal], proposal.conversation_id != ^conversation_id)
+    |> select([proposal], {proposal.document_id, proposal.scope, proposal.block_id})
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  # A block proposal contends over its block; a document or title proposal
+  # contends over the whole document, where `block_id` is null and the scope is
+  # what tells two of them apart.
+  defp slot_key(%BlockProposal{} = proposal),
+    do: {proposal.document_id, proposal.scope, proposal.block_id}
+
+  @doc """
   Fetches one proposal scoped to its document.
   """
   @impl true
@@ -928,23 +1013,103 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def commit_proposals(%Document{} = document, attrs) do
-    Repo.transact(fn repo ->
-      locked_document =
-        Document
-        |> where([candidate], candidate.id == ^document.id)
-        |> lock("FOR UPDATE")
-        |> repo.one!()
-
-      parent = latest_revision!(repo, locked_document, preload_blocks?: true)
-      title = title_change(repo, locked_document, attrs)
-
-      case attr(attrs, :document_proposal_id, nil) do
-        nil -> commit_blocks(repo, locked_document, parent, title, attrs)
-        id -> commit_document(repo, locked_document, parent, title, id, attrs)
-      end
-    end)
+    Repo.transact(fn repo -> commit_within(repo, document, attrs) end)
     |> unwrap_error()
   end
+
+  @doc """
+  Commits several documents at once, in one transaction.
+
+  A discussion that changed a design usually changed more than one document,
+  and half of that landing is the worst outcome available: the documents then
+  disagree, and nothing records which half is the new answer. So the whole
+  selection lands or none of it does.
+
+  `commits` is a list of `{document, attrs}`, each `attrs` exactly what
+  `commit_proposals/2` takes. `actor_id` and `source_conversation_id` are per
+  entry rather than shared, because they are already per entry there and a
+  second way of saying them would be a second thing to keep in step.
+
+  ## This is not a cross-document commit *record*
+
+  Nothing new is stored and there is no batch id. `document_revisions` gains
+  one row per document exactly as it would have, each carrying its own
+  `source_conversation_id`, and "what did that discussion change?" stays a
+  query. What this adds is atomicity, which is a property of the write rather
+  than an entity -- see `docs/document-working-session.md` on why the noun was
+  refused and the verb was not.
+
+  ## Order
+
+  Documents are locked in id order, not in the order they were listed. Two
+  batches touching the same two documents from different directions would
+  otherwise each hold what the other is waiting for. Revisions come back in the
+  order they were asked for, because that is the order the caller's screen is
+  in and the lock order is nobody's business.
+
+  The same document twice in one batch is refused. It is two ideas about what
+  one commit is, and the second would silently be a commit against a revision
+  the first had just replaced.
+  """
+  @impl true
+  def commit_many(commits) when is_list(commits) do
+    with :ok <- ensure_distinct_documents(commits) do
+      Repo.transact(fn repo -> commit_each(repo, commits) end)
+      |> unwrap_error()
+    end
+  end
+
+  defp commit_within(repo, %Document{} = document, attrs) do
+    locked_document =
+      Document
+      |> where([candidate], candidate.id == ^document.id)
+      |> lock("FOR UPDATE")
+      |> repo.one!()
+
+    parent = latest_revision!(repo, locked_document, preload_blocks?: true)
+    title = title_change(repo, locked_document, attrs)
+
+    case attr(attrs, :document_proposal_id, nil) do
+      nil -> commit_blocks(repo, locked_document, parent, title, attrs)
+      id -> commit_document(repo, locked_document, parent, title, id, attrs)
+    end
+  end
+
+  defp ensure_distinct_documents(commits) do
+    ids = Enum.map(commits, fn {document, _attrs} -> document.id end)
+
+    case ids -- Enum.uniq(ids) do
+      [] -> :ok
+      [duplicate | _rest] -> {:error, :duplicate_document, %{document_id: duplicate}}
+    end
+  end
+
+  # `commit_within/3` and not `commit_proposals/2`: the inner call must not open
+  # a transaction of its own. A nested `Repo.transact` that returns an error
+  # rolls the outer one back on its way out, and by the time this saw the result
+  # there would be no transaction left to report which document failed in.
+  defp commit_each(repo, commits) do
+    commits
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {{document, _attrs}, _asked} -> document.id end)
+    |> Enum.reduce_while({:ok, []}, fn {{document, attrs}, asked}, {:ok, done} ->
+      case commit_within(repo, document, attrs) do
+        {:ok, revision} -> {:cont, {:ok, [{asked, revision} | done]}}
+        {:error, reason} -> {:halt, {:error, name_document(reason, document)}}
+      end
+    end)
+    |> case do
+      {:ok, done} -> {:ok, done |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1))}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  # "Which one failed" is the next question after any of these, and one commit
+  # in a batch of four is not findable from a message about a stale revision.
+  defp name_document({code, details}, %Document{} = document) when is_map(details),
+    do: {code, Map.put(details, :document_id, document.id)}
+
+  defp name_document(reason, _document), do: reason
 
   defp commit_blocks(repo, document, parent, title, attrs) do
     by_block = repo |> live_proposals(document, :block) |> Enum.group_by(& &1.block_id)

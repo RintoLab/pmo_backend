@@ -78,12 +78,12 @@ away anything written there. On a developer's machine the repository to be in is
 | `schedule` | one command; what each week holds and what did not fit in it |
 | `history` | one command; what was actually worked, with the plan beside it |
 | `calibration` | one command; what the estimates turned out to be worth |
-| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `annotations`, `annotation`, `contentions`, `rebase` |
+| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `annotations`, `annotation`, `backlinks`, `contentions`, `rebase` |
 | `search` | one command; finds things by meaning and answers with `rinto://` addresses |
 | `skill` | `list`, `install`, `sync` -- see "Skills" below |
 | `update` | self-update from the Gitea package registry |
 
-Six things are worth knowing before writing anything:
+Seven things are worth knowing before writing anything:
 
 **The pool is not a project's.** `task list` takes a project slug, and without
 one it lists every project at once -- which is the right question, because
@@ -130,6 +130,16 @@ An annotation has two states and nothing derives them: confirmed, or not.
 Replies come from people and, when somebody clicks for one, from the AI; this
 binary does not distinguish them, because who said a thing does not change
 whether it is right.
+
+**A decision recorded in one document is quoted in others.** `doc backlinks
+<id>` lists everything whose text points at a document -- other documents, task
+descriptions, annotations -- with the words each of them used for it. That label
+is the part that goes stale: a citation reading "the three-state lifecycle"
+starts lying the moment the third state goes, while the address it carries still
+resolves, so nothing about link health would show it. `search` cannot answer
+this either -- it finds text by meaning, not the ones that wrote this document's
+address down. There is no outbound counterpart, deliberately: what a document
+points at is in its own text, which `doc show` already prints.
 
 **A skill's version is this binary's version.** `skill list` says which version
 it carries, and for anything installed, which version wrote the copy on disk and

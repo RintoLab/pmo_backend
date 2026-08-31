@@ -21,4 +21,8 @@ Hammox.defmock(RintoPMO.Agent.AnnotationResponderMock,
   for: RintoPMO.Agent.AnnotationResponder.Behaviour
 )
 
+Hammox.defmock(RintoPMO.Agent.DocumentReviewerMock,
+  for: RintoPMO.Agent.DocumentReviewer.Behaviour
+)
+
 Hammox.defmock(RintoPMO.Calendar.HolidaysMock, for: RintoPMO.Calendar.Holidays.Behaviour)

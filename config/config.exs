@@ -36,6 +36,7 @@ config :rinto_pmo,
     wbs_generator: RintoPMO.Agent.WbsGenerator,
     task_estimator: RintoPMO.Agent.TaskEstimator,
     annotation_responder: RintoPMO.Agent.AnnotationResponder,
+    document_reviewer: RintoPMO.Agent.DocumentReviewer,
     # Reading what a `rinto://` reference points at. Only the read side is
     # injected: parsing a reference is pure and belongs to every write path,
     # and mocking it would let a document test lie about what it stored.

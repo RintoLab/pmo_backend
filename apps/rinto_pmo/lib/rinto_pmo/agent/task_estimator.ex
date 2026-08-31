@@ -168,15 +168,7 @@ defmodule RintoPMO.Agent.TaskEstimator do
 
   @doc false
   @spec decode_items(String.t()) :: {:ok, [item()]} | {:error, :invalid_output}
-  def decode_items(text) when is_binary(text) do
-    with {:ok, json} <- extract_json(text),
-         {:ok, decoded} <- JSON.decode(json),
-         true <- json_array_of_objects?(decoded) do
-      {:ok, Enum.map(decoded, &stringify_keys/1)}
-    else
-      _invalid -> {:error, :invalid_output}
-    end
-  end
+  defdelegate decode_items(text), to: Print, as: :decode_objects
 
   defp generate(prompt, input, opts) do
     opts =
@@ -188,32 +180,6 @@ defmodule RintoPMO.Agent.TaskEstimator do
       {:ok, text} -> decode_items(text)
       {:error, _reason} = error -> error
     end
-  end
-
-  # Models wrap arrays in fences or a sentence even when asked not to. The
-  # brackets are ASCII, so byte positions are the right cursor: finding the
-  # first `[` and the last `]` is enough, and anything that is not an array
-  # of objects is refused after decode rather than guessed at here.
-  defp extract_json(text) do
-    with {start, 1} <- :binary.match(text, "["),
-         {from_end, 1} <- :binary.match(String.reverse(text), "]") do
-      stop = byte_size(text) - from_end - 1
-
-      if stop > start do
-        {:ok, binary_part(text, start, stop - start + 1)}
-      else
-        :error
-      end
-    else
-      :nomatch -> :error
-    end
-  end
-
-  defp json_array_of_objects?(decoded) when is_list(decoded), do: Enum.all?(decoded, &is_map/1)
-  defp json_array_of_objects?(_decoded), do: false
-
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn {key, value} -> {to_string(key), value} end)
   end
 
   defp idle_timeout do
