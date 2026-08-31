@@ -66,11 +66,13 @@ defmodule RintoPMO.Conversations do
   end
 
   @doc """
-  Renames a topic. Only the title is mutable.
+  Updates a topic's title or assistant configuration.
 
   Naming a topic here is a person's decision and is marked as such, so the
   automatic namer will not touch it -- including when the new name is no name
-  at all. See `RintoPMO.Conversations.Titles`.
+  at all. See `RintoPMO.Conversations.Titles`. A running assistant is cooled by
+  `RintoPMO.Conversations.Sessions` before its configuration changes take
+  effect; callers changing those fields must go through that module.
   """
   @impl true
   def update_conversation(%Conversation{} = conversation, attrs) do

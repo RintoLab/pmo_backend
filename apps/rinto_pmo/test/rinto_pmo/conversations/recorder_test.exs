@@ -37,6 +37,33 @@ defmodule RintoPMO.Conversations.RecorderTest do
     assert attrs.content == "Section 3 contradicts section 1."
   end
 
+  test "records a plain-chat answer without an actor and snapshots its model", context do
+    context = %{
+      context
+      | actor_id: nil
+    }
+
+    recorder =
+      start_recorder(context,
+        provider: "anthropic",
+        model: "claude-sonnet-4",
+        thinking_level: "medium"
+      )
+
+    expect_append(recorder)
+
+    emit(context, %{
+      "type" => "message_end",
+      "message" => %{"role" => "assistant", "stopReason" => "stop", "content" => "Hello"}
+    })
+
+    assert_receive {:appended, _conversation_id, attrs}
+    assert attrs.actor_id == nil
+    assert attrs.provider == "anthropic"
+    assert attrs.model == "claude-sonnet-4"
+    assert attrs.thinking_level == "medium"
+  end
+
   test "joins the text blocks and drops thinking and tool calls", context do
     expect_append(start_recorder(context))
 
@@ -241,12 +268,14 @@ defmodule RintoPMO.Conversations.RecorderTest do
     refute Recorder.recording?(context.conversation_id)
   end
 
-  defp start_recorder(context) do
+  defp start_recorder(context, opts \\ []) do
     start_supervised!(
       {Recorder,
-       conversation_id: context.conversation_id,
-       session_id: context.session_id,
-       actor_id: context.actor_id}
+       [
+         conversation_id: context.conversation_id,
+         session_id: context.session_id,
+         actor_id: context.actor_id
+       ] ++ opts}
     )
   end
 

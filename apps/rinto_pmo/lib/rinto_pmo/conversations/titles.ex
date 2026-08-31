@@ -329,17 +329,33 @@ defmodule RintoPMO.Conversations.Titles do
 
   # Whoever was chosen to name topics, and the topic's own assistant when
   # nobody was. The chosen one wins because naming is a fixed, tiny job that
-  # somebody picked a cheap model for; the assistant is the fallback because it
-  # is configured, its credentials work, and it is what the person is already
-  # talking to.
+  # somebody picked a cheap model for; the conversation's own configuration is
+  # the fallback because its credentials work and it is what the person is
+  # already talking to.
   defp generator_opts(conversation) do
-    case Settings.get_actor("title_actor") || assistant(conversation) do
-      %Actor{} = actor ->
-        [provider: actor.provider, model: actor.model, thinking: actor.thinking_level]
-
-      nil ->
-        []
+    case Settings.get_actor("title_actor") do
+      %Actor{} = actor -> actor_opts(actor)
+      nil -> conversation_opts(conversation)
     end
+  end
+
+  defp conversation_opts(%Conversation{mode: :chat} = conversation) do
+    [
+      provider: conversation.provider,
+      model: conversation.model,
+      thinking: conversation.thinking_level
+    ]
+  end
+
+  defp conversation_opts(%Conversation{} = conversation) do
+    case assistant(conversation) do
+      %Actor{} = actor -> actor_opts(actor)
+      nil -> []
+    end
+  end
+
+  defp actor_opts(actor) do
+    [provider: actor.provider, model: actor.model, thinking: actor.thinking_level]
   end
 
   defp assistant(%Conversation{assistant_actor_id: nil}), do: nil

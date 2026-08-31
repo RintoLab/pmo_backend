@@ -24,6 +24,69 @@ defmodule RintoPMO.ConversationsTest do
       assert {:ok, conversation} = Conversations.create_conversation(%{})
       assert conversation.title == nil
       assert conversation.actor_id == nil
+      assert conversation.mode == :actor
+    end
+
+    test "creates a plain chat with inline model configuration" do
+      assert {:ok, conversation} =
+               Conversations.create_conversation(%{
+                 mode: :chat,
+                 provider: "anthropic",
+                 model: "claude-sonnet-4",
+                 thinking_level: "medium"
+               })
+
+      assert conversation.mode == :chat
+      assert conversation.assistant_actor_id == nil
+      assert conversation.provider == "anthropic"
+      assert conversation.model == "claude-sonnet-4"
+      assert conversation.thinking_level == "medium"
+    end
+
+    test "plain chat requires a complete inline model configuration and no assistant actor" do
+      actor = insert(:actor, kind: :ai)
+
+      assert {:error, incomplete} =
+               Conversations.create_conversation(%{mode: :chat, provider: "anthropic"})
+
+      assert "can't be blank" in errors_on(incomplete).model
+      assert "can't be blank" in errors_on(incomplete).thinking_level
+
+      assert {:error, attributed} =
+               Conversations.create_conversation(%{
+                 mode: :chat,
+                 assistant_actor_id: actor.id,
+                 provider: "anthropic",
+                 model: "claude-sonnet-4",
+                 thinking_level: "medium"
+               })
+
+      assert "must be blank in chat mode" in errors_on(attributed).assistant_actor_id
+    end
+
+    test "switching modes clears the old mode's configuration" do
+      assistant = insert(:actor, kind: :ai)
+
+      chat =
+        insert(:conversation,
+          mode: :chat,
+          assistant_actor: nil,
+          provider: "openai",
+          model: "gpt-5.4",
+          thinking_level: "medium"
+        )
+
+      assert {:ok, actor_topic} =
+               Conversations.update_conversation(chat, %{
+                 "mode" => "actor",
+                 "assistant_actor_id" => assistant.id
+               })
+
+      assert actor_topic.mode == :actor
+      assert actor_topic.assistant_actor_id == assistant.id
+      assert actor_topic.provider == nil
+      assert actor_topic.model == nil
+      assert actor_topic.thinking_level == nil
     end
 
     test "renames a topic" do
@@ -60,13 +123,35 @@ defmodule RintoPMO.ConversationsTest do
       assert second.position == 1
     end
 
-    test "requires a role, content and an actor" do
+    test "requires a role and content" do
       conversation = insert(:conversation)
 
       assert {:error, changeset} = Conversations.append_message(conversation, %{})
-      assert "can't be blank" in errors_on(changeset).actor_id
       assert "can't be blank" in errors_on(changeset).role
       assert "can't be blank" in errors_on(changeset).content
+    end
+
+    test "requires an actor for a user turn but not for an assistant turn" do
+      conversation = insert(:conversation)
+
+      assert {:error, user_changeset} =
+               Conversations.append_message(conversation, %{role: :user, content: "Hello"})
+
+      assert "can't be blank" in errors_on(user_changeset).actor_id
+
+      assert {:ok, assistant} =
+               Conversations.append_message(conversation, %{
+                 role: :assistant,
+                 content: "Hello",
+                 provider: "anthropic",
+                 model: "claude-sonnet-4",
+                 thinking_level: "medium"
+               })
+
+      assert assistant.actor_id == nil
+      assert assistant.provider == "anthropic"
+      assert assistant.model == "claude-sonnet-4"
+      assert assistant.thinking_level == "medium"
     end
 
     test "rejects a role outside user and assistant" do

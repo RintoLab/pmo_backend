@@ -14,6 +14,15 @@ defmodule RintoPMO.Conversations.Conversation do
   rows here remain, which is exactly enough to rebuild it. Topics are
   unlimited; pi processes are not.
 
+  ## How the assistant is configured
+
+  An `:actor` topic talks as a fixed AI actor. That actor owns its provider,
+  model, thinking level and persona, and formal work produced in the topic can
+  be credited to it. A `:chat` topic is an ordinary conversation: the person's
+  provider, model and thinking selection lives directly on this row and
+  `assistant_actor_id` stays nil. The explicit mode distinguishes that choice
+  from an actor topic whose assistant has not been selected yet.
+
   ## Who named it
 
   `title_source` records that, and exists so the auto-namer can never take
@@ -45,6 +54,10 @@ defmodule RintoPMO.Conversations.Conversation do
     field :title_generated_at, :utc_datetime_usec
     field :pi_session_id, :string
     field :replay_pending, :boolean, default: false
+    field :mode, Ecto.Enum, values: [:actor, :chat], default: :actor
+    field :provider, :string
+    field :model, :string
+    field :thinking_level, :string
 
     # Null means "needs embedding". Never cast from a caller: it is written
     # by the worker that computes it, and voided by whichever changeset rewrites
@@ -62,26 +75,49 @@ defmodule RintoPMO.Conversations.Conversation do
   @doc false
   def changeset(%__MODULE__{} = conversation \\ %__MODULE__{}, attrs) do
     conversation
-    |> cast(attrs, [:title, :actor_id, :assistant_actor_id])
+    |> cast(attrs, [
+      :title,
+      :actor_id,
+      :assistant_actor_id,
+      :mode,
+      :provider,
+      :model,
+      :thinking_level
+    ])
+    |> validate_required([:mode])
     |> validate_length(:title, max: 255)
+    |> validate_assistant_configuration()
     # A title given at creation is somebody's choice of words. Being created
     # without one is not a choice, so it stays eligible for auto-naming.
     |> put_title_source(named?(attrs))
     |> foreign_key_constraint(:actor_id)
     |> foreign_key_constraint(:assistant_actor_id)
+    |> check_constraint(:mode, name: :conversations_assistant_configuration)
     |> Embeddings.invalidate([:title])
   end
 
   @doc false
   def update_changeset(%__MODULE__{} = conversation, attrs) do
+    attrs = normalize_mode_transition(conversation, attrs)
+
     conversation
-    |> cast(attrs, [:title, :assistant_actor_id])
+    |> cast(attrs, [
+      :title,
+      :assistant_actor_id,
+      :mode,
+      :provider,
+      :model,
+      :thinking_level
+    ])
     |> blank_title_to_nil()
+    |> validate_required([:mode])
     |> validate_length(:title, max: 255)
+    |> validate_assistant_configuration()
     # Mentioning `title` at all is a person naming the topic -- including
     # naming it nothing. Either way the auto-namer stops considering it.
     |> put_title_source(title_given?(attrs))
     |> foreign_key_constraint(:assistant_actor_id)
+    |> check_constraint(:mode, name: :conversations_assistant_configuration)
     |> Embeddings.invalidate([:title])
   end
 
@@ -112,6 +148,65 @@ defmodule RintoPMO.Conversations.Conversation do
 
       _absent_or_nil ->
         changeset
+    end
+  end
+
+  defp validate_assistant_configuration(changeset) do
+    case get_field(changeset, :mode) do
+      :chat ->
+        changeset
+        |> validate_required([:provider, :model, :thinking_level])
+        |> require_no_actor()
+
+      :actor ->
+        require_no_inline_model(changeset)
+
+      _invalid_or_missing ->
+        changeset
+    end
+  end
+
+  # Moving between the two deliberately clears the configuration owned by the
+  # old mode. Requiring a client to send four explicit nulls would expose a
+  # storage invariant as UI ceremony, and retaining any of them would make the
+  # row ambiguous.
+  defp normalize_mode_transition(%__MODULE__{mode: current}, attrs) do
+    case attr(attrs, :mode) do
+      :chat when current != :chat -> put_attr(attrs, :assistant_actor_id, nil)
+      "chat" when current != :chat -> put_attr(attrs, :assistant_actor_id, nil)
+      :actor when current != :actor -> clear_inline_model(attrs)
+      "actor" when current != :actor -> clear_inline_model(attrs)
+      _unchanged_or_absent -> attrs
+    end
+  end
+
+  defp clear_inline_model(attrs) do
+    Enum.reduce([:provider, :model, :thinking_level], attrs, &put_attr(&2, &1, nil))
+  end
+
+  defp attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
+
+  defp put_attr(attrs, key, value) do
+    if Map.has_key?(attrs, "mode") do
+      Map.put(attrs, Atom.to_string(key), value)
+    else
+      Map.put(attrs, key, value)
+    end
+  end
+
+  defp require_no_actor(changeset) do
+    if get_field(changeset, :assistant_actor_id) do
+      add_error(changeset, :assistant_actor_id, "must be blank in chat mode")
+    else
+      changeset
+    end
+  end
+
+  defp require_no_inline_model(changeset) do
+    if Enum.any?([:provider, :model, :thinking_level], &get_field(changeset, &1)) do
+      add_error(changeset, :mode, "actor mode gets its model configuration from the actor")
+    else
+      changeset
     end
   end
 

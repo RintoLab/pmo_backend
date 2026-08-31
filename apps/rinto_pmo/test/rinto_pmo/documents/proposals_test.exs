@@ -558,6 +558,24 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert details.conversation_id == conversation.id
     end
 
+    test "plain chat cannot create an unattributed formal proposal" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+
+      conversation =
+        insert(:conversation,
+          mode: :chat,
+          assistant_actor: nil,
+          provider: "openai",
+          model: "gpt-5.4",
+          thinking_level: "medium"
+        )
+
+      assert {:error, :assistant_actor_required, details} =
+               propose(document, block.block_id, conversation, "Tighter")
+
+      assert details.conversation_id == conversation.id
+    end
+
     test "refuses a topic that does not exist" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
       stray = UUIDv7.generate()

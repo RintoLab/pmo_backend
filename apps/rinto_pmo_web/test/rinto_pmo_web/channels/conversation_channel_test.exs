@@ -223,6 +223,27 @@ defmodule RintoPMOWeb.ConversationChannelTest do
       assert_reply ref, :error, %{reason: "assistant_actor_required"}, 5_000
     end
 
+    test "a plain chat starts without an AI actor" do
+      conversation =
+        insert(:conversation,
+          mode: :chat,
+          assistant_actor: nil,
+          provider: "openai",
+          model: "gpt-5.4",
+          thinking_level: "medium"
+        )
+
+      socket = join!(conversation)
+      ref = push(socket, "prompt", %{"message" => "hello"})
+
+      assert_reply ref, :ok, _payload, 5_000
+
+      hot = Conversations.get_conversation!(conversation.id)
+      assert hot.pi_session_id
+      assert PiSession.alive?(hot.pi_session_id)
+      on_exit(fn -> PiSession.close(hot.pi_session_id) end)
+    end
+
     test "a raw command does not start a process", %{tmp_dir: _tmp_dir} do
       conversation = conversation!()
       socket = join!(conversation)

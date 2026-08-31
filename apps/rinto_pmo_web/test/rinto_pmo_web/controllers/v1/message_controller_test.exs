@@ -133,7 +133,7 @@ defmodule RintoPMOWeb.V1.MessageControllerTest do
 
     conn = post(conn, ~p"/api/v1/conversations/#{conversation.id}/messages", params)
 
-    assert %{"error" => "validation_error", "details" => %{"actor_id" => ["can't be blank"]}} =
+    assert %{"error" => "validation_error", "details" => %{"role" => ["can't be blank"]}} =
              json_response(conn, 422)
   end
 

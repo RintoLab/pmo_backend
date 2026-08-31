@@ -18,8 +18,8 @@ defmodule RintoPMOWeb.V1.ConversationController do
   end
 
   # `actor_id` here is who started the topic, which is whoever is calling.
-  # `assistant_actor_id` is a different question -- which AI answers in it --
-  # and stays in the body, where a client chooses it from the actor list.
+  # How the assistant answers stays in the body: either a fixed
+  # `assistant_actor_id`, or a plain chat's provider/model/thinking selection.
   def create(conn, params) do
     attrs = Map.put(params, "actor_id", ActorToken.current_actor!(conn).id)
 
@@ -40,26 +40,23 @@ defmodule RintoPMOWeb.V1.ConversationController do
     end
   end
 
-  # Changing which AI answers has to go through `Sessions`, not straight at the
-  # row: a running pi process was told which model to be at startup and cannot
-  # be reconfigured, so the switch has to cool the topic to take effect. Writing
-  # the row alone would leave it answering as the old actor with nothing saying
-  # so.
+  # Changing either an actor assistant or a plain chat's model configuration has
+  # to go through `Sessions`, not straight at the row: a running pi process was
+  # told its configuration at startup and cannot be reconfigured, so the switch
+  # has to cool the topic to take effect.
   #
   # The topic itself survives -- history lives here, and cooling arms the replay
   # that hands it to the new model on the next prompt.
-  defp write(conversation, %{"assistant_actor_id" => actor_id} = attrs) do
-    with {:ok, conversation} <- Sessions.switch_assistant(conversation, actor_id) do
-      case Map.delete(attrs, "assistant_actor_id") do
-        empty when empty == %{} -> {:ok, conversation}
-        rest -> conversations_context().update_conversation(conversation, rest)
-      end
+  defp write(conversation, attrs) do
+    if Enum.any?(assistant_configuration_keys(), &Map.has_key?(attrs, &1)) do
+      Sessions.switch_configuration(conversation, attrs)
+    else
+      conversations_context().update_conversation(conversation, attrs)
     end
   end
 
-  defp write(conversation, attrs) do
-    conversations_context().update_conversation(conversation, attrs)
-  end
+  defp assistant_configuration_keys,
+    do: ~w(mode assistant_actor_id provider model thinking_level)
 
   @doc """
   Cools a topic: closes its pi process and keeps everything it said.

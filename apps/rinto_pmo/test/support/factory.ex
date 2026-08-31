@@ -133,10 +133,10 @@ defmodule RintoPMO.Factory do
     }
   end
 
-  # An assistant by default: a topic without one cannot be opened
-  # (`Sessions.ensure_hot/2` refuses it) and nothing in it can propose, since a
-  # proposal's author is the assistant the topic is talking to. The tests that
-  # are *about* a topic having none pass `assistant_actor: nil` themselves.
+  # Actor mode by default, matching existing rows and formal-work topics. Such
+  # a topic cannot be opened without its assistant and proposals are credited
+  # to that actor. Plain-chat tests opt into `mode: :chat` and clear the
+  # association explicitly.
   def conversation_factory do
     %Conversation{
       title: sequence(:conversation_title, &"Topic #{&1}"),

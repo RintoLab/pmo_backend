@@ -47,13 +47,17 @@ defmodule RintoPMO.Conversations.Recorder do
   @type option ::
           {:conversation_id, UUIDv7.t()}
           | {:session_id, PiSession.id()}
-          | {:actor_id, UUIDv7.t()}
+          | {:actor_id, UUIDv7.t() | nil}
+          | {:provider, String.t() | nil}
+          | {:model, String.t() | nil}
+          | {:thinking_level, String.t() | nil}
           | {:pubsub, atom()}
 
   @doc """
   Starts a recorder. Prefer `RintoPMO.Conversations.Recorder.Supervisor.start_recorder/1`.
 
-  `actor_id` is the AI actor assistant turns are attributed to.
+  `actor_id` is the AI actor assistant turns are attributed to, or nil for a
+  plain chat. Provider, model and thinking level are snapshotted either way.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts) do
@@ -103,7 +107,10 @@ defmodule RintoPMO.Conversations.Recorder do
      %{
        conversation_id: Keyword.fetch!(opts, :conversation_id),
        session_id: session_id,
-       actor_id: Keyword.fetch!(opts, :actor_id)
+       actor_id: Keyword.fetch!(opts, :actor_id),
+       provider: Keyword.get(opts, :provider),
+       model: Keyword.get(opts, :model),
+       thinking_level: Keyword.get(opts, :thinking_level)
      }}
   end
 
@@ -196,7 +203,10 @@ defmodule RintoPMO.Conversations.Recorder do
     case conversations().append_message(conversation, %{
            actor_id: state.actor_id,
            role: role,
-           content: content
+           content: content,
+           provider: state.provider,
+           model: state.model,
+           thinking_level: state.thinking_level
          }) do
       {:ok, _message} ->
         :ok

@@ -80,6 +80,32 @@ defmodule RintoPMO.Conversations.SessionsTest do
       assert "You review architecture." in argv
     end
 
+    test "plain chat heats with the model selected on the conversation", %{tmp_dir: tmp_dir} do
+      capture = Path.join(tmp_dir, "chat-argv")
+
+      conversation =
+        insert(:conversation,
+          mode: :chat,
+          assistant_actor: nil,
+          provider: "openai",
+          model: "gpt-5.4",
+          thinking_level: "low"
+        )
+
+      {:ok, _conversation, :revived} =
+        Sessions.ensure_hot(conversation,
+          session_opts: dumping_pi(tmp_dir, capture)
+        )
+
+      assert eventually(fn -> File.exists?(capture) end)
+      argv = capture |> File.read!() |> String.split("\n", trim: true)
+
+      assert "--provider" in argv
+      assert "openai" in argv
+      assert "gpt-5.4" in argv
+      assert "low" in argv
+    end
+
     # A pi process is told which model to be once, at startup, and runs
     # `--no-session`. Writing the row without closing it would leave the topic
     # answering as the old actor with nothing saying so.
@@ -109,6 +135,27 @@ defmodule RintoPMO.Conversations.SessionsTest do
         Sessions.ensure_hot(switched, session_opts: idle_pi(tmp_dir))
 
       assert reheated.replay_pending
+    end
+
+    test "switching an actor topic to plain chat cools the old process", %{tmp_dir: tmp_dir} do
+      conversation = hot_conversation!(tmp_dir)
+      session_id = conversation.pi_session_id
+
+      assert {:ok, switched} =
+               Sessions.switch_configuration(conversation, %{
+                 mode: :chat,
+                 provider: "openai",
+                 model: "gpt-5.4",
+                 thinking_level: "medium"
+               })
+
+      assert switched.mode == :chat
+      assert switched.assistant_actor_id == nil
+      assert switched.provider == "openai"
+      assert switched.model == "gpt-5.4"
+      assert switched.thinking_level == "medium"
+      assert switched.pi_session_id == nil
+      refute PiSession.alive?(session_id)
     end
   end
 
@@ -379,7 +426,7 @@ defmodule RintoPMO.Conversations.SessionsTest do
       assert Conversations.get_conversation!(hot.id).id == hot.id
     end
 
-    test "refuses to heat a topic with no AI persona to answer as" do
+    test "refuses to heat an actor topic with no AI persona to answer as" do
       conversation = insert(:conversation, assistant_actor: nil)
 
       assert {:error, :assistant_actor_required} = Sessions.ensure_hot(conversation)

@@ -278,7 +278,8 @@ paths:
         The actor must be an enabled AI actor -- a human has no model to ask.
         Disabling or deleting the actor later is not an error: the role reads
         as empty, and what that means is the reader's to decide. `title_actor`
-        falls back to the topic's own assistant; `decomposition_actor` has no
+        falls back to the topic's own assistant configuration;
+        `decomposition_actor` has no
         conversation to inherit from, so decomposition is refused until the
         role is filled again.
 
@@ -6387,8 +6388,12 @@ components:
           title,
           title_source,
           actor_id,
+          mode,
           pi_session_id,
           assistant_actor_id,
+          provider,
+          model,
+          thinking_level,
           hot,
           replay_pending,
 
@@ -6422,16 +6427,34 @@ components:
           format: uuid
           nullable: true
           description: Who started the topic.
+        mode:
+          type: string
+          enum: [actor, chat]
+          description: >
+            `actor` talks as a fixed AI actor and gets its model configuration
+            from that actor. `chat` is an ordinary model conversation: it has
+            no assistant actor and uses the provider, model and thinking level
+            stored directly on the topic.
         assistant_actor_id:
           type: string
           format: uuid
           nullable: true
           description: >
-            The AI persona this topic is a conversation *with*. Replies are
-            attributed to it, and sending a message to a topic that has none is
-            refused rather than guessed at. A property of the topic rather than
-            of each message: a client that could vary it per message could make
-            one topic's history look like two actors talking.
+            The fixed AI persona an `actor` topic is a conversation with. Its
+            replies and formal operations are attributed to this actor. Null in
+            `chat` mode; ordinary chat replies are deliberately unattributed.
+        provider:
+          type: string
+          nullable: true
+          description: Selected provider in `chat` mode; null in `actor` mode.
+        model:
+          type: string
+          nullable: true
+          description: Selected model in `chat` mode; null in `actor` mode.
+        thinking_level:
+          type: string
+          nullable: true
+          description: Selected thinking level in `chat` mode; null in `actor` mode.
         pi_session_id:
           type: string
           nullable: true
@@ -6527,7 +6550,7 @@ components:
             The actor that names conversations from their first user message.
             Null means nobody has been chosen, or the chosen one has since been
             disabled or deleted -- in which case each topic is named by its own
-            `assistant_actor_id` instead.
+            assistant actor or plain-chat model configuration instead.
         decomposition_actor:
           allOf:
             - $ref: "#/components/schemas/Actor"
@@ -6602,13 +6625,34 @@ components:
             (`title_source: manual`) and is never replaced by the automatic
             one. Omit it, or send null, to have the topic named from its first
             message.
+        mode:
+          type: string
+          enum: [actor, chat]
+          default: actor
+          description: >
+            `actor` uses a fixed AI actor. `chat` accepts a freely selected
+            provider, model and thinking level without creating or associating
+            an AI actor.
         assistant_actor_id:
           type: string
           format: uuid
           nullable: true
           description: >
-            The AI persona to talk to. Required before the topic can be sent a
-            message, so set it here unless the user has yet to choose one.
+            The AI persona for `actor` mode. It may be omitted while the user
+            is still choosing, but the first prompt is refused until it is set.
+            Must be null or omitted in `chat` mode.
+        provider:
+          type: string
+          nullable: true
+          description: Required in `chat` mode; must be null or omitted in `actor` mode.
+        model:
+          type: string
+          nullable: true
+          description: Required in `chat` mode; must be null or omitted in `actor` mode.
+        thinking_level:
+          type: string
+          nullable: true
+          description: Required in `chat` mode; must be null or omitted in `actor` mode.
       additionalProperties: false
     ConversationUpdateInput:
       type: object
@@ -6622,9 +6666,25 @@ components:
             (`title_source: manual`), including when it is null: clearing a
             title is a decision, and the topic is not named automatically
             afterwards. A blank string is stored as null.
+        mode:
+          type: string
+          enum: [actor, chat]
+          description: >
+            Switching to `chat` clears `assistant_actor_id`; switching to
+            `actor` clears provider, model and thinking level. The new mode's
+            required configuration must be included in the same request.
         assistant_actor_id:
           type: string
           format: uuid
+          nullable: true
+        provider:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        thinking_level:
+          type: string
           nullable: true
       additionalProperties: false
     MessageRef:
@@ -6684,6 +6744,9 @@ components:
           id,
           conversation_id,
           actor_id,
+          provider,
+          model,
+          thinking_level,
           role,
           content,
           position,
@@ -6701,6 +6764,22 @@ components:
         actor_id:
           type: string
           format: uuid
+          nullable: true
+          description: >
+            Required for a user turn. For an assistant turn, the fixed actor in
+            `actor` mode or null in ordinary `chat` mode.
+        provider:
+          type: string
+          nullable: true
+          description: Provider actually used for an assistant turn, snapshotted at reply time.
+        model:
+          type: string
+          nullable: true
+          description: Model actually used for an assistant turn, snapshotted at reply time.
+        thinking_level:
+          type: string
+          nullable: true
+          description: Thinking level actually used, snapshotted at reply time.
         role:
           type: string
           enum: [user, assistant]
@@ -6744,11 +6823,22 @@ components:
       additionalProperties: false
     MessageCreateInput:
       type: object
-      required: [actor_id, role, content]
+      required: [role, content]
       properties:
         actor_id:
           type: string
           format: uuid
+          nullable: true
+          description: Required when `role` is `user`; optional for `assistant`.
+        provider:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        thinking_level:
+          type: string
+          nullable: true
         role:
           type: string
           enum: [user, assistant]

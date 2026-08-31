@@ -94,6 +94,41 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
              json_response(conn, 422)
   end
 
+  test "POST conversations starts a plain chat without an assistant actor", %{
+    conn: conn,
+    current_actor: actor
+  } do
+    params = %{
+      "mode" => "chat",
+      "provider" => "openai",
+      "model" => "gpt-5.4",
+      "thinking_level" => "medium"
+    }
+
+    conversation =
+      insert(:conversation,
+        actor: actor,
+        mode: :chat,
+        assistant_actor: nil,
+        provider: "openai",
+        model: "gpt-5.4",
+        thinking_level: "medium"
+      )
+
+    expected = Map.put(params, "actor_id", actor.id)
+    expect(ConversationsMock, :create_conversation, fn ^expected -> {:ok, conversation} end)
+
+    conn = post(conn, ~p"/api/v1/conversations", params)
+
+    assert %{
+             "mode" => "chat",
+             "assistant_actor_id" => nil,
+             "provider" => "openai",
+             "model" => "gpt-5.4",
+             "thinking_level" => "medium"
+           } = json_response(conn, 201)["data"]
+  end
+
   test "PATCH conversations/:id renames a topic", %{conn: conn} do
     conversation = insert(:conversation, title: "Old")
     renamed = %{conversation | title: "New"}
@@ -108,6 +143,39 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
     conn = patch(conn, ~p"/api/v1/conversations/#{conversation.id}", params)
 
     assert %{"title" => "New"} = json_response(conn, 200)["data"]
+  end
+
+  test "PATCH conversations/:id switches plain chat model and cools the topic", %{conn: conn} do
+    conversation =
+      insert(:conversation,
+        mode: :chat,
+        assistant_actor: nil,
+        provider: "openai",
+        model: "gpt-5.4",
+        thinking_level: "low",
+        pi_session_id: nil
+      )
+
+    attrs = %{"model" => "gpt-5.5", "thinking_level" => "medium"}
+    updated = %{conversation | model: "gpt-5.5", thinking_level: "medium"}
+    cooled = %{updated | pi_session_id: nil}
+
+    expect(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+
+    expect(ConversationsMock, :update_conversation, fn ^conversation, ^attrs ->
+      {:ok, updated}
+    end)
+
+    expect(ConversationsMock, :detach_session, fn ^updated -> {:ok, cooled} end)
+
+    conn = patch(conn, ~p"/api/v1/conversations/#{conversation.id}", attrs)
+
+    assert %{
+             "mode" => "chat",
+             "model" => "gpt-5.5",
+             "thinking_level" => "medium",
+             "hot" => false
+           } = json_response(conn, 200)["data"]
   end
 
   test "a topic says who named it", %{conn: conn} do

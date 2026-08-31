@@ -280,6 +280,28 @@ defmodule RintoPMO.Conversations.TitlesTest do
 
       assert {:ok, _named, :model} = Titles.name(conversation.id)
     end
+
+    test "uses a plain chat's selected model when no naming actor is configured" do
+      conversation =
+        unnamed(
+          mode: :chat,
+          assistant_actor: nil,
+          provider: "openai",
+          model: "gpt-5.4",
+          thinking_level: "medium"
+        )
+
+      append(conversation, "hello")
+
+      expect(TitleGeneratorMock, :generate, fn _input, opts ->
+        assert opts[:provider] == "openai"
+        assert opts[:model] == "gpt-5.4"
+        assert opts[:thinking] == "medium"
+        {:ok, "A greeting"}
+      end)
+
+      assert {:ok, _named, :model} = Titles.name(conversation.id)
+    end
   end
 
   describe "references" do

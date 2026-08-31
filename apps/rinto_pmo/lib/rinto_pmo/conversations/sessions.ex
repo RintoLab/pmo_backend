@@ -76,9 +76,14 @@ defmodule RintoPMO.Conversations.Sessions do
           | {:error, atom(), map()}
   def ensure_hot(%Conversation{} = conversation, opts \\ []) do
     cond do
-      hot?(conversation) -> {:ok, conversation, :hot}
-      is_nil(conversation.assistant_actor_id) -> {:error, :assistant_actor_required}
-      true -> revive(conversation, opts)
+      hot?(conversation) ->
+        {:ok, conversation, :hot}
+
+      conversation.mode == :actor and is_nil(conversation.assistant_actor_id) ->
+        {:error, :assistant_actor_required}
+
+      true ->
+        revive(conversation, opts)
     end
   end
 
@@ -115,8 +120,27 @@ defmodule RintoPMO.Conversations.Sessions do
   @spec switch_assistant(Conversation.t(), UUIDv7.t()) ::
           {:ok, Conversation.t()} | {:error, Ecto.Changeset.t()}
   def switch_assistant(%Conversation{} = conversation, actor_id) do
-    with {:ok, conversation} <-
-           conversations().update_conversation(conversation, %{assistant_actor_id: actor_id}) do
+    switch_configuration(conversation, %{
+      mode: :actor,
+      assistant_actor_id: actor_id,
+      provider: nil,
+      model: nil,
+      thinking_level: nil
+    })
+  end
+
+  @doc """
+  Changes how a topic's assistant is configured, and cools its current process.
+
+  Actor conversations take their fixed configuration from an AI actor. Plain
+  chat conversations instead carry the provider, model and thinking level the
+  person selected. Both are read only when pi starts, so either kind of change
+  must replace a running process.
+  """
+  @spec switch_configuration(Conversation.t(), map()) ::
+          {:ok, Conversation.t()} | {:error, Ecto.Changeset.t()}
+  def switch_configuration(%Conversation{} = conversation, attrs) when is_map(attrs) do
+    with {:ok, conversation} <- conversations().update_conversation(conversation, attrs) do
       cool(conversation)
     end
   end
@@ -173,16 +197,20 @@ defmodule RintoPMO.Conversations.Sessions do
 
   defp revive(conversation, opts) do
     actor_id = conversation.assistant_actor_id
+    persona = persona_opts(conversation)
     pubsub = Keyword.get(opts, :pubsub, RintoPMO.PubSub)
 
     with {:ok, _room} <- room(),
-         {:ok, session_id} <- start_session(conversation, opts),
+         {:ok, session_id} <- start_session(conversation, persona, opts),
          {:ok, conversation} <- conversations().attach_session(conversation, session_id) do
       {:ok, _pid} =
         Recorder.Supervisor.start_recorder(
           conversation_id: conversation.id,
           session_id: session_id,
           actor_id: actor_id,
+          provider: Keyword.get(persona, :provider),
+          model: Keyword.get(persona, :model),
+          thinking_level: Keyword.get(persona, :thinking),
           pubsub: pubsub
         )
 
@@ -201,14 +229,13 @@ defmodule RintoPMO.Conversations.Sessions do
   # A fresh id per revival rather than reusing the old one: the previous pi
   # process is gone, and reusing its id would make a stale `pi_session_id`
   # elsewhere look live.
-  defp start_session(conversation, opts) do
+  defp start_session(conversation, persona, opts) do
     session_id = "conversation-#{conversation.id}-#{System.unique_integer([:positive])}"
 
     # The caller's own options win: a test injects its fake pi this way, and it
     # is not asking for the assistant's model when it does.
     session_opts =
-      conversation
-      |> persona_opts()
+      persona
       |> Keyword.put(:env, agent_env(conversation))
       |> Keyword.merge(Keyword.get(opts, :session_opts, []))
       |> Keyword.put(:id, session_id)
@@ -254,12 +281,19 @@ defmodule RintoPMO.Conversations.Sessions do
     end
   end
 
-  # The assistant actor's configuration, translated into what a session needs.
-  # `ensure_hot/2` has already refused a conversation with no assistant, so the
-  # empty case here is a row that has gone or one whose kind says it cannot
-  # answer -- both of which fall back to pi's defaults rather than failing a
-  # revive, because a topic that cannot be opened is worse than one answering as
-  # a default model.
+  # The conversation's assistant configuration, translated into what a session
+  # needs. Plain chat carries it inline; actor mode reads the fixed persona. In
+  # actor mode the empty case is a row that has gone or one whose kind says it
+  # cannot answer -- both fall back to pi's defaults rather than making an
+  # existing topic impossible to open.
+  defp persona_opts(%Conversation{mode: :chat} = conversation) do
+    [
+      provider: conversation.provider,
+      model: conversation.model,
+      thinking: conversation.thinking_level
+    ]
+  end
+
   defp persona_opts(%Conversation{assistant_actor_id: nil}), do: []
 
   defp persona_opts(%Conversation{assistant_actor_id: actor_id}) do

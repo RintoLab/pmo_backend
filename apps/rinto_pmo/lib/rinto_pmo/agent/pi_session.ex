@@ -438,8 +438,8 @@ defmodule RintoPMO.Agent.PiSession do
   end
 
   # Which model answers, and as whom. Absent options are simply not passed, and
-  # pi falls back to its own defaults -- which is what a conversation with no
-  # assistant actor configured gets.
+  # pi falls back to its own defaults. Conversation code normally supplies
+  # either a fixed actor's configuration or a plain chat's inline selection.
   defp persona_args(opts) do
     model_args(opts) ++
       flag(opts, :thinking, "--thinking") ++

@@ -20,9 +20,10 @@ defmodule RintoPMO.Settings do
   What an empty role means is the reader's to decide, and the two readers
   answer differently because their situations differ:
 
-    * `RintoPMO.Conversations.Titles` falls back to the topic's own assistant.
-      Naming happens inside a conversation, so there is always another actor
-      standing right there to inherit from.
+    * `RintoPMO.Conversations.Titles` falls back to the topic's own assistant
+      configuration, whether that is a fixed actor or a plain chat model.
+      Naming happens inside a conversation, so there is always another model
+      configuration right there to inherit from.
     * decomposing a document, or estimating a task, refuses outright. Those
       jobs belong to no conversation, so there is nothing to fall back *to*,
       and picking some actor off the list would be this module inventing an
