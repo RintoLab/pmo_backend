@@ -970,10 +970,15 @@ fn string<'a>(value: &'a Value, field: &str, fallback: &'a str) -> &'a str {
 
 /// Says who is writing, in the only way this program is allowed to.
 ///
-/// Inside a topic it names the topic and nothing else: the author is that
-/// topic's assistant and the server derives it, so a caller that also named an
-/// actor could name the wrong one. Outside a topic there is nobody to derive
-/// from, and the configured human is the author.
+/// Inside a topic it names the topic and nothing else: the server derives the
+/// author from it -- the topic's assistant, or the actor holding the authoring
+/// role when the topic is a plain chat -- so a caller that also named an actor
+/// could name the wrong one.
+///
+/// Outside a topic the configured human is the author. The server now reads
+/// that off the token and overrides whatever arrives, so this field is
+/// redundant rather than load-bearing; it is still sent because an older
+/// server on the other end still reads it.
 fn attribute(payload: &mut Map<String, Value>, config: &Config) -> Result<()> {
     match config.conversation_id() {
         Some(conversation_id) => {

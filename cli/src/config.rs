@@ -30,9 +30,12 @@ const DEFAULT_API: &str = "https://pmo-api.kenton.wang/api/v1";
 /// The agent inside a topic runs it with an environment instead. The backend
 /// spawns that process and injects the topic, because which topic it is
 /// answering in is a fact about the process rather than something to ask a model
-/// to carry. There is no actor: a write made inside a topic is by that topic's
-/// assistant, and the server derives it -- see `RintoPMO.Documents`. This
-/// program never names an author.
+/// to carry. There is no actor: a write made inside a topic is by whoever the
+/// server derives from that topic -- its assistant when one is configured, and
+/// the actor holding the authoring role when the topic is a plain chat, which
+/// has a model where an assistant would be. See `RintoPMO.Documents`. Either
+/// way this program never names an author, which is why the rule can change
+/// on the server without changing anything here.
 ///
 /// The token is required either way, and is the same one everywhere: a single
 /// value agreed in advance, given to the server as `RINTO_TOKEN` and copied by
@@ -119,10 +122,10 @@ impl Config {
 
     /// The human this CLI is configured as, as recorded by `config init`.
     ///
-    /// Nothing sends this any more -- the server reads the token and knows.
-    /// It is kept so that `config show` can say who you are without a request,
-    /// and for the task filters, which ask *about* an actor rather than acting
-    /// as one.
+    /// Nothing this sends is load-bearing any more -- the server reads the
+    /// token and knows. It is kept so that `config show` can say who you are
+    /// without a request, and for the task filters, which ask *about* an actor
+    /// rather than acting as one.
     pub fn actor_id(&self) -> Result<&str> {
         self.actor_id.as_deref().ok_or_else(|| {
             Error::Config(format!(
@@ -388,7 +391,9 @@ fn show() -> Result<()> {
 
     match config.actor_id() {
         Ok(actor_id) => println!("actor_id: {actor_id}"),
-        Err(_no_actor) => println!("actor_id: (none; writes are by the topic's assistant)"),
+        Err(_no_actor) => {
+            println!("actor_id: (none; the server derives the author from the topic)")
+        }
     }
 
     match config.conversation_id() {
