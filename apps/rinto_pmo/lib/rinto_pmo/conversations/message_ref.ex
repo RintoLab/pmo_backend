@@ -15,8 +15,15 @@ defmodule RintoPMO.Conversations.MessageRef do
   to index. `ref_id` for a project is the id its slug resolved to at write
   time.
 
-  `ref_document_id` serves annotations alone: an annotation is only ever
-  reachable through its document.
+  `ref_document_id` is set for a ref that lives *inside* a document --
+  an annotation, a block proposal, and whatever document-internal resource
+  comes after them -- and names the document it lives in. Such a thing is only
+  ever reachable through its document, which is the rule
+  `PromptBuilder.resolve/1` enforces; it is also what lets
+  `RintoPMO.Conversations.list_conversations/1` answer "which topics touched
+  this document?" without a join table. A `document` ref does not use it -- for
+  that one, `ref_id` *is* the document -- and a `project` or `attachment` ref
+  has no document to name.
 
   `position` preserves the order the client gave, because `PromptBuilder`
   expands refs in that order and a replay has to reproduce it. Insertion order

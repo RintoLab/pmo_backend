@@ -111,6 +111,168 @@ defmodule RintoPMO.ConversationsTest do
     end
   end
 
+  # A conversation belongs to no document, so this is derived entirely from the
+  # refs its messages carried -- there is no column to read and no join table.
+  describe "filtering by document" do
+    test "a direct document ref puts the topic on the document" do
+      document = insert(:document)
+      conversation = insert(:conversation)
+
+      refer(conversation, %{"type" => "document", "id" => document.id})
+
+      assert ids(Conversations.list_conversations(%{document_id: document.id})) ==
+               MapSet.new([conversation.id])
+    end
+
+    test "an annotation reaches the document it lives in" do
+      document = insert(:document)
+      annotation = insert(:annotation, document: document)
+      conversation = insert(:conversation)
+
+      refer(conversation, %{
+        "type" => "annotation",
+        "id" => annotation.id,
+        "document_id" => document.id
+      })
+
+      assert ids(Conversations.list_conversations(%{document_id: document.id})) ==
+               MapSet.new([conversation.id])
+    end
+
+    # Proposals used to be dropped on the way in: normalisation matched
+    # "annotation" by name, so a proposal's document_id never reached a column
+    # and the topic was invisible to this filter. Assert the column, not only
+    # the result, so a regression names itself.
+    test "a proposal reaches the document it lives in, and lands in the column" do
+      document = insert(:document)
+      conversation = insert(:conversation)
+      proposal = insert(:block_proposal, document: document, conversation: conversation)
+
+      message =
+        refer(conversation, %{
+          "type" => "proposal",
+          "id" => proposal.id,
+          "document_id" => document.id
+        })
+
+      assert [stored] = Conversations.get_message!(conversation, message.id).refs
+      assert stored.ref_type == "proposal"
+      assert stored.ref_id == proposal.id
+      assert stored.ref_document_id == document.id
+
+      assert ids(Conversations.list_conversations(%{document_id: document.id})) ==
+               MapSet.new([conversation.id])
+    end
+
+    test "returns a topic once however many ways it named the document" do
+      document = insert(:document)
+      annotation = insert(:annotation, document: document)
+      actor = insert(:actor)
+      conversation = insert(:conversation)
+
+      refs = [
+        %{"type" => "document", "id" => document.id},
+        %{"type" => "document", "id" => document.id},
+        %{"type" => "annotation", "id" => annotation.id, "document_id" => document.id}
+      ]
+
+      for ref <- refs do
+        {:ok, _message} =
+          Conversations.append_message(conversation, %{
+            actor_id: actor.id,
+            role: :user,
+            content: "Again",
+            refs: [ref]
+          })
+      end
+
+      assert [found] = Conversations.list_conversations(%{document_id: document.id})
+      assert found.id == conversation.id
+    end
+
+    # The reason there is no `document_id` column to filter on: a topic that
+    # compared two documents belongs to both, and each document's panel has to
+    # see it. Membership is many-valued, so it cannot be a column, and this
+    # filter must never make a topic pick a side.
+    test "a topic that spans two documents is on both of them" do
+      first = insert(:document)
+      second = insert(:document)
+      annotation = insert(:annotation, document: second)
+      conversation = insert(:conversation)
+
+      # Reached one directly and the other through something living inside it,
+      # so both hit paths are exercised on a single topic.
+      refer(conversation, %{"type" => "document", "id" => first.id})
+
+      refer(conversation, %{
+        "type" => "annotation",
+        "id" => annotation.id,
+        "document_id" => second.id
+      })
+
+      assert ids(Conversations.list_conversations(%{document_id: first.id})) ==
+               MapSet.new([conversation.id])
+
+      assert ids(Conversations.list_conversations(%{document_id: second.id})) ==
+               MapSet.new([conversation.id])
+    end
+
+    test "a topic about another document is not on this one" do
+      document = insert(:document)
+      other = insert(:document)
+      other_annotation = insert(:annotation, document: other)
+      conversation = insert(:conversation)
+
+      refer(conversation, %{"type" => "document", "id" => other.id})
+
+      elsewhere = insert(:conversation)
+
+      refer(elsewhere, %{
+        "type" => "annotation",
+        "id" => other_annotation.id,
+        "document_id" => other.id
+      })
+
+      assert Conversations.list_conversations(%{document_id: document.id}) == []
+    end
+
+    test "actor and document combine as AND" do
+      document = insert(:document)
+      actor = insert(:actor)
+      other_actor = insert(:actor)
+
+      mine = insert(:conversation, actor: actor)
+      theirs = insert(:conversation, actor: other_actor)
+
+      for conversation <- [mine, theirs] do
+        refer(conversation, %{"type" => "document", "id" => document.id})
+      end
+
+      # The topic that satisfies only one half of the filter satisfies neither.
+      elsewhere = insert(:conversation, actor: actor)
+      refer(elsewhere, %{"type" => "document", "id" => insert(:document).id})
+
+      assert ids(Conversations.list_conversations(%{document_id: document.id})) ==
+               MapSet.new([mine.id, theirs.id])
+
+      assert ids(
+               Conversations.list_conversations(%{
+                 actor_id: actor.id,
+                 document_id: document.id
+               })
+             ) == MapSet.new([mine.id])
+    end
+
+    # A filter, not a lookup: a well-formed id nobody has discussed is an empty
+    # result, the same as one nobody has discussed *yet*.
+    test "a well-formed id with nothing behind it is an empty list" do
+      conversation = insert(:conversation)
+      refer(conversation, %{"type" => "document", "id" => insert(:document).id})
+
+      assert Conversations.list_conversations(%{document_id: UUIDv7.generate()}) == []
+    end
+  end
+
   describe "messages" do
     test "appends monotonic positions" do
       conversation = insert(:conversation)
@@ -455,6 +617,18 @@ defmodule RintoPMO.ConversationsTest do
       role: :user,
       content: content
     })
+  end
+
+  defp refer(conversation, ref) do
+    {:ok, message} =
+      Conversations.append_message(conversation, %{
+        actor_id: insert(:actor).id,
+        role: :user,
+        content: "Look at this",
+        refs: [ref]
+      })
+
+    message
   end
 
   defp ids(conversations) do

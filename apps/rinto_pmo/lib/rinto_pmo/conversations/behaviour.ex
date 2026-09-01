@@ -4,7 +4,10 @@ defmodule RintoPMO.Conversations.Behaviour do
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Conversations.Message
 
-  @type filter :: %{optional(:actor_id) => UUIDv7.t()}
+  @type filter :: %{
+          optional(:actor_id) => UUIDv7.t(),
+          optional(:document_id) => UUIDv7.t()
+        }
 
   @type message_opts :: %{
           optional(:after_position) => non_neg_integer(),

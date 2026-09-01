@@ -96,15 +96,27 @@ defmodule RintoPMOWeb.V1.ConversationController do
     |> render(:index, entries: entries)
   end
 
+  # `document_id` is a derived filter, not a nested collection: a conversation
+  # belongs to no single document, so there is no
+  # `/documents/{id}/conversations`. It reads the global list through what the
+  # topic's messages referenced -- the document itself, or something living in
+  # it. An id that matches nothing is an empty list, not a `404`; whether the
+  # document exists is a different question from which topics touched it.
   defp conversation_filter(params) do
-    case Map.get(params, "actor_id") do
+    with {:ok, filter} <- uuid_filter(params, %{}, "actor_id", :actor_id) do
+      uuid_filter(params, filter, "document_id", :document_id)
+    end
+  end
+
+  defp uuid_filter(params, filter, parameter, key) do
+    case Map.get(params, parameter) do
       nil ->
-        {:ok, %{}}
+        {:ok, filter}
 
       value ->
         case UUIDv7.cast(value) do
-          {:ok, actor_id} -> {:ok, %{actor_id: actor_id}}
-          :error -> {:error, :bad_request, %{"actor_id" => ["is invalid"]}}
+          {:ok, id} -> {:ok, Map.put(filter, key, id)}
+          :error -> {:error, :bad_request, %{parameter => ["is invalid"]}}
         end
     end
   end

@@ -34,6 +34,47 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
              json_response(conn, 400)
   end
 
+  # Derived from the topic's refs, so it stays on the global collection: there
+  # is no /documents/:id/conversations, because a topic is not one document's.
+  test "GET conversations filters by document", %{conn: conn} do
+    conversation = insert(:conversation)
+    conversation_id = conversation.id
+    document = insert(:document)
+    document_id = document.id
+
+    expect(ConversationsMock, :list_conversations, fn %{document_id: ^document_id} ->
+      [conversation]
+    end)
+
+    conn = get(conn, ~p"/api/v1/conversations?document_id=#{document.id}")
+
+    assert [%{"id" => ^conversation_id}] = json_response(conn, 200)["data"]
+  end
+
+  test "GET conversations keeps both actor and document", %{conn: conn} do
+    actor = insert(:actor)
+    actor_id = actor.id
+    document = insert(:document)
+    document_id = document.id
+
+    expect(ConversationsMock, :list_conversations, fn filter ->
+      assert filter == %{actor_id: actor_id, document_id: document_id}
+      []
+    end)
+
+    conn =
+      get(conn, ~p"/api/v1/conversations?actor_id=#{actor.id}&document_id=#{document.id}")
+
+    assert json_response(conn, 200)["data"] == []
+  end
+
+  test "GET conversations rejects a malformed document id", %{conn: conn} do
+    conn = get(conn, ~p"/api/v1/conversations?document_id=nope")
+
+    assert %{"error" => "bad_request", "details" => %{"document_id" => ["is invalid"]}} =
+             json_response(conn, 400)
+  end
+
   test "GET conversations/:id returns one topic", %{conn: conn} do
     conversation = insert(:conversation)
     conversation_id = conversation.id

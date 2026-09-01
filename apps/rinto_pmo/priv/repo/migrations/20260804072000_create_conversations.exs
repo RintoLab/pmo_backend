@@ -59,8 +59,11 @@ defmodule RintoPMO.Repo.Migrations.CreateConversations do
       # message's refs are all written inside one.
       add :position, :integer, null: false
       add :ref_id, :binary_id, null: true
-      # Annotations only: an annotation is reachable solely through its
-      # document, the same rule PromptBuilder.resolve/1 enforces.
+      # Set for a ref that lives inside a document -- an annotation, a block
+      # proposal, whatever comes after them -- and names the document it lives
+      # in. Such a thing is reachable solely through its document, the same
+      # rule PromptBuilder.resolve/1 enforces. A "document" ref leaves it null:
+      # there, ref_id is already the document.
       add :ref_document_id, :binary_id, null: true
       # The ref map exactly as the client sent it. Kept alongside the
       # normalised columns because the two serve different jobs: payload is

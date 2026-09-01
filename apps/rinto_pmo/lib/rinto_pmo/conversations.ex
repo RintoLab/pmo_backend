@@ -40,6 +40,10 @@ defmodule RintoPMO.Conversations do
 
   @doc """
   Lists conversations, most recently created first.
+
+  `filter` takes an optional `:actor_id` and an optional `:document_id`, which
+  combine as AND. `:document_id` is a derived filter over `message_refs` -- see
+  `filter_by_document/2` -- not a column on the conversation.
   """
   @impl true
   def list_conversations(filter) when is_map(filter) do
@@ -299,9 +303,14 @@ defmodule RintoPMO.Conversations do
   # normalise -- an unknown type, a slug whose project has since been renamed
   # -- still gets stored, because `payload` is what replay needs and dropping
   # the message would lose the turn over a broken index entry.
-  defp normalize_ref(%{"type" => "annotation", "id" => id, "document_id" => document_id} = ref) do
+  # Any ref that names both itself and the document it lives in gets both
+  # indexed -- annotations and proposals today, whatever else the document
+  # panel grows tomorrow. Keyed off the shape rather than a list of types, so a
+  # new document-internal resource is filterable the day it is sent.
+  defp normalize_ref(%{"type" => type, "id" => id, "document_id" => document_id} = ref)
+       when is_binary(type) do
     %{
-      ref_type: "annotation",
+      ref_type: type,
       ref_id: cast_id(id),
       ref_document_id: cast_id(document_id),
       payload: ref
@@ -347,9 +356,38 @@ defmodule RintoPMO.Conversations do
       {:actor_id, actor_id}, query ->
         where(query, [conversation], conversation.actor_id == ^actor_id)
 
+      {:document_id, document_id}, query ->
+        filter_by_document(query, document_id)
+
       {_other, _value}, query ->
         query
     end)
+  end
+
+  # A conversation still belongs to no document -- one topic routinely spans
+  # several -- so "which topics touched this document?" is derived from what
+  # the messages put in front of the model, the same way the reverse lookup is.
+  #
+  # Two ref shapes count, and both have to: a direct `document` ref, which is
+  # what a topic opened from the document panel carries on its first turn, and
+  # a document-internal resource (annotation, proposal, whatever comes next)
+  # whose `ref_document_id` names the document it lives in. A `project` or
+  # `attachment` ref is not one of those -- neither belongs to a document --
+  # and is picked up only through the direct ref sent alongside it.
+  #
+  # `distinct` because a topic that cited the same document five times is one
+  # topic. The join stays in SQL: filtering in Elixir would mean loading every
+  # conversation in the system to draw one document's sidebar.
+  defp filter_by_document(query, document_id) do
+    query
+    |> join(:inner, [conversation], message in assoc(conversation, :messages))
+    |> join(:inner, [_conversation, message], ref in assoc(message, :refs))
+    |> where(
+      [_conversation, _message, ref],
+      (ref.ref_type == "document" and ref.ref_id == ^document_id) or
+        ref.ref_document_id == ^document_id
+    )
+    |> distinct(true)
   end
 
   defp next_message_position(repo, conversation_id) do

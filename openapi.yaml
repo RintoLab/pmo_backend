@@ -2106,11 +2106,34 @@ paths:
       tags: [Conversations]
       operationId: listConversations
       summary: List topics
+      description: >
+        Newest first. Filters combine as AND.
       parameters:
         - name: actor_id
           in: query
           required: false
           description: Filter to the topics a given actor started.
+          schema:
+            type: string
+            format: uuid
+        - name: document_id
+          in: query
+          required: false
+          description: >
+            Filter to the topics that touched a given document. A conversation
+            still belongs to no document -- one topic routinely spans several
+            -- so this is derived from the refs its messages carried, not from
+            a column, and there is no `/documents/{id}/conversations`. A topic
+            matches if any of its message refs is either a direct document ref
+            (`{"type":"document","id":"<document_id>"}`, which is what a topic
+            opened from the document panel sends on its first turn) or a
+            document-internal resource carrying that document in
+            `document_id` -- an annotation, a block proposal, and whatever
+            comes after them. `project` and `attachment` refs do not belong to
+            a document and never match on their own; they are picked up through
+            the direct document ref sent in the same message. A topic is
+            returned once however often it cited the document. A well-formed id
+            that matches nothing returns an empty list rather than a `404`.
           schema:
             type: string
             format: uuid
