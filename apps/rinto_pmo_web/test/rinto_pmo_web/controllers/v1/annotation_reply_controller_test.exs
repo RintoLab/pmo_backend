@@ -4,14 +4,18 @@ defmodule RintoPMOWeb.V1.AnnotationReplyControllerTest do
   alias RintoPMO.AnnotationsMock
   alias RintoPMO.DocumentsMock
 
-  test "POST replies creates a follow-up", %{conn: conn} do
+  test "POST replies creates a follow-up credited to the caller", %{
+    conn: conn,
+    current_actor: current_actor
+  } do
     document = insert(:document)
     annotation = insert(:annotation, document: document)
-    actor = insert(:actor)
-    reply = insert(:annotation_reply, annotation: annotation, actor: actor, position: 0)
+    reply = insert(:annotation_reply, annotation: annotation, actor: current_actor, position: 0)
     reply_id = reply.id
 
-    params = %{"actor_id" => actor.id, "content" => "Follow-up"}
+    # An actor in the body is overwritten: a follow-up is by whoever is calling.
+    params = %{"actor_id" => insert(:actor).id, "content" => "Follow-up"}
+    expected = %{"actor_id" => current_actor.id, "content" => "Follow-up"}
 
     expect(DocumentsMock, :get_document!, fn id ->
       assert id == document.id
@@ -23,7 +27,7 @@ defmodule RintoPMOWeb.V1.AnnotationReplyControllerTest do
       %{annotation | replies: []}
     end)
 
-    expect(AnnotationsMock, :create_reply, fn _annotation, ^params -> {:ok, reply} end)
+    expect(AnnotationsMock, :create_reply, fn _annotation, ^expected -> {:ok, reply} end)
 
     conn =
       post(

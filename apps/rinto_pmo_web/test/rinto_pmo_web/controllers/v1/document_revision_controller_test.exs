@@ -55,6 +55,59 @@ defmodule RintoPMOWeb.V1.DocumentRevisionControllerTest do
     assert parent_id == parent.id
   end
 
+  # Writing a revision is how a person changes a document, so every block it
+  # touches is theirs -- whatever each operation said.
+  test "POST revisions credits every operation to the caller", %{
+    conn: conn,
+    current_actor: current_actor
+  } do
+    document = expect_document()
+    parent = document.latest_revision
+    revision = %{insert_revision_after(parent, document: document) | blocks: []}
+    impostor = insert(:actor)
+    actor_id = current_actor.id
+
+    expect(DocumentsMock, :create_revision, fn ^document, attrs ->
+      assert Enum.all?(attrs["block_ops"], &(&1["actor_id"] == actor_id))
+      {:ok, revision}
+    end)
+
+    conn =
+      post(conn, ~p"/api/v1/documents/#{document.id}/revisions", %{
+        "base_revision_id" => parent.id,
+        "block_ops" => [
+          %{
+            "op" => "update",
+            "block_id" => UUIDv7.generate(),
+            "actor_id" => impostor.id,
+            "content" => "Tighter"
+          },
+          %{"op" => "insert_after", "after_block_id" => nil, "content" => "New"}
+        ]
+      })
+
+    assert json_response(conn, 201)["data"]["id"] == revision.id
+  end
+
+  # A `block_ops` that is not a list is the context's error to name; rewriting
+  # it here would turn one bad shape into a different bad shape.
+  test "POST revisions leaves a malformed block_ops for the context to refuse", %{conn: conn} do
+    document = expect_document()
+
+    expect(DocumentsMock, :create_revision, fn ^document, attrs ->
+      assert attrs["block_ops"] == "not a list"
+      {:error, :invalid_block_op, %{index: nil}}
+    end)
+
+    conn =
+      post(conn, ~p"/api/v1/documents/#{document.id}/revisions", %{
+        "base_revision_id" => document.latest_revision.id,
+        "block_ops" => "not a list"
+      })
+
+    assert %{"error" => "invalid_block_op"} = json_response(conn, 422)
+  end
+
   test "POST revisions renders stale document conflicts", %{conn: conn} do
     document = expect_document()
     current_revision_id = document.latest_revision.id
@@ -72,11 +125,13 @@ defmodule RintoPMOWeb.V1.DocumentRevisionControllerTest do
            } = json_response(conn, 409)
   end
 
-  test "POST commit turns the proposals into a revision", %{conn: conn} do
+  test "POST commit turns the proposals into a revision", %{
+    conn: conn,
+    current_actor: current_actor
+  } do
     document = expect_document()
     conversation = insert(:conversation)
     annotation = insert(:annotation, document: document)
-    actor = insert(:actor)
 
     revision =
       insert_revision_after(document.latest_revision,
@@ -89,14 +144,17 @@ defmodule RintoPMOWeb.V1.DocumentRevisionControllerTest do
     conversation_id = conversation.id
 
     params = %{
-      "actor_id" => actor.id,
       "base_revision_id" => document.latest_revision.id,
       "source_conversation_id" => conversation.id,
       "confirm_annotation_ids" => [annotation.id],
       "change_summary" => "Tightened §3"
     }
 
-    expect(DocumentsMock, :commit_proposals, fn ^document, ^params ->
+    # Committing is a person's action, so the actor is the token's rather than
+    # anything the body said.
+    expected = Map.put(params, "actor_id", current_actor.id)
+
+    expect(DocumentsMock, :commit_proposals, fn ^document, ^expected ->
       {:ok, %{revision | blocks: []}}
     end)
 
@@ -112,9 +170,9 @@ defmodule RintoPMOWeb.V1.DocumentRevisionControllerTest do
   test "POST commit refuses a block nobody has decided", %{conn: conn} do
     document = expect_document()
     block_id = UUIDv7.generate()
-    params = %{"actor_id" => insert(:actor).id, "base_revision_id" => UUIDv7.generate()}
+    params = %{"base_revision_id" => UUIDv7.generate()}
 
-    expect(DocumentsMock, :commit_proposals, fn ^document, ^params ->
+    expect(DocumentsMock, :commit_proposals, fn ^document, _attrs ->
       {:error, :unresolved_contention, %{block_ids: [block_id]}}
     end)
 
@@ -129,9 +187,9 @@ defmodule RintoPMOWeb.V1.DocumentRevisionControllerTest do
 
   test "POST commit reports having nothing to commit", %{conn: conn} do
     document = expect_document()
-    params = %{"actor_id" => insert(:actor).id, "base_revision_id" => UUIDv7.generate()}
+    params = %{"base_revision_id" => UUIDv7.generate()}
 
-    expect(DocumentsMock, :commit_proposals, fn ^document, ^params ->
+    expect(DocumentsMock, :commit_proposals, fn ^document, _attrs ->
       {:error, :nothing_to_commit, %{}}
     end)
 

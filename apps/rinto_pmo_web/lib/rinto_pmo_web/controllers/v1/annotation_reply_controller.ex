@@ -2,11 +2,23 @@ defmodule RintoPMOWeb.V1.AnnotationReplyController do
   use RintoPMOWeb, :controller
 
   alias RintoPMO.Utils
+  alias RintoPMOWeb.Plugs.ActorToken
 
+  @doc """
+  Writes a follow-up under a note, credited to whoever is calling.
+
+  The same rule the note itself follows: a person writes here, and the AI's
+  replies are written by `annotation_actor` through `RintoPMO.Annotations`,
+  never over HTTP.
+  """
   def create(conn, %{"document_id" => document_id, "annotation_id" => annotation_id} = params) do
     context = annotations_context()
     annotation = get_annotation!(document_id, annotation_id)
-    attrs = Map.drop(params, ["document_id", "annotation_id"])
+
+    attrs =
+      params
+      |> Map.drop(["document_id", "annotation_id"])
+      |> Map.put("actor_id", ActorToken.current_actor!(conn).id)
 
     with {:ok, reply} <- context.create_reply(annotation, attrs) do
       conn

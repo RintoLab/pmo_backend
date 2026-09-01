@@ -93,38 +93,70 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
            } = json_response(conn, 200)["data"]
   end
 
-  test "POST annotations creates a thread", %{conn: conn} do
+  test "POST annotations creates a thread", %{conn: conn, current_actor: current_actor} do
     document = expect_document()
-    actor = insert(:actor)
-    annotation = insert(:annotation, document: document, actor: actor, content: "Start")
+    annotation = insert(:annotation, document: document, actor: current_actor, content: "Start")
     annotation_id = annotation.id
+    actor_id = current_actor.id
 
-    params = %{
-      "actor_id" => actor.id,
+    expected = %{
+      "actor_id" => actor_id,
       "content" => "Start",
       "selected_text" => "quote"
     }
 
-    expect(AnnotationsMock, :create_annotation, fn ^document, ^params -> {:ok, annotation} end)
+    expect(AnnotationsMock, :create_annotation, fn ^document, ^expected -> {:ok, annotation} end)
 
-    conn = post(conn, ~p"/api/v1/documents/#{document.id}/annotations", params)
+    conn =
+      post(conn, ~p"/api/v1/documents/#{document.id}/annotations", %{
+        "content" => "Start",
+        "selected_text" => "quote"
+      })
 
     assert %{"id" => ^annotation_id, "content" => "Start", "replies" => []} =
              json_response(conn, 201)["data"]
   end
 
+  # A note is credited to whoever the token says is calling, so a body naming
+  # somebody else names nobody.
+  test "POST annotations ignores an actor in the body", %{
+    conn: conn,
+    current_actor: current_actor
+  } do
+    document = expect_document()
+    annotation = insert(:annotation, document: document, actor: current_actor, content: "Start")
+    impostor = insert(:actor)
+    actor_id = current_actor.id
+
+    expect(AnnotationsMock, :create_annotation, fn ^document, %{"actor_id" => ^actor_id} ->
+      {:ok, annotation}
+    end)
+
+    conn =
+      post(conn, ~p"/api/v1/documents/#{document.id}/annotations", %{
+        "actor_id" => impostor.id,
+        "content" => "Start"
+      })
+
+    assert json_response(conn, 201)["data"]["id"] == annotation.id
+  end
+
   test "POST annotations returns validation errors", %{conn: conn} do
     document = expect_document()
-    params = %{"content" => "Missing actor"}
-    changeset = Annotation.changeset(Map.put(params, "document_id", document.id))
+    params = %{"content" => ""}
 
-    expect(AnnotationsMock, :create_annotation, fn ^document, ^params -> {:error, changeset} end)
+    changeset =
+      Annotation.changeset(
+        Map.merge(params, %{"document_id" => document.id, "actor_id" => insert(:actor).id})
+      )
+
+    expect(AnnotationsMock, :create_annotation, fn ^document, _attrs -> {:error, changeset} end)
 
     conn = post(conn, ~p"/api/v1/documents/#{document.id}/annotations", params)
 
     assert %{
              "error" => "validation_error",
-             "details" => %{"actor_id" => ["can't be blank"]}
+             "details" => %{"content" => ["can't be blank"]}
            } = json_response(conn, 422)
   end
 

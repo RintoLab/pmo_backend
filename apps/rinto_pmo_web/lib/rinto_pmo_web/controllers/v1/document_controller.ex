@@ -3,6 +3,7 @@ defmodule RintoPMOWeb.V1.DocumentController do
 
   alias RintoPMO.Documents.Document
   alias RintoPMO.Utils
+  alias RintoPMOWeb.Plugs.ActorToken
   alias RintoPMOWeb.V1.DecompositionJSON
   alias RintoPMOWeb.V1.TaskJSON
 
@@ -20,8 +21,20 @@ defmodule RintoPMOWeb.V1.DocumentController do
     render(conn, :show, document: document)
   end
 
+  @doc """
+  Writes a document, credited to whoever is calling.
+
+  `actor_id` comes from the token rather than the body, the rule every write a
+  person makes follows. A body naming somebody else would be a caller deciding
+  authorship, which is the one thing about a document nobody outside the server
+  gets to say -- and a document written inside a topic is not credited here at
+  all: `conversation_id` is the whole of it, and `RintoPMO.Documents` derives
+  the AI that wrote it.
+  """
   def create(conn, params) do
-    with {:ok, document} <- Utils.module(:documents).create_document(params) do
+    attrs = Map.put(params, "actor_id", ActorToken.current_actor!(conn).id)
+
+    with {:ok, document} <- Utils.module(:documents).create_document(attrs) do
       conn
       |> put_status(:created)
       |> render(:show, document: document)

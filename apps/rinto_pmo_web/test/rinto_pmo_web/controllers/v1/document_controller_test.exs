@@ -99,16 +99,21 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
     refute Map.has_key?(rendered_block, "id")
   end
 
-  test "POST /api/v1/documents creates an unassigned document", %{conn: conn} do
+  test "POST /api/v1/documents creates an unassigned document", %{
+    conn: conn,
+    current_actor: current_actor
+  } do
     document = insert(:document, project: nil)
     revision = insert(:document_revision, document: document, title: "Draft")
     revision = %{revision | blocks: []}
     document = %{document | latest_revision: revision}
-    params = %{"title" => "Draft"}
+    actor_id = current_actor.id
 
-    expect(DocumentsMock, :create_document, fn ^params -> {:ok, document} end)
+    expect(DocumentsMock, :create_document, fn %{"title" => "Draft", "actor_id" => ^actor_id} ->
+      {:ok, document}
+    end)
 
-    conn = post(conn, ~p"/api/v1/documents", params)
+    conn = post(conn, ~p"/api/v1/documents", %{"title" => "Draft"})
 
     assert %{
              "project_id" => nil,
@@ -118,11 +123,36 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
 
   test "POST /api/v1/documents passes the Markdown body through to the context", %{conn: conn} do
     document = document_with_revision()
-    params = %{"title" => "Plan", "actor_id" => document.id, "markdown" => "## One\n\ntext"}
+    params = %{"title" => "Plan", "markdown" => "## One\n\ntext"}
 
-    expect(DocumentsMock, :create_document, fn ^params -> {:ok, document} end)
+    expect(DocumentsMock, :create_document, fn attrs ->
+      assert %{"title" => "Plan", "markdown" => "## One\n\ntext"} = attrs
+      {:ok, document}
+    end)
 
     conn = post(conn, ~p"/api/v1/documents", params)
+
+    assert json_response(conn, 201)["data"]["id"] == document.id
+  end
+
+  # The body cannot name an author: every block of a new document written
+  # outside a topic is the caller's, and the token is what says who that is.
+  test "POST /api/v1/documents credits the caller, not an actor in the body", %{
+    conn: conn,
+    current_actor: current_actor
+  } do
+    document = document_with_revision()
+    impostor = insert(:actor)
+    actor_id = current_actor.id
+
+    expect(DocumentsMock, :create_document, fn %{"actor_id" => ^actor_id} -> {:ok, document} end)
+
+    conn =
+      post(conn, ~p"/api/v1/documents", %{
+        "title" => "Plan",
+        "actor_id" => impostor.id,
+        "markdown" => "## One\n\ntext"
+      })
 
     assert json_response(conn, 201)["data"]["id"] == document.id
   end
@@ -288,13 +318,13 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
       :ok
     end
 
-    test "POST /api/v1/documents cuts the body into blocks", %{conn: conn} do
-      actor = insert(:actor)
-
+    test "POST /api/v1/documents cuts the body into blocks", %{
+      conn: conn,
+      current_actor: actor
+    } do
       conn =
         post(conn, ~p"/api/v1/documents", %{
           "title" => "Plan",
-          "actor_id" => actor.id,
           "markdown" => "preamble\n\n## Background\n\nContext\n\n### Detail\n\nMore"
         })
 

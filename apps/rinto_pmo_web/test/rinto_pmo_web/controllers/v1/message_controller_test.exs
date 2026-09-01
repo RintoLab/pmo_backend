@@ -95,32 +95,67 @@ defmodule RintoPMOWeb.V1.MessageControllerTest do
     assert ref["payload"] == payload
   end
 
-  test "POST messages appends a turn with its refs", %{conn: conn, conversation: conversation} do
-    actor = insert(:actor)
+  test "POST messages appends a turn with its refs", %{
+    conn: conn,
+    conversation: conversation,
+    current_actor: current_actor
+  } do
     document = insert(:document)
     ref = %{"type" => "document", "id" => document.id}
 
     params = %{
-      "actor_id" => actor.id,
       "role" => "user",
       "content" => "Have a look at this",
       "refs" => [ref]
     }
 
+    # A person's turn is theirs, and the token is what says which person.
+    expected = Map.put(params, "actor_id", current_actor.id)
+
     message =
       insert(:message,
         conversation: conversation,
-        actor: actor,
+        actor: current_actor,
         content: "Have a look at this",
         refs: [build(:message_ref, message: nil, payload: ref)]
+      )
+
+    expect(ConversationsMock, :append_message, fn ^conversation, ^expected -> {:ok, message} end)
+
+    conn = post(conn, ~p"/api/v1/conversations/#{conversation.id}/messages", params)
+
+    assert %{"content" => "Have a look at this", "refs" => [_ref]} =
+             json_response(conn, 201)["data"]
+  end
+
+  # An assistant turn is left exactly as it arrived: only whatever ran the model
+  # can say which actor spoke, and forcing the caller in would credit a person
+  # with a model's turn.
+  test "POST messages leaves an assistant turn's attribution alone", %{
+    conn: conn,
+    conversation: conversation
+  } do
+    assistant = insert(:actor, kind: :ai)
+
+    params = %{
+      "actor_id" => assistant.id,
+      "role" => "assistant",
+      "content" => "Looked at it"
+    }
+
+    message =
+      insert(:message,
+        conversation: conversation,
+        actor: assistant,
+        role: :assistant,
+        content: "Looked at it"
       )
 
     expect(ConversationsMock, :append_message, fn ^conversation, ^params -> {:ok, message} end)
 
     conn = post(conn, ~p"/api/v1/conversations/#{conversation.id}/messages", params)
 
-    assert %{"content" => "Have a look at this", "refs" => [_ref]} =
-             json_response(conn, 201)["data"]
+    assert json_response(conn, 201)["data"]["actor_id"] == assistant.id
   end
 
   test "POST messages returns validation errors", %{conn: conn, conversation: conversation} do

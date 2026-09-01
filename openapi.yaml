@@ -284,6 +284,11 @@ paths:
         role is filled again.
 
 
+        An actor with no model configuration -- the one marked `default`, which
+        exists to sign what a plain chat writes -- cannot be put in a role: a
+        role is somebody to *call*, and it has nothing to call.
+
+
         Roles are defined by the system, so an unknown `key` is a 404 rather
         than the creation of a new one. The response is the full set, the same
         shape `GET /settings` returns.
@@ -4153,7 +4158,7 @@ components:
       additionalProperties: false
     Actor:
       type: object
-      required: [id, kind, name, enabled]
+      required: [id, kind, name, enabled, default]
       properties:
         id:
           type: string
@@ -4168,6 +4173,26 @@ components:
           nullable: true
         enabled:
           type: boolean
+        default:
+          type: boolean
+          description: >
+            True on the one actor that stands in for an AI nobody named: what
+            an AI writes into a document from a plain-chat topic is signed with
+            it, because that topic has a provider and a model where an actor
+            topic has an assistant to credit.
+
+
+            It carries no `provider`, `model` or `thinking_level`, and never
+            will -- what wrote the text is whichever model the person had
+            selected. So it cannot be a topic's assistant and cannot be put in
+            a `/settings` role, and a client offering either should leave it
+            out of the list. It is created by
+            `mix rinto.actors.setup_human`; `name` and `description` are
+            editable like any other actor's, and it is the name a reader sees
+            beside an AI-written block.
+
+
+            Read-only: no create or update input accepts it.
         provider:
           type: string
           nullable: true
@@ -4400,7 +4425,7 @@ components:
       additionalProperties: false
     InsertAfterBlockOperation:
       type: object
-      required: [op, after_block_id, actor_id, content]
+      required: [op, after_block_id, content]
       properties:
         op:
           type: string
@@ -4413,12 +4438,18 @@ components:
         actor_id:
           type: string
           format: uuid
+          description: >
+            Ignored on `POST /documents/{id}/revisions`: writing a revision is
+            a person changing the document, so every block it touches is
+            credited to the token's actor. Blocks the revision leaves alone
+            keep the author they had, which is why authorship is per block and
+            not per revision.
         content:
           type: string
       additionalProperties: false
     UpdateBlockOperation:
       type: object
-      required: [op, block_id, actor_id, content]
+      required: [op, block_id, content]
       properties:
         op:
           type: string
@@ -4429,6 +4460,8 @@ components:
         actor_id:
           type: string
           format: uuid
+          description: >
+            Ignored, the same way `InsertAfterBlockOperation.actor_id` is.
         content:
           type: string
       additionalProperties: false
@@ -4500,12 +4533,28 @@ components:
         change_summary:
           type: string
           nullable: true
+        conversation_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The topic this was written in, recorded on the first revision as
+            `source_conversation_id` and used to derive the author. Omit it for
+            a document a person is writing directly.
         actor_id:
           type: string
           format: uuid
-          description: >-
-            Who the body is credited to. Required whenever `markdown` produces at
-            least one block; every block of a new document is credited to this actor.
+          description: >
+            Ignored. Every block of a new document is credited to the token's
+            actor when the document is written outside a topic, and to whoever
+            the topic derives when `conversation_id` is sent -- its assistant,
+            or the `default` actor for a plain chat. Sent anyway it is
+            overwritten rather than refused.
+
+
+            `422 assistant_actor_required` when the topic is an actor topic
+            with no assistant chosen, and `422 default_assistant_missing` when
+            it is a plain chat and setup never created the default actor.
         markdown:
           type: string
           description: >-
@@ -6410,11 +6459,17 @@ components:
           additionalProperties: false
     AnnotationCreateInput:
       type: object
-      required: [actor_id, content]
+      required: [content]
       properties:
         actor_id:
           type: string
           format: uuid
+          description: >
+            Ignored. The note is credited to the token's actor, because writing
+            one here is a person's action; the AI's notes are written by
+            `annotation_actor` and `review_actor` and never come through this
+            endpoint. Sent anyway it is overwritten rather than refused, so a
+            client that has always sent it keeps working.
         block_id:
           type: string
           format: uuid
@@ -6604,7 +6659,7 @@ components:
       additionalProperties: false
     BlockProposalCreateInput:
       type: object
-      required: [block_id, conversation_id, actor_id, content]
+      required: [block_id, conversation_id, content]
       properties:
         block_id:
           type: string
@@ -6613,9 +6668,16 @@ components:
         conversation_id:
           type: string
           format: uuid
+          description: >
+            The topic proposing, and the whole of who the proposal is by: its
+            assistant, or the `default` actor when the topic is a plain chat.
         actor_id:
           type: string
           format: uuid
+          description: >
+            Ignored, and dropped rather than refused so a client that has
+            always sent it keeps working. Proposing is how an AI writes, and
+            which AI is derived from the topic.
         content:
           type: string
           minLength: 1
@@ -6679,12 +6741,19 @@ components:
       additionalProperties: false
     CommitInput:
       type: object
-      required: [actor_id, base_revision_id]
+      required: [base_revision_id]
       properties:
         actor_id:
           type: string
           format: uuid
-          description: Who is committing. Recorded on the accepted proposals.
+          description: >
+            Ignored. Who is committing is the token's actor, recorded on the
+            accepted proposals -- the same rule
+            `POST /documents/{id}/proposals/{id}/decide` follows, and for the
+            same reason: a body able to name somebody else would let an agent
+            record a person as having agreed to its own change. In a batch
+            commit every entry is the one caller, so an entry naming its own is
+            overwritten too.
         base_revision_id:
           type: string
           format: uuid
@@ -7216,7 +7285,12 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: Required when `role` is `user`; optional for `assistant`.
+          description: >
+            Ignored when `role` is `user`: a person's turn is credited to the
+            token's actor. Read when `role` is `assistant`, because only
+            whatever ran the model can say which actor spoke -- and it is left
+            null for a plain chat, where `provider` and `model` are the record
+            of who answered.
         provider:
           type: string
           nullable: true
@@ -7280,11 +7354,15 @@ components:
       additionalProperties: false
     AnnotationReplyCreateInput:
       type: object
-      required: [actor_id, content]
+      required: [content]
       properties:
         actor_id:
           type: string
           format: uuid
+          description: >
+            Ignored, the same way `AnnotationCreateInput.actor_id` is: the
+            reply is credited to the token's actor, and the AI's replies are
+            written by `annotation_actor` rather than over HTTP.
         content:
           type: string
           minLength: 1

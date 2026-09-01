@@ -49,6 +49,32 @@ defmodule RintoPMOWeb.V1.CommitControllerTest do
              json_response(conn, 201)["data"]
   end
 
+  # One person clicked one button, so every entry is by that person -- and an
+  # entry naming somebody else is naming nobody.
+  test "POST commits credits every entry to the caller", %{
+    conn: conn,
+    current_actor: current_actor
+  } do
+    document = insert(:document)
+    revision = insert(:document_revision, document: document)
+    impostor = insert(:actor)
+    actor_id = current_actor.id
+
+    expect_documents([document])
+
+    expect(DocumentsMock, :commit_many, fn entries ->
+      assert Enum.all?(entries, fn {_document, attrs} -> attrs["actor_id"] == actor_id end)
+      {:ok, [revision]}
+    end)
+
+    conn =
+      post(conn, ~p"/api/v1/commits", %{
+        "commits" => [%{"document_id" => document.id, "actor_id" => impostor.id}]
+      })
+
+    assert [%{"id" => _id}] = json_response(conn, 201)["data"]
+  end
+
   # Which document it happened in is the next question after any of these.
   test "POST commits names the document an entry failed in", %{conn: conn} do
     document = insert(:document)
