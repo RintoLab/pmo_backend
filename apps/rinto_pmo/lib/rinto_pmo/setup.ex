@@ -2,10 +2,11 @@ defmodule RintoPMO.Setup do
   @moduledoc """
   What "set up" means for a database nobody has used yet.
 
-  Two things, neither of which the token can supply: somebody for requests to
-  be answered as, and somewhere for a document created without a project to go.
-  A server with a perfectly good `RINTO_TOKEN` and neither of these refuses
-  every call with `human_actor_missing`.
+  Three things, none of which the token can supply: somebody for requests to be
+  answered as, somewhere for a document created without a project to go, and a
+  name for what an AI writes from a plain chat to be signed with. A server with
+  a perfectly good `RINTO_TOKEN` and none of these refuses every call with
+  `human_actor_missing`.
 
   ## Why it is not a Mix task
 
@@ -21,6 +22,9 @@ defmodule RintoPMO.Setup do
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Projects
   alias RintoPMO.Projects.Project
+  alias RintoPMO.Repo
+
+  @default_assistant_name "AI"
 
   @type project_outcome ::
           {:created, Project.t()} | {:present, Project.t()} | {:error, Ecto.Changeset.t()}
@@ -29,6 +33,13 @@ defmodule RintoPMO.Setup do
           {:created, Actor.t()}
           | {:present, Actor.t()}
           | {:several, pos_integer(), Actor.t()}
+          | {:error, Ecto.Changeset.t()}
+
+  # Tagged, because an actor outcome would otherwise be indistinguishable from
+  # the human's and `describe/1` would print the wrong sentence about it.
+  @type assistant_outcome ::
+          {:created, :assistant, Actor.t()}
+          | {:present, :assistant, Actor.t()}
           | {:error, Ecto.Changeset.t()}
 
   @doc """
@@ -78,6 +89,37 @@ defmodule RintoPMO.Setup do
   end
 
   @doc """
+  Creates the actor a plain chat's writing is signed with, unless it is there.
+
+  It carries no model configuration and never will: what wrote the text is
+  whichever provider and model the person had selected, and this row exists to
+  answer the coarser question a document actually needs answered -- a model
+  wrote this, not a person. See `RintoPMO.Actors.Actor`.
+
+  Renaming it later is ordinary: the name is what a reader sees beside a block,
+  and `PATCH /actors/{id}` is how somebody changes it.
+  """
+  @spec ensure_default_assistant() :: assistant_outcome()
+  def ensure_default_assistant do
+    case Actors.get_default_assistant() do
+      %Actor{} = assistant ->
+        {:present, :assistant, assistant}
+
+      nil ->
+        %{
+          name: @default_assistant_name,
+          description: "What an AI writes from a plain chat is signed with this."
+        }
+        |> Actor.default_changeset()
+        |> Repo.insert()
+        |> case do
+          {:ok, assistant} -> {:created, :assistant, assistant}
+          {:error, changeset} -> {:error, changeset}
+        end
+    end
+  end
+
+  @doc """
   The name a human is created with when the caller names nobody.
 
   `RINTO_OWNER_NAME` first, because the caller that names nobody is usually the
@@ -94,12 +136,18 @@ defmodule RintoPMO.Setup do
   @doc """
   One line saying what happened, for whichever of the two callers is printing.
   """
-  @spec describe(project_outcome() | human_outcome()) :: String.t()
+  @spec describe(project_outcome() | human_outcome() | assistant_outcome()) :: String.t()
   def describe({:present, %Project{name: name, slug: slug}}),
     do: "default project #{name} (#{slug}) is already there"
 
   def describe({:created, %Project{name: name, slug: slug}}),
     do: "created default project #{name} (#{slug})"
+
+  def describe({:present, :assistant, %Actor{} = assistant}),
+    do: "default assistant #{assistant.name} (#{assistant.id}) is already there"
+
+  def describe({:created, :assistant, %Actor{} = assistant}),
+    do: "created default assistant #{assistant.name} (#{assistant.id})"
 
   def describe({:present, %Actor{} = human}),
     do: "human actor #{human.name} (#{human.id}) is already there"

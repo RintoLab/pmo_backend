@@ -51,6 +51,10 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     assistant_actor_required:
       {422, "The topic has no assistant configured, so nothing in it can propose.",
        %{conversation_id: "topic-1"}},
+    default_assistant_missing:
+      {422,
+       "The default assistant does not exist, so a plain chat has no name to write under. " <>
+         "Run `mix rinto.actors.setup_human`.", %{conversation_id: "topic-1"}},
     task_blocked:
       {422, "The task is blocked by unfinished dependencies.", %{blocking_tasks: ["task-1"]}},
     review_round_open:

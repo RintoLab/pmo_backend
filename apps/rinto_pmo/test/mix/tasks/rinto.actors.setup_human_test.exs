@@ -4,6 +4,7 @@ defmodule Mix.Tasks.Rinto.Actors.SetupHumanTest do
 
   alias Mix.Tasks.Rinto.Actors.SetupHuman
   alias RintoPMO.Actors
+  alias RintoPMO.Actors.Actor
   alias RintoPMO.Projects
 
   setup do
@@ -63,12 +64,38 @@ defmodule Mix.Tasks.Rinto.Actors.SetupHumanTest do
   test "running it again changes nothing" do
     run([])
     {:ok, first} = Actors.get_unique_human()
+    before = actor_ids()
 
     run([])
 
     assert {:ok, again} = Actors.get_unique_human()
     assert again.id == first.id
-    assert length(Actors.list_actors()) == 1
+    assert actor_ids() == before
+  end
+
+  # The name beside every block an AI writes from a plain chat. Created here
+  # rather than configured, because there is nothing about it to choose.
+  test "creates the default assistant, with no model configuration" do
+    run([])
+
+    assert %Actor{} = assistant = Actors.get_default_assistant()
+    assert assistant.kind == :ai
+    assert assistant.default
+    assert assistant.provider == nil
+    assert assistant.model == nil
+    assert assistant.thinking_level == nil
+    assert output() =~ "created default assistant"
+  end
+
+  test "adopts a default assistant somebody has since renamed" do
+    run([])
+    {:ok, renamed} = Actors.update_actor(Actors.get_default_assistant(), %{name: "\u5c0f\u9ed1"})
+
+    run([])
+
+    assert %Actor{id: id, name: "\u5c0f\u9ed1"} = Actors.get_default_assistant()
+    assert id == renamed.id
+    assert output() =~ "is already there"
   end
 
   test "adopts a human that is already there" do
@@ -99,8 +126,12 @@ defmodule Mix.Tasks.Rinto.Actors.SetupHumanTest do
 
     run([])
 
-    assert length(Actors.list_actors()) == 2
+    assert length(humans()) == 2
   end
+
+  defp actor_ids, do: Actors.list_actors() |> Enum.map(& &1.id) |> Enum.sort()
+
+  defp humans, do: Enum.filter(Actors.list_actors(), &(&1.kind == :human))
 
   # `Mix.Task.run("app.start")` is a no-op under the test runner, so calling
   # `run/1` twice would otherwise be skipped as already-run.

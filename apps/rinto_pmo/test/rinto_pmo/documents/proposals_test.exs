@@ -1,6 +1,8 @@
 defmodule RintoPMO.Documents.ProposalsTest do
   use RintoPMO.DataCase, async: true
 
+  alias RintoPMO.Actors
+  alias RintoPMO.ActorsMock
   alias RintoPMO.Annotations
   alias RintoPMO.AnnotationsMock
   alias RintoPMO.Conversations
@@ -10,13 +12,16 @@ defmodule RintoPMO.Documents.ProposalsTest do
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Projects
   alias RintoPMO.ProjectsMock
+  alias RintoPMO.Setup
 
   setup do
     # Commit resolves annotations through the injected context; these tests are
     # about what actually lands in the database, so it runs for real.
     stub_with(AnnotationsMock, Annotations)
-    # A proposal's author is read off the topic, so the real context answers.
+    # A proposal's author is read off the topic, so the real context answers --
+    # and a plain chat sends the question on to the default actor.
     stub_with(ConversationsMock, Conversations)
+    stub_with(ActorsMock, Actors)
     # A document created without a project is filed in the default one, which
     # therefore has to exist.
     stub_with(ProjectsMock, Projects)
@@ -763,22 +768,56 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert details.conversation_id == conversation.id
     end
 
-    test "plain chat cannot create an unattributed formal proposal" do
+    # A plain chat is talking to a model rather than to a persona, so there is
+    # no assistant to credit and the default actor is the name it writes under.
+    test "signs a plain chat's proposal with the default actor" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      signatory = default_assistant()
+      conversation = plain_chat()
 
-      conversation =
-        insert(:conversation,
-          mode: :chat,
-          assistant_actor: nil,
-          provider: "openai",
-          model: "gpt-5.4",
-          thinking_level: "medium"
-        )
+      assert {:ok, %{proposal: proposal}} =
+               propose(document, block.block_id, conversation, "Tighter")
 
-      assert {:error, :assistant_actor_required, details} =
+      assert proposal.actor_id == signatory.id
+    end
+
+    for scope <- [:title, :document] do
+      test "a plain chat's #{scope} scope is signed the same way" do
+        %{document: document} = document_with_blocks(["One"])
+        signatory = default_assistant()
+
+        assert {:ok, %{proposal: proposal}} =
+                 propose_scope(unquote(scope), document, plain_chat(), "## Rewritten")
+
+        assert proposal.actor_id == signatory.id
+      end
+    end
+
+    # No default actor is refused rather than falling back to the person who
+    # owns the topic: crediting a model's work to them is the one mistake this
+    # derivation exists to prevent.
+    test "refuses a plain chat when setup never made the default actor" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      conversation = plain_chat()
+
+      assert {:error, :default_assistant_missing, details} =
                propose(document, block.block_id, conversation, "Tighter")
 
       assert details.conversation_id == conversation.id
+    end
+
+    # The default actor stands in for an absent assistant; it does not replace
+    # one that is there.
+    test "leaves an actor topic signed by its own assistant" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      signatory = default_assistant()
+      conversation = insert(:conversation)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose(document, block.block_id, conversation, "Tighter")
+
+      assert proposal.actor_id == conversation.assistant_actor_id
+      refute proposal.actor_id == signatory.id
     end
 
     test "refuses a topic that does not exist" do
@@ -1601,6 +1640,23 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
   # No actor: a proposal is attributed to the topic's assistant, and a caller
   # able to name an author could name the wrong one.
+  defp default_assistant do
+    case Setup.ensure_default_assistant() do
+      {:created, :assistant, assistant} -> assistant
+      {:present, :assistant, assistant} -> assistant
+    end
+  end
+
+  defp plain_chat do
+    insert(:conversation,
+      mode: :chat,
+      assistant_actor: nil,
+      provider: "openai",
+      model: "gpt-5.4",
+      thinking_level: "medium"
+    )
+  end
+
   defp propose(document, block_id, conversation, content) do
     Documents.propose_block(document, %{
       block_id: block_id,

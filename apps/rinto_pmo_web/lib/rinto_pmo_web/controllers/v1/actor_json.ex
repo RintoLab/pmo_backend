@@ -17,6 +17,10 @@ defmodule RintoPMOWeb.V1.ActorJSON do
       name: actor.name,
       description: actor.description,
       enabled: actor.enabled,
+      # What a plain chat's writing is signed with. It has no model, so it
+      # cannot be a topic's assistant and cannot hold a role -- a client
+      # offering either should leave it out of the list.
+      default: actor.default,
       provider: actor.provider,
       model: actor.model,
       thinking_level: actor.thinking_level,

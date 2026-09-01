@@ -46,6 +46,7 @@ defmodule RintoPMO.Actors do
                 | {:error, :human_actor_not_found}
                 | {:error, :human_actor_ambiguous, map()}
     @callback get_actor!(UUIDv7.t()) :: Actor.t()
+    @callback get_default_assistant() :: Actor.t() | nil
     @callback create_actor(map()) :: {:ok, Actor.t()} | {:error, Ecto.Changeset.t()}
     @callback update_actor(Actor.t(), map()) ::
                 {:ok, Actor.t()} | {:error, Ecto.Changeset.t()}
@@ -101,6 +102,20 @@ defmodule RintoPMO.Actors do
   """
   @impl true
   def get_actor!(id), do: Repo.get!(Actor, id)
+
+  @doc """
+  The actor that stands in for an AI nobody named, or `nil` before setup ran.
+
+  Not raising, unlike `get_actor!/1`: its absence means this installation has
+  not been set up, which is a refusal the caller renders rather than a bug --
+  the same shape `RintoPMO.Projects.get_default_project/0` has.
+
+  A disabled one still answers. Turning it off cannot un-write the blocks
+  already signed with it, and refusing to sign the next one would only produce
+  a document nobody can attribute.
+  """
+  @impl true
+  def get_default_assistant, do: Repo.get_by(Actor, default: true)
 
   @doc """
   Creates an actor.

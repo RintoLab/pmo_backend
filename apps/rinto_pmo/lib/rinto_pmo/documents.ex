@@ -13,12 +13,22 @@ defmodule RintoPMO.Documents do
   ## Who wrote a proposal is not a caller's to say
 
   Proposing is how an AI writes; a person writes by creating a revision. So the
-  author of a proposal is always the assistant the topic is talking to, and the
-  topic already records which one that is. It is derived here rather than
-  accepted as a parameter, which is the only version of this that cannot be got
-  wrong: a caller able to name an author can name the wrong one, and attributing
-  a model's work to a person erases the distinction the whole review flow rests
-  on -- silently, since nothing downstream could tell.
+  author of a proposal is the AI that wrote it, derived here rather than
+  accepted as a parameter -- the only version of this that cannot be got wrong.
+  A caller able to name an author can name the wrong one, and attributing a
+  model's work to a person erases the distinction the whole review flow rests
+  on, silently, since nothing downstream could tell.
+
+  Which AI depends on how the topic is configured:
+
+    * an actor topic answers for itself -- the assistant it is talking to
+    * a plain chat has no assistant, only the provider and model the person
+      picked, and a model configuration is not something a block can be
+      credited to. Those writes are signed with the default actor, which exists
+      from setup and is configured by nobody: see `RintoPMO.Actors.Actor`
+
+  What is derived therefore differs; that it is derived, and never supplied,
+  does not.
 
   The mirror of the rule is that deciding and committing *do* take an actor.
   Those are a person's actions, and there is no topic to derive them from.
@@ -1260,7 +1270,7 @@ defmodule RintoPMO.Documents do
   # person writing one directly is its author, and says so.
   defp document_author(attrs) do
     case attr(attrs, :conversation_id, nil) do
-      conversation_id when is_binary(conversation_id) -> assistant_of(conversation_id)
+      conversation_id when is_binary(conversation_id) -> topic_author(conversation_id)
       _absent -> {:ok, attr(attrs, :actor_id, nil)}
     end
   end
@@ -1559,7 +1569,7 @@ defmodule RintoPMO.Documents do
   defp proposal_author(attrs) do
     case attr(attrs, :conversation_id, nil) do
       conversation_id when is_binary(conversation_id) ->
-        assistant_of(conversation_id)
+        topic_author(conversation_id)
 
       _absent ->
         # A proposal without a topic has nobody to be by, and the changeset says
@@ -1568,18 +1578,36 @@ defmodule RintoPMO.Documents do
     end
   end
 
-  defp assistant_of(conversation_id) do
-    case conversations().get_conversation!(conversation_id) do
-      %{assistant_actor_id: nil} ->
-        {:error, {:assistant_actor_required, %{conversation_id: conversation_id}}}
-
-      %{assistant_actor_id: actor_id} ->
-        {:ok, actor_id}
+  defp topic_author(conversation_id) do
+    with {:ok, conversation} <- fetch_conversation(conversation_id) do
+      author_of(conversation)
     end
+  end
+
+  defp fetch_conversation(conversation_id) do
+    {:ok, conversations().get_conversation!(conversation_id)}
   rescue
     Ecto.NoResultsError ->
       {:error, {:conversation_not_found, %{conversation_id: conversation_id}}}
   end
+
+  # A plain chat is talking to a model, not to a persona, so there is no
+  # assistant to credit and the default actor stands in for one -- see
+  # `RintoPMO.Actors.Actor`. Nobody chose it and nobody configures it: it is
+  # there from setup, which is why this is not a question the caller can get
+  # wrong.
+  defp author_of(%{mode: :chat, id: conversation_id}) do
+    case actors().get_default_assistant() do
+      nil -> {:error, {:default_assistant_missing, %{conversation_id: conversation_id}}}
+      actor -> {:ok, actor.id}
+    end
+  end
+
+  defp author_of(%{assistant_actor_id: nil, id: conversation_id}) do
+    {:error, {:assistant_actor_required, %{conversation_id: conversation_id}}}
+  end
+
+  defp author_of(%{assistant_actor_id: actor_id}), do: {:ok, actor_id}
 
   # Cut by the same rules as a new document's body, because the grain is this
   # layer's decision and a proposal choosing its own would drift from every
@@ -1975,8 +2003,12 @@ defmodule RintoPMO.Documents do
 
   defp annotations, do: Utils.module(:annotations)
 
-  # The one thing this context asks of another: which assistant a topic is
-  # talking to, so a proposal can be attributed without a caller saying.
+  # Only ever asked one thing: the stand-in a plain chat's writing is signed
+  # with, because that topic has no assistant of its own to name.
+  defp actors, do: Utils.module(:actors)
+
+  # The one thing this context asks of another: how a topic's assistant is
+  # configured, so a proposal can be attributed without a caller saying.
   defp conversations, do: Utils.module(:conversations)
 
   # And which project a document with none of its own belongs to.

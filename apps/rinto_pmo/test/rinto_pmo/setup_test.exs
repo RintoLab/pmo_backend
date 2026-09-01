@@ -26,6 +26,26 @@ defmodule RintoPMO.SetupTest do
     end
   end
 
+  describe "ensure_default_assistant/0" do
+    test "creates one AI with no model configuration" do
+      assert {:created, :assistant, %Actor{kind: :ai, name: "AI"} = assistant} =
+               Setup.ensure_default_assistant()
+
+      assert assistant.default
+      assert {assistant.provider, assistant.model, assistant.thinking_level} == {nil, nil, nil}
+    end
+
+    test "adopts the one already there, whatever it has been renamed to" do
+      {:created, :assistant, first} = Setup.ensure_default_assistant()
+      {:ok, _renamed} = Actors.update_actor(first, %{name: "Assistant"})
+
+      assert {:present, :assistant, %Actor{id: id, name: "Assistant"}} =
+               Setup.ensure_default_assistant()
+
+      assert id == first.id
+    end
+  end
+
   describe "ensure_human/1" do
     test "creates the human with the name it is given" do
       assert {:created, %Actor{kind: :human, name: "Kenton"}} = Setup.ensure_human("Kenton")
@@ -72,6 +92,16 @@ defmodule RintoPMO.SetupTest do
 
       assert Setup.ensure_default_project() |> Setup.describe() =~
                "default project Personal (personal) is already there"
+    end
+
+    test "says what happened to the default assistant" do
+      assert Setup.ensure_default_assistant() |> Setup.describe() =~
+               "created default assistant AI"
+
+      assert Setup.ensure_default_assistant() |> Setup.describe() =~
+               "default assistant AI"
+
+      assert Setup.ensure_default_assistant() |> Setup.describe() =~ "is already there"
     end
 
     test "says what happened to the human" do

@@ -97,7 +97,7 @@ if ! ./bin/pmo_backend eval 'RintoPMO.Release.migrate()'; then
   exit 1
 fi
 
-say "making sure there is somebody to answer as"
+say "making sure there is somebody to answer as, and somebody to sign as"
 if ! ./bin/pmo_backend eval 'RintoPMO.Release.setup_human()'; then
   echo "setup_human failed; the prior release path remains in place" >&2
   exit 1

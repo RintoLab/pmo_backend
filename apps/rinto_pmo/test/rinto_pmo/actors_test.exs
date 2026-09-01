@@ -5,6 +5,7 @@ defmodule RintoPMO.ActorsTest do
 
   alias RintoPMO.Actors
   alias RintoPMO.Actors.Actor
+  alias RintoPMO.Setup
 
   describe "actors" do
     test "creates and fetches an actor" do
@@ -145,6 +146,60 @@ defmodule RintoPMO.ActorsTest do
       configure_token(nil)
 
       assert is_nil(Actors.configured_token())
+    end
+  end
+
+  # An ordinary AI actor except that it has no model, because a plain chat's
+  # model lives on the conversation. It exists so that a block written from one
+  # still answers "a model wrote this, not a person".
+  describe "the default actor" do
+    test "is the one row marked default, and carries no model" do
+      {:created, :assistant, assistant} = Setup.ensure_default_assistant()
+
+      assert Actors.get_default_assistant().id == assistant.id
+      assert assistant.kind == :ai
+      assert assistant.default
+      assert {assistant.provider, assistant.model, assistant.thinking_level} == {nil, nil, nil}
+    end
+
+    test "is nil before setup has run" do
+      assert Actors.get_default_assistant() == nil
+    end
+
+    # Renaming it is how somebody changes the name a reader sees beside an
+    # AI-written block, so the ordinary update path has to work on it -- which
+    # it would not if being an AI actor still demanded a model here.
+    test "can be renamed and turned off without being given a model" do
+      {:created, :assistant, assistant} = Setup.ensure_default_assistant()
+
+      assert {:ok, renamed} = Actors.update_actor(assistant, %{name: "Assistant"})
+      assert renamed.name == "Assistant"
+      assert renamed.default
+      assert renamed.provider == nil
+
+      assert {:ok, off} = Actors.update_actor(renamed, %{name: "Assistant", enabled: false})
+      refute off.enabled
+    end
+
+    # Which one signs a block is not a question this system wants to have.
+    test "cannot be created twice" do
+      {:created, :assistant, _first} = Setup.ensure_default_assistant()
+
+      assert {:error, changeset} =
+               %{name: "Second"}
+               |> Actor.default_changeset()
+               |> Repo.insert()
+
+      assert errors_on(changeset) != %{}
+    end
+
+    # `default` is not cast by the public changeset, so the API cannot mint one
+    # -- an actor a caller could mark would be a second one.
+    test "cannot be made through the ordinary create path" do
+      assert {:ok, actor} =
+               Actors.create_actor(Map.put(valid_ai_attrs("Impostor"), :default, true))
+
+      refute actor.default
     end
   end
 

@@ -67,6 +67,7 @@ defmodule RintoPMO.Release do
     {:ok, _result, _apps} =
       Ecto.Migrator.with_repo(RintoPMO.Repo, fn _repo ->
         IO.puts(RintoPMO.Setup.describe(RintoPMO.Setup.ensure_default_project()))
+        IO.puts(RintoPMO.Setup.describe(RintoPMO.Setup.ensure_default_assistant()))
         IO.puts(RintoPMO.Setup.describe(RintoPMO.Setup.ensure_human(name)))
       end)
 

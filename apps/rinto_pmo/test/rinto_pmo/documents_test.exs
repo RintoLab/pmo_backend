@@ -2,6 +2,8 @@ defmodule RintoPMO.DocumentsTest do
   use RintoPMO.DataCase, async: true
   use Oban.Testing, repo: RintoPMO.Repo
 
+  alias RintoPMO.Actors
+  alias RintoPMO.ActorsMock
   alias RintoPMO.Agent.WbsGeneratorMock
   alias RintoPMO.Conversations
   alias RintoPMO.ConversationsMock
@@ -14,10 +16,13 @@ defmodule RintoPMO.DocumentsTest do
   alias RintoPMO.Projects
   alias RintoPMO.ProjectsMock
   alias RintoPMO.Settings
+  alias RintoPMO.Setup
 
   setup do
-    # Creating a document inside a topic reads that topic to learn who wrote it.
+    # Creating a document inside a topic reads that topic to learn who wrote it,
+    # and a plain chat sends it on to the default actor.
     stub_with(ConversationsMock, Conversations)
+    stub_with(ActorsMock, Actors)
     # A document created without a project is filed in the default one, which
     # therefore has to exist.
     stub_with(ProjectsMock, Projects)
@@ -122,6 +127,35 @@ defmodule RintoPMO.DocumentsTest do
       assert {:error, :assistant_actor_required, details} =
                Documents.create_document(%{
                  title: "Nobody wrote this",
+                 conversation_id: conversation.id,
+                 markdown: "## One\n\nText"
+               })
+
+      assert details.conversation_id == conversation.id
+    end
+
+    # A plain chat is talking to a model rather than to a persona, so the
+    # default actor is the name it writes under.
+    test "credits the default actor from a plain chat" do
+      signatory = default_assistant()
+
+      assert {:ok, document} =
+               Documents.create_document(%{
+                 title: "Written in a plain chat",
+                 conversation_id: plain_chat().id,
+                 markdown: "## One\n\nText"
+               })
+
+      blocks = Documents.get_document!(document.id).latest_revision.blocks
+      assert Enum.map(blocks, & &1.actor_id) == [signatory.id]
+    end
+
+    test "refuses a plain chat when setup never made the default actor" do
+      conversation = plain_chat()
+
+      assert {:error, :default_assistant_missing, details} =
+               Documents.create_document(%{
+                 title: "Nobody signs this",
                  conversation_id: conversation.id,
                  markdown: "## One\n\nText"
                })
@@ -709,5 +743,26 @@ defmodule RintoPMO.DocumentsTest do
 
   defp document_ids(documents) do
     documents |> Enum.map(& &1.id) |> MapSet.new()
+  end
+
+  defp default_assistant do
+    {:ok, assistant} =
+      Setup.ensure_default_assistant()
+      |> case do
+        {:created, :assistant, assistant} -> {:ok, assistant}
+        {:present, :assistant, assistant} -> {:ok, assistant}
+      end
+
+    assistant
+  end
+
+  defp plain_chat do
+    insert(:conversation,
+      mode: :chat,
+      assistant_actor: nil,
+      provider: "openai",
+      model: "gpt-5.4",
+      thinking_level: "medium"
+    )
   end
 end

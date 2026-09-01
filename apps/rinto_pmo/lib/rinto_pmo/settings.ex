@@ -32,6 +32,15 @@ defmodule RintoPMO.Settings do
   Neither is a rule about roles in general. An empty role is an ordinary state;
   what to do about it is a question about the job, not about the pointer.
 
+  ## Every role here is asked to do something
+
+  Each reads the chosen actor's `provider`, `model` and `thinking_level` and
+  calls the model with them, so changing the actor changes the answer. Which is
+  why the default actor cannot be put in one: it carries no model
+  configuration, and a role holding it would be a job nothing can run. Signing
+  a plain chat's writing is not a role for the same reason -- there is nothing
+  to choose. See `RintoPMO.Actors.Actor`.
+
   Being strict at write time and lenient at read time is deliberate:
   `put_actor/2` refuses a human or a disabled actor so that the mistake is
   reported to whoever is making it, while a change made later to an actor that
@@ -155,10 +164,23 @@ defmodule RintoPMO.Settings do
 
       actor_id ->
         case Repo.get(Actor, actor_id) do
-          nil -> Changeset.add_error(changeset, :actor_id, "does not exist")
-          %Actor{kind: :human} -> Changeset.add_error(changeset, :actor_id, "must be an AI actor")
-          %Actor{enabled: false} -> Changeset.add_error(changeset, :actor_id, "is disabled")
-          %Actor{} -> changeset
+          nil ->
+            Changeset.add_error(changeset, :actor_id, "does not exist")
+
+          %Actor{kind: :human} ->
+            Changeset.add_error(changeset, :actor_id, "must be an AI actor")
+
+          %Actor{enabled: false} ->
+            Changeset.add_error(changeset, :actor_id, "is disabled")
+
+          # The stand-in has no model to call, so a role holding it would be a
+          # job that cannot run. Refused here rather than at the call site,
+          # where it would surface as a failure long after the mistake.
+          %Actor{default: true} ->
+            Changeset.add_error(changeset, :actor_id, "has no model configuration")
+
+          %Actor{} ->
+            changeset
         end
     end
   end

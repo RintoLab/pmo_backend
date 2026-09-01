@@ -46,6 +46,14 @@ defmodule RintoPMOWeb.ErrorJSON do
     conversation_not_found: {422, "The topic the proposal names does not exist."},
     assistant_actor_required:
       {422, "The topic has no assistant configured, so nothing in it can propose."},
+    # The plain-chat half of the same question: the topic is configured, but
+    # what it is configured with is a model rather than an actor, so writing
+    # from it is signed with the default actor -- and this installation has
+    # none, which means setup never ran.
+    default_assistant_missing:
+      {422,
+       "The default assistant does not exist, so a plain chat has no name to " <>
+         "write under. Run `mix rinto.actors.setup_human`."},
     task_blocked: {422, "The task is blocked by unfinished dependencies."},
     review_round_open: {422, "The document already has an open review round."},
     invalid_block_op: {422, "The block operation is invalid."},

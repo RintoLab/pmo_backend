@@ -3,6 +3,7 @@ defmodule RintoPMO.SettingsTest do
 
   alias RintoPMO.Actors
   alias RintoPMO.Settings
+  alias RintoPMO.Setup
 
   describe "list_settings/0" do
     test "answers with every role, empty ones included" do
@@ -50,6 +51,16 @@ defmodule RintoPMO.SettingsTest do
 
       assert {:error, changeset} = Settings.put_actor("title_actor", human.id)
       assert %{actor_id: ["must be an AI actor"]} = errors_on(changeset)
+    end
+
+    # Every role here is somebody to *call*, and the stand-in has nothing to
+    # call. Refused at the point somebody makes the mistake rather than at the
+    # job that would later fail on it.
+    test "refuses the default actor: there is no model on it to ask" do
+      {:created, :assistant, assistant} = Setup.ensure_default_assistant()
+
+      assert {:error, changeset} = Settings.put_actor("title_actor", assistant.id)
+      assert %{actor_id: ["has no model configuration"]} = errors_on(changeset)
     end
 
     test "refuses an actor that is turned off" do

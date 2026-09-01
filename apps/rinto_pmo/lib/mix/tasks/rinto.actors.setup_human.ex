@@ -60,6 +60,7 @@ defmodule Mix.Tasks.Rinto.Actors.SetupHuman do
     # The project first, so that a database this cannot pick a person in still
     # ends up with somewhere to put documents.
     report(Setup.ensure_default_project())
+    report(Setup.ensure_default_assistant())
     report(Setup.ensure_human(opts[:name]))
     report_token()
   end
