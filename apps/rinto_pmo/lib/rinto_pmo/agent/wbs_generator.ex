@@ -135,6 +135,28 @@ defmodule RintoPMO.Agent.WbsGenerator do
 
   @behaviour Behaviour
 
+  # The criteria rules below are specific about *shape* and silent about
+  # *notation*, and both halves are deliberate.
+  #
+  # Silent about notation because `RintoPMO.Tasks.Breakdown` reads everything
+  # under a heading as one description: a `**验收:**` marker would be a second
+  # convention with no parser and no reader behind it. What a bullet means is
+  # settled here, in the writing, and stays a convention a person reads rather
+  # than a field anything queries.
+  #
+  # Specific about shape because the loose version -- "put the acceptance
+  # criteria here too, in whatever wording fits" -- produced bodies where
+  # bullets carried content and criteria indistinguishably: a list of the two
+  # routes to add, sitting in the same notation as what has to be true when they
+  # work. Saying a bullet *is* a criterion gives the notation one job, and it is
+  # the same move `Breakdown` already makes for headings -- what would have been
+  # a smaller task is written as another `###` rather than inferred.
+  #
+  # The last rule is load-bearing. Without it the demand for criteria collides
+  # with "never invent work the document gives no reason for": asked for a
+  # criterion on every task, a model supplies one, and an invented acceptance
+  # criterion is a requirement nobody agreed to. The example keeps a task with
+  # none for the same reason.
   @system_prompt """
   You break a plan down into the work it implies. You are given a document as \
   JSON: a title, and its sections in order. Reply with the work breakdown as \
@@ -145,9 +167,9 @@ defmodule RintoPMO.Agent.WbsGenerator do
   - `##` -- a chunk of work. Everything in the reply lives under one of these.
   - `###` -- one task somebody can pick up and finish. Belongs to the `##` \
   above it.
-  - Text under either heading -- what that chunk or task is. Put the acceptance \
-  criteria here too, in whatever wording fits; there is no special marker for \
-  them.
+  - Text under either heading -- what that chunk or task is, and then how \
+  somebody will know it is done. Nothing marks the boundary: the criteria are \
+  the bullets at the end.
 
   A chunk that is one single task is written as a `##` with **no `###` under \
   it**, and the text under it describes that task. Do not write a `##` and then \
@@ -155,6 +177,21 @@ defmodule RintoPMO.Agent.WbsGenerator do
 
   Never write `#`, and never write `####` or deeper. Every `###` must sit under \
   a `##`; a `###` before the first `##` is refused outright.
+
+  Acceptance criteria:
+
+  - **A bullet is a criterion, and nothing else is a bullet.** Anything that is \
+  not a criterion goes in the prose above them -- and if it was a piece of work, \
+  it was a task and belongs in its own `###`.
+  - A criterion says what is **observably true once the work is finished**. Not \
+  what the doer will do, not that a test exists, not what somebody downstream \
+  can then build. "The list keeps its scroll position across a reload" is a \
+  criterion; "handle scroll position" is the title again; "add tests for it" is \
+  the doer's business.
+  - One line each, and each one has to be settleable by looking at the result. \
+  A line nobody could call true or false is not a criterion.
+  - Take them from the document. A task the document gives no grounds for gets \
+  none: an invented criterion is a requirement nobody agreed to.
 
   Rules:
   - Break down the work the document implies. Do not restate the document.
@@ -180,7 +217,9 @@ defmodule RintoPMO.Agent.WbsGenerator do
 
   ### 加监控看板
 
-  错误率曲线、延迟分位数各一块，p99 要有告警线。
+  错误率曲线、延迟分位数各一块，两块都按服务维度拆开。
+
+  - p99 越过告警线时告警真的发得出来，不是只画了一条线
 
   ## 把回滚做成一个开关
 
