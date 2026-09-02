@@ -56,19 +56,70 @@ publish_pointer() {
   put_file "$1" "$2" "$3" "$4"
 }
 
+# Whichever repository the registry currently says the package belongs to, or
+# empty when it belongs to none and when the question cannot be answered.
+#
+# Read from the package listing rather than from a version endpoint: the link
+# belongs to the package, and the caller that needs this has a package name but
+# no version in hand. The listing is per version, so every version of the
+# package repeats the same link and the first one that carries it answers. `q`
+# is a substring match -- it narrows the page, and the exact name is selected
+# here rather than trusted from the query.
+linked_repo() {
+  local package="$1" listing status link
+  listing="$(mktemp)"
+  set +e
+  curl -fsS --netrc-file "${netrc}" \
+    "${base}/api/v1/packages/${PACKAGE_OWNER}?type=generic&q=${package}&limit=50" -o "${listing}"
+  status=$?
+  set -e
+  if [ "${status}" -ne 0 ]; then
+    rm -f "${listing}"
+    return
+  fi
+  link="$(jq -r --arg name "${package}" \
+    'map(select(.name == $name and .repository != null))
+     | .[0].repository.name // ""' "${listing}")" || link=""
+  rm -f "${listing}"
+  printf '%s' "${link}"
+}
+
 # A generic package belongs to the owner, not to a repository, so without this
 # it is only reachable through the org's Packages tab. The link is stored once
-# per package rather than per version, and re-linking the same repository
-# overwrites the existing row, so this is safe to repeat on every release.
-# The repository must belong to PACKAGE_OWNER; a repository under another owner
-# answers 404 here.
+# per package rather than per version, so one call covers every version
+# including the `latest` pointer.
+#
+# It is not idempotent, which is the trap: Gitea refuses to move a link that
+# already exists, so a package linked by an earlier release answers 400 here
+# forever after. It answers 400 for a repository under another owner too, and
+# the status alone does not say which happened -- so on 400 we ask what the
+# package is actually linked to and let that decide. Already ours is the
+# ordinary case on every release after the first; anything else is still a
+# failure. A repository that does not exist under PACKAGE_OWNER answers 404.
 link_repo() {
-  local package="$1" repo="$2" code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --netrc-file "${netrc}" \
+  local package="$1" repo="$2" body code linked
+  body="$(mktemp)"
+  code="$(curl -sS -o "${body}" -w '%{http_code}' --netrc-file "${netrc}" \
     -X POST "$(admin_url "${package}" "/-/link/${repo}")")" || code=000
   case "${code}" in
-    201) ;;
-    *) echo "package link failed for ${package} -> ${repo} (HTTP ${code})" >&2; exit 1 ;;
+    201)
+      rm -f "${body}"
+      ;;
+    400)
+      rm -f "${body}"
+      linked="$(linked_repo "${package}")"
+      if [ "${linked}" = "${repo}" ]; then
+        echo "${package} is already linked to ${repo}"
+      else
+        echo "package link failed for ${package} -> ${repo} (HTTP 400); the registry says it is linked to ${linked:-nothing}" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "package link failed for ${package} -> ${repo} (HTTP ${code}): $(tr -d '\n' < "${body}")" >&2
+      rm -f "${body}"
+      exit 1
+      ;;
   esac
 }
 
