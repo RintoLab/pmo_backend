@@ -137,7 +137,17 @@ fn list() -> Result<()> {
                 written_by(record),
                 status_of(skill, record)
             ),
-            None => String::new(),
+            // No record is not the same as not installed. A file sitting where
+            // an agent reads it is being read on every run, whether or not this
+            // CLI remembers writing it.
+            None => match unrecorded_at_default(skill) {
+                Some((path, existing)) => format!(
+                    "\n  installed: {}\n  not in this CLI's record -- {}",
+                    path.display(),
+                    unrecorded_status(skill, &existing)
+                ),
+                None => String::new(),
+            },
         };
         println!(
             "{}\n  {}{where_installed}\n",
@@ -181,6 +191,34 @@ fn status_of(skill: &Skill, record: &Record) -> String {
                     .to_string()
             }
         },
+    }
+}
+
+/// Where `install` would put `skill` with no `--dir`, and what is there.
+///
+/// Only the default directory, because a record is the only thing that knows
+/// about a `--dir` install -- with no record there is nowhere else to look.
+fn unrecorded_at_default(skill: &Skill) -> Option<(PathBuf, String)> {
+    let path = expand_home(DEFAULT_DIR)
+        .ok()?
+        .join(skill.name)
+        .join("SKILL.md");
+    let existing = std::fs::read_to_string(&path).ok()?;
+    Some((path, existing))
+}
+
+/// What can honestly be said about a file this CLI has no hash for.
+///
+/// Two states, not the three `decide` reports: without a recorded hash there is
+/// no way to tell an older release's text from wording somebody tuned, and
+/// guessing which would either overwrite a person's edit or leave a stale skill
+/// in place while claiming to know better.
+fn unrecorded_status(skill: &Skill, existing: &str) -> &'static str {
+    if existing == skill.body {
+        "matches what this binary carries"
+    } else {
+        "differs from what this binary carries; \
+         no record says whether it is older or edited"
     }
 }
 
@@ -237,13 +275,25 @@ fn install(args: InstallArgs) -> Result<()> {
 /// Re-apply this binary's skills wherever a previous install put them.
 ///
 /// Runs after a self-update, and by hand. Nothing is installed that was not
-/// installed before -- the record is the whole input, so `skill sync` on a
-/// machine that never ran `skill install` does nothing, which keeps the
-/// "install names one skill, never all of them" split intact.
+/// installed before -- the record is the whole input for *writing*, so `skill
+/// sync` on a machine that never ran `skill install` writes nothing, which
+/// keeps the "install names one skill, never all of them" split intact.
+///
+/// Reporting is wider than writing, and has to be. A skill file with no record
+/// -- written before records were kept, or orphaned by a lost `skills.json` --
+/// is still read by an agent on every run, and taking the record set as the
+/// whole input made those invisible: this command would print "skills already
+/// current" over a skill that was a year out of date. Being silent about a file
+/// is fine; claiming it is current is not.
 fn sync(args: SyncArgs) -> Result<()> {
     let mut state = State::load()?;
     if state.records.is_empty() {
         println!("no skills installed by this CLI; nothing to sync");
+        // Still worth a look: "no records" is exactly the shape a lost state
+        // file leaves behind, and it is the case most likely to be hiding one.
+        if report_unrecorded(&mut state)? {
+            state.save()?;
+        }
         return Ok(());
     }
 
@@ -305,12 +355,61 @@ fn sync(args: SyncArgs) -> Result<()> {
     }
 
     state.records = kept;
+    said_something |= report_unrecorded(&mut state)?;
     state.save()?;
 
     if !said_something {
         println!("skills already current");
     }
     Ok(())
+}
+
+/// Says something about every shipped skill that is installed but unrecorded.
+///
+/// One of the two cases is repaired rather than reported: a file already equal
+/// to what this binary carries needs no decision, so it is adopted into the
+/// record and from then on `sync` maintains it like any other. That is the same
+/// move `install` makes when it finds the file already right, and it is how a
+/// machine whose state file was lost gets one back.
+///
+/// The other case is only ever reported. Replacing a file this CLI cannot prove
+/// it wrote would be the silent overwrite `--force` exists to require.
+///
+/// Returns whether anything was printed, so the caller can keep "skills already
+/// current" for the run that truly had nothing to say.
+fn report_unrecorded(state: &mut State) -> Result<bool> {
+    let mut said_something = false;
+
+    for skill in SKILLS {
+        if state.find(skill.name).is_some() {
+            continue;
+        }
+        let Some((path, existing)) = unrecorded_at_default(skill) else {
+            continue;
+        };
+
+        said_something = true;
+
+        if existing == skill.body {
+            state.record(skill, &path);
+            println!(
+                "adopted into the record, already current: {}",
+                path.display()
+            );
+        } else {
+            println!(
+                "installed but not in this CLI's record: {}\n  \
+                 {}\n  \
+                 an agent reads it on every run; take this binary's copy with:\n    \
+                 rinto-pmo skill install {} --force",
+                path.display(),
+                unrecorded_status(skill, &existing),
+                skill.name
+            );
+        }
+    }
+
+    Ok(said_something)
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -521,8 +620,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        decide, description_of, sha256_hex, status_of, version, written_by, Action, Record, Skill,
-        State, SKILLS,
+        decide, description_of, sha256_hex, status_of, unrecorded_status, version, written_by,
+        Action, Record, Skill, State, SKILLS,
     };
 
     #[test]
@@ -738,5 +837,26 @@ mod tests {
                 skill.name
             );
         }
+    }
+
+    /// The failure this pair of states exists to stop: a skill file that no
+    /// record covers sat in the agent's directory a year out of date while
+    /// `sync` reported everything current. Without a hash there are only two
+    /// honest answers, and neither of them is "current".
+    #[test]
+    fn an_unrecorded_file_is_never_called_current() {
+        let skill = Skill {
+            name: "rinto-docs-reference",
+            body: "---\nname: rinto-docs-reference\n---\nours",
+        };
+
+        assert_eq!(
+            unrecorded_status(&skill, skill.body),
+            "matches what this binary carries"
+        );
+
+        let stale = unrecorded_status(&skill, "---\nname: rinto-docs-reference\n---\nolder");
+        assert!(!stale.contains("current"), "{stale}");
+        assert!(stale.contains("differs"), "{stale}");
     }
 }
