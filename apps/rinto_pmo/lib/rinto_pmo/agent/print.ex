@@ -10,6 +10,7 @@ defmodule RintoPMO.Agent.Print do
   # different question, and does not re-argue it.
 
   alias RintoPMO.Agent.Events
+  alias RintoPMO.Agent.PiInstallation
   alias RintoPMO.OSProcess
 
   require Logger
@@ -112,6 +113,7 @@ defmodule RintoPMO.Agent.Print do
       id: id,
       cmd: executable(),
       args: args,
+      env: PiInstallation.environment(),
       owner: self(),
       framing: :lines
     ]

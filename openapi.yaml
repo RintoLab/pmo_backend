@@ -43,6 +43,10 @@ tags:
     description: Global human participants and AI personas.
   - name: AI Models
     description: Providers and models available from the local pi RPC runtime for AI actor configuration.
+  - name: AI Authentication
+    description: >
+      Backend-owned provider authorization. Only display-safe device-code data
+      crosses the API; OAuth credentials remain in Pi's auth.json.
   - name: Projects
     description: Projects and their archive lifecycle.
   - name: Project Repositories
@@ -2410,6 +2414,84 @@ paths:
       responses:
         "204":
           description: Rediscovery has been requested
+  /ai_auth/openai_codex:
+    get:
+      tags: [AI Authentication]
+      operationId: getOpenAICodexAuthStatus
+      summary: Get OpenAI Codex authorization status
+      description: >
+        Reports the single local authorization state. `authenticated` is read
+        from the same auth.json used by Pi RPC. No token or credential fields
+        are returned.
+      responses:
+        "200":
+          description: Current authorization state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodexAuthStatus"
+    delete:
+      tags: [AI Authentication]
+      operationId: logoutOpenAICodex
+      summary: Remove the OpenAI Codex credential
+      description: >
+        Cancels a pending flow, if any, then calls Pi ModelRuntime.logout for
+        `openai-codex`. Other provider entries in auth.json are preserved.
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodexAuthStatus"
+        "503":
+          description: The Pi SDK helper could not complete logout
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+  /ai_auth/openai_codex/device:
+    post:
+      tags: [AI Authentication]
+      operationId: startOpenAICodexDeviceAuth
+      summary: Start OpenAI Codex device authorization
+      description: >
+        Starts at most one backend Pi SDK login flow and waits until its device
+        code is available. A repeated request while pending returns that same
+        flow; it never starts a second poller. Terminal failures are represented
+        by `status: failed` or `status: expired` with a display-safe error code.
+      responses:
+        "200":
+          description: Pending, completed, failed, or expired authorization state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodexAuthStatus"
+        "503":
+          description: Pi, Node/Bun, or the matching Pi SDK entry is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+  /ai_auth/openai_codex/cancel:
+    post:
+      tags: [AI Authentication]
+      operationId: cancelOpenAICodexDeviceAuth
+      summary: Cancel pending OpenAI Codex authorization
+      description: Terminates the helper process and its SDK polling request.
+      responses:
+        "200":
+          description: Authorization cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodexAuthStatus"
+        "409":
+          description: No authorization is pending
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /tasks:
     get:
       tags: [Tasks]
@@ -4178,6 +4260,43 @@ components:
           description: >
             Why the last discovery failed, for display to an operator. Diagnostic text,
             not a stable code -- branch on `state` instead.
+      additionalProperties: false
+    CodexAuthStatus:
+      type: object
+      required: [provider, authenticated, status]
+      description: >
+        State of the installation-wide OpenAI Codex authorization. Device fields
+        are present only while pending. `error` is a display-safe stable code,
+        never an upstream response body.
+      properties:
+        provider:
+          type: string
+          enum: [openai-codex]
+        authenticated:
+          type: boolean
+        status:
+          type: string
+          enum: [idle, pending, completed, failed, expired, cancelled]
+        verificationUrl:
+          type: string
+          format: uri
+        userCode:
+          type: string
+        expiresInSeconds:
+          type: integer
+          minimum: 0
+        error:
+          type: string
+          enum:
+            - auth_failed
+            - auth_cancelled
+            - auth_expired
+            - helper_unavailable
+            - helper_crashed
+            - malformed_helper_output
+            - credential_missing
+            - pi_sdk_unavailable
+            - logout_failed
       additionalProperties: false
     Actor:
       type: object
@@ -7508,6 +7627,7 @@ components:
         - task_already_claimed
         - task_not_yours
         - task_state_conflict
+        - codex_auth_not_pending
         - dependency_cycle
         - validation_error
         - task_blocked
@@ -7538,6 +7658,7 @@ components:
         - no_default_branch
         - unusable_repo_name
         - internal_server_error
+        - codex_auth_unavailable
         - workspace_unwritable
         - workspace_not_configured
         - repo_unavailable

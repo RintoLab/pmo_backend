@@ -13,6 +13,7 @@ defmodule RintoPMO.Agent.Rpc do
   module mocks it rather than spawning anything.
   """
 
+  alias RintoPMO.Agent.PiInstallation
   alias RintoPMO.OSProcess
   alias RintoPMO.Utils
 
@@ -110,6 +111,7 @@ defmodule RintoPMO.Agent.Rpc do
       id: id,
       cmd: executable,
       args: pi_args(session_dir, opts),
+      env: PiInstallation.environment(),
       owner: self(),
       framing: :lines,
       # Replaces the old `2>/dev/null` shell wrapper: pi's startup warnings and

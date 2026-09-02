@@ -22,6 +22,7 @@ defmodule RintoPMO.Agent.RpcTest do
 
   import Hammox
 
+  alias RintoPMO.Agent.PiInstallation
   alias RintoPMO.Agent.Rpc
 
   setup :verify_on_exit!
@@ -199,6 +200,10 @@ defmodule RintoPMO.Agent.RpcTest do
       assert Keyword.fetch!(opts, :framing) == :lines
       # pi's startup chatter would otherwise pollute discovery output.
       assert Keyword.fetch!(opts, :stderr) == :discard
+
+      environment = Keyword.fetch!(opts, :env)
+      assert {"HOME", System.get_env("HOME")} in environment
+      assert {"PI_CODING_AGENT_DIR", PiInstallation.agent_dir()} in environment
 
       args = Keyword.fetch!(opts, :args)
       assert "--mode" in args and "rpc" in args

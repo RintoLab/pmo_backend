@@ -13,6 +13,11 @@ Hammox.defmock(RintoPMO.SearchMock, for: RintoPMO.Search.Behaviour)
 Hammox.defmock(RintoPMO.References.ResolverMock, for: RintoPMO.References.Resolver.Behaviour)
 Hammox.defmock(RintoPMO.OSProcessMock, for: RintoPMO.OSProcess.Behaviour)
 Hammox.defmock(RintoPMO.Agent.RpcMock, for: RintoPMO.Agent.Rpc.Behaviour)
+
+Hammox.defmock(RintoPMO.Agent.CodexAuth.HelperMock,
+  for: RintoPMO.Agent.CodexAuth.Helper.Behaviour
+)
+
 Hammox.defmock(RintoPMO.Agent.TitleGeneratorMock, for: RintoPMO.Agent.TitleGenerator.Behaviour)
 Hammox.defmock(RintoPMO.Agent.WbsGeneratorMock, for: RintoPMO.Agent.WbsGenerator.Behaviour)
 Hammox.defmock(RintoPMO.Agent.TaskEstimatorMock, for: RintoPMO.Agent.TaskEstimator.Behaviour)

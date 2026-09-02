@@ -35,6 +35,7 @@ defmodule RintoPMOWeb.ErrorJSON do
     # a person, and is never evicted to make room.
     session_limit_reached:
       {409, "Every running agent session is waiting on a person. Close one to make room."},
+    codex_auth_not_pending: {409, "There is no pending OpenAI Codex authorization to cancel."},
     validation_error: {422, "Request validation failed."},
     unknown_block: {422, "The block is not part of the document's latest revision."},
     no_live_proposal: {422, "The block has no proposal to commit."},
@@ -149,6 +150,7 @@ defmodule RintoPMOWeb.ErrorJSON do
       {422, "The repository name cannot be used as a directory. Rename the repository."},
     internal_server_error: {500, "An internal server error occurred."},
     agent_unavailable: {503, "The agent runtime could not be started."},
+    codex_auth_unavailable: {503, "The Pi OpenAI Codex authorization helper is unavailable."},
     # Searching without the service that does the searching. Told apart from
     # `ai_unavailable` for the same reason `token_not_configured` is told apart
     # from `unauthorized`: this one is an installation nobody finished

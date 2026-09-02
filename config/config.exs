@@ -14,6 +14,9 @@ config :rinto_pmo,
   namespace: RintoPMO,
   ecto_repos: [RintoPMO.Repo],
   pi_executable: "pi",
+  # Pi itself reads this environment variable. `nil` means use its native
+  # resolution: PI_CODING_AGENT_DIR, then $HOME/.pi/agent.
+  pi_agent_dir: nil,
   injectors: [
     actors: RintoPMO.Actors,
     annotations: RintoPMO.Annotations,
@@ -28,6 +31,7 @@ config :rinto_pmo,
     workspace: RintoPMO.Workspace,
     # Each layer of pi model discovery, so a test of one mocks the next.
     rpc: RintoPMO.Agent.Rpc,
+    codex_auth_helper: RintoPMO.Agent.CodexAuth.Helper,
     os_process: RintoPMO.OSProcess,
     # The model calls made outside a conversation, each swappable on its own so
     # that everything around them -- eligibility, fallbacks, conditional writes
@@ -267,6 +271,11 @@ config :rinto_pmo, RintoPMO.OSProcess,
   # a child that never emits a newline cannot grow the buffer without bound.
   # Unbounded by default: cutting a line is lossy, so it is opt-in per child.
   max_line_bytes: :infinity
+
+config :rinto_pmo, RintoPMO.Agent.CodexAuth,
+  # Time allowed for Pi to obtain and announce a device code. Once announced,
+  # Pi's provider-supplied expiresInSeconds replaces this deadline.
+  startup_timeout: 30_000
 
 config :rinto_pmo, RintoPMO.Search,
   # Candidates pulled by cosine distance before reranking. Measured rather than

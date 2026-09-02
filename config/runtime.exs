@@ -16,6 +16,26 @@ if System.get_env("SHELL") in [nil, ""] do
   System.put_env("SHELL", "/bin/sh")
 end
 
+# Pi and the OAuth helper must resolve the same executable and agent directory.
+# Defaults deliberately remain Pi's own defaults; these are deployment escape
+# hatches for installations whose systemd PATH or home layout differs.
+pi_executable = System.get_env("RINTO_PI_EXECUTABLE", "") |> String.trim()
+pi_agent_dir = System.get_env("RINTO_PI_AGENT_DIR", "") |> String.trim()
+pi_auth_helper_runtime = System.get_env("RINTO_PI_AUTH_HELPER_RUNTIME", "") |> String.trim()
+
+if pi_executable != "", do: config(:rinto_pmo, pi_executable: pi_executable)
+
+if pi_agent_dir != "" do
+  # Pi itself only knows PI_CODING_AGENT_DIR. Set it in the BEAM environment as
+  # well as application config so every existing direct Pi spawn inherits it.
+  System.put_env("PI_CODING_AGENT_DIR", pi_agent_dir)
+  config :rinto_pmo, pi_agent_dir: pi_agent_dir
+end
+
+if pi_auth_helper_runtime != "" do
+  config :rinto_pmo, pi_auth_helper_runtime: pi_auth_helper_runtime
+end
+
 # The token every request carries. It is agreed in advance rather than issued:
 # the same value goes here and into the configuration of each thing that calls
 # this API, because there is no way to distribute it from here -- every client

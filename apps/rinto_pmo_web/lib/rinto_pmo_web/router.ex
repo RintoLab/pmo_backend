@@ -60,6 +60,13 @@ defmodule RintoPMOWeb.Router do
     get "/ai_models", AIModelController, :index
     post "/ai_models/refresh", AIModelController, :refresh
 
+    # OpenAI Codex subscription OAuth. Tokens never cross this API: the device
+    # code is display-only and Pi's SDK persists the exchanged credential.
+    get "/ai_auth/openai_codex", CodexAuthController, :status
+    post "/ai_auth/openai_codex/device", CodexAuthController, :start
+    post "/ai_auth/openai_codex/cancel", CodexAuthController, :cancel
+    delete "/ai_auth/openai_codex", CodexAuthController, :logout
+
     resources "/projects", ProjectController,
       only: [:index, :show, :create, :update, :delete],
       param: "slug" do

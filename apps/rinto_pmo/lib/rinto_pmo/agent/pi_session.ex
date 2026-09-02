@@ -56,6 +56,7 @@ defmodule RintoPMO.Agent.PiSession do
   use GenServer
 
   alias RintoPMO.Agent.Events
+  alias RintoPMO.Agent.PiInstallation
   alias RintoPMO.OSProcess
 
   @registry __MODULE__.Registry
@@ -213,10 +214,10 @@ defmodule RintoPMO.Agent.PiSession do
       id: "pi-session-#{id}",
       cmd: Keyword.get_lazy(opts, :executable, &pi_executable/0),
       args: pi_args(session_dir, opts),
-      # Passed through without inspection: what a tool pi runs needs to find in
-      # its environment is the caller's business, not this module's. It speaks
-      # pi's command line; it has no opinion about the rest of the system.
-      env: Keyword.get(opts, :env, []),
+      # HOME and PI_CODING_AGENT_DIR are canonicalized so every session reads
+      # the same auth.json as the backend OAuth helper. Other caller-provided
+      # variables still pass through unchanged.
+      env: PiInstallation.environment(Keyword.get(opts, :env, [])),
       owner: self(),
       framing: :lines,
       stderr: :discard

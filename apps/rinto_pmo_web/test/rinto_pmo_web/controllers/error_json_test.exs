@@ -154,6 +154,10 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     ai_unavailable: {503, "The inference service could not be reached.", %{status: 502}},
     session_limit_reached:
       {409, "Every running agent session is waiting on a person. Close one to make room.", %{}},
+    codex_auth_not_pending:
+      {409, "There is no pending OpenAI Codex authorization to cancel.", %{}},
+    codex_auth_unavailable:
+      {503, "The Pi OpenAI Codex authorization helper is unavailable.", %{}},
     attachment_unwritable: {500, "The attachment could not be stored.", %{reason: "enospc"}},
     attachment_unreadable:
       {500, "The attachment bytes are missing or unreadable.", %{reason: "enoent"}}

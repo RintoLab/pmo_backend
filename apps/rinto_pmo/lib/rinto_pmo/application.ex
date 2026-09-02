@@ -17,6 +17,7 @@ defmodule RintoPMO.Application do
       {Task.Supervisor, name: RintoPMO.TaskSupervisor},
       RintoPMO.OSProcess.Supervisor,
       RintoPMO.Agent.PiSession.Supervisor,
+      RintoPMO.Agent.CodexAuth,
       RintoPMO.Conversations.Recorder.Supervisor,
       RintoPMO.Documents.Session.Supervisor,
       RintoPMO.Agent.ModelCatalog,

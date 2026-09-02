@@ -26,6 +26,7 @@ defmodule RintoPMO.Agent.TitleGenerator do
   several large ones.
   """
 
+  alias RintoPMO.Agent.PiInstallation
   alias RintoPMO.OSProcess
 
   require Logger
@@ -129,7 +130,12 @@ defmodule RintoPMO.Agent.TitleGenerator do
         @system_prompt
       ] ++ model_args(opts) ++ [user_message(input)]
 
-    [cmd: executable(), args: args, timeout: timeout(opts)]
+    [
+      cmd: executable(),
+      args: args,
+      env: PiInstallation.environment(),
+      timeout: timeout(opts)
+    ]
     |> OSProcess.run()
     |> interpret()
   end
