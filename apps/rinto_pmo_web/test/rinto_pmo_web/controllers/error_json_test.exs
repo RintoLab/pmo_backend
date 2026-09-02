@@ -76,7 +76,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {409, "The whole-document proposal was written against an older revision. Propose again.",
        %{proposal_id: "proposal-1", base_revision_id: "rev-1", current_revision_id: "rev-2"}},
     conflicting_commit:
-      {422, "A whole-document proposal is committed on its own, not with a block selection.", %{}},
+      {422,
+       "The whole-document proposal already rewrites or removes blocks the selection " <>
+         "also changes.", %{block_ids: ["block-1"]}},
     rebase_conflict:
       {409, "The proposal cannot be carried across what landed under it without a decision.",
        %{reason: "diverged", block_ids: ["block-1"]}},

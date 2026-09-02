@@ -1006,15 +1006,30 @@ defmodule RintoPMO.Documents do
   `document_proposal_id` commits one instead, and it is named rather than
   adopted by default: a whole-document proposal settles every block, so letting
   one land implicitly would discard other topics' work without anyone choosing
-  to. It cannot be combined with `block_ids` -- it is not one change among
-  several, it is the whole sequence -- and it requires being current: a proposal
-  compiled against an older revision would silently revert whatever landed since,
-  which for a document-wide change means the entire document.
+  to. It requires being current: a proposal compiled against an older revision
+  would silently revert whatever landed since, which for a document-wide change
+  means the entire document.
 
-  Committing one **supersedes every other live block and document proposal**,
-  because their anchors may no longer exist. Title proposals are left alone; a
-  title has no anchor to lose, and an uncontested one is adopted here as it would
-  be in any other commit.
+  ## Together with block proposals
+
+  `block_ids` may be given alongside it, and then both land in one revision.
+  The scope is not the test -- what the operations actually do is. A block
+  proposal is refused only where the document's operations already settle the
+  same block, by `update` (two answers to what its text is) or `delete` (no
+  block left to update): `conflicting_commit`, carrying the `block_ids` at
+  issue. `insert_after` and `move_after` claim a block's neighbourhood rather
+  than its text and leave every `block_id` alone, so a new section after Block 3
+  commits happily with a rewrite of Block 3.
+
+  The selection is named, never inferred: with a document proposal present, an
+  absent `block_ids` commits the document proposal alone, exactly as before.
+
+  Committing one supersedes the other live *document* proposals, whose base has
+  just moved out from under them, and the live *block* proposals on the blocks
+  its operations settled -- those, and no others. A block nobody's operation
+  updated or deleted still holds the text its proposals were written against.
+  Title proposals are left alone; a title has no anchor to lose, and an
+  uncontested one is adopted here as it would be in any other commit.
 
   Nothing needs to happen in the other direction. Committing blocks moves the
   document on, which is what makes a standing document proposal stale, so
@@ -1137,26 +1152,82 @@ defmodule RintoPMO.Documents do
 
   defp commit_document(repo, document, parent, title, proposal_id, attrs) do
     actor_id = attr(attrs, :actor_id, nil)
+    by_block = repo |> live_proposals(document, :block) |> Enum.group_by(& &1.block_id)
 
-    with :ok <- ensure_no_block_selection(attrs),
-         {:ok, proposal} <- live_document_proposal(repo, document, proposal_id),
+    with {:ok, proposal} <- live_document_proposal(repo, document, proposal_id),
          :ok <- ensure_compiled_against(proposal, parent),
-         revision_attrs = document_revision_attrs(attrs, proposal, title),
+         {:ok, block_ids} <- named_blocks(attrs),
+         :ok <- ensure_no_contention(block_ids, by_block),
+         {:ok, adopted} <- adopted_proposals(block_ids, by_block),
+         :ok <- ensure_ops_compatible(proposal, adopted),
+         revision_attrs = document_revision_attrs(attrs, proposal, adopted, title),
          {:ok, revision} <- insert_revision(repo, document, parent, revision_attrs),
-         :ok <- accept_all(repo, [proposal | adopted_title(title)], actor_id),
-         :ok <- supersede_others(repo, document, proposal, actor_id),
+         :ok <- accept_all(repo, [proposal | adopted] ++ adopted_title(title), actor_id),
+         :ok <- supersede_others(repo, document, proposal, adopted, actor_id),
          :ok <- confirm_annotations(document, revision, attrs) do
       {:ok, revision}
     end
   end
 
-  # Not one change among several: the operations settle every block, so a
-  # selection alongside them is a caller with two different ideas of what it is
-  # committing.
-  defp ensure_no_block_selection(attrs) do
+  # Named, never inferred. A whole-document proposal's operations already reach
+  # every block, so "everything uncontested" -- what an ordinary commit means by
+  # an absent selection -- would be a second, silent claim on the same blocks
+  # made by nobody. Alongside a document proposal a selection is only ever the
+  # blocks the caller listed.
+  defp named_blocks(attrs) do
     case attr(attrs, :block_ids, nil) do
-      nil -> :ok
-      _selection -> {:error, {:conflicting_commit, %{}}}
+      nil -> {:ok, []}
+      block_ids when is_list(block_ids) -> {:ok, block_ids}
+      _other -> {:error, {:invalid_block_ids, %{reason: "block_ids must be an array"}}}
+    end
+  end
+
+  # Which of the selected blocks the document's operations have already settled.
+  #
+  # `update` and `delete` are claims on a block's text or its existence, which
+  # is exactly what a block proposal claims too: one of the two would silently
+  # overrule the other, and after a `delete` the block is not there to update at
+  # all. Those are the conflicts.
+  #
+  # `insert_after` and `move_after` are not. An insertion names a block only as
+  # the place to hang a new one, and a move names it only to change where it
+  # sits; neither touches its text, and neither changes any `block_id` -- so the
+  # update lands on the same block whichever order the two are applied in. A new
+  # chapter after Block 3 and a rewrite of Block 3 are two people answering two
+  # different questions, and this used to refuse both of them.
+  defp ensure_ops_compatible(%BlockProposal{} = proposal, adopted) do
+    selected = MapSet.new(adopted, & &1.block_id)
+
+    case proposal |> settled_blocks() |> MapSet.intersection(selected) |> Enum.sort() do
+      [] -> :ok
+      conflicting -> {:error, {:conflicting_commit, %{block_ids: conflicting}}}
+    end
+  end
+
+  defp settled_blocks(%BlockProposal{block_ops: block_ops}) do
+    block_ops
+    |> List.wrap()
+    |> Enum.flat_map(&settled_block/1)
+    |> MapSet.new()
+  end
+
+  # Operations are held as `jsonb` and so come back with string keys and string
+  # values, but one just compiled still has atoms -- `BlockOps` reads either and
+  # so does this. An operation this does not recognise settles nothing here;
+  # `BlockOps.apply/2` refuses the whole list rather than letting it through.
+  defp settled_block(operation) when is_map(operation) do
+    case {to_string(op_field(operation, :op)), op_field(operation, :block_id)} do
+      {op, block_id} when op in ["update", "delete"] and is_binary(block_id) -> [block_id]
+      _other -> []
+    end
+  end
+
+  defp settled_block(_operation), do: []
+
+  defp op_field(operation, key) do
+    case Map.fetch(operation, key) do
+      {:ok, value} -> value
+      :error -> Map.get(operation, Atom.to_string(key))
     end
   end
 
@@ -1192,24 +1263,51 @@ defmodule RintoPMO.Documents do
     end
   end
 
-  # Their anchors may not exist in the revision this just wrote, so leaving them
-  # live would mean a commit that fails on an operation nobody wrote. Title
-  # proposals are untouched: a title has no anchor to lose.
+  # What a document commit invalidates, and no more.
+  #
+  # Every other live *document* proposal goes: each one claims the whole
+  # sequence, and was compiled against the revision this just replaced, so
+  # `ensure_compiled_against/2` would refuse it anyway -- superseding says so
+  # now rather than at the next commit.
+  #
+  # A live *block* proposal goes only if the operations settled its block, by
+  # rewriting it or removing it. Those are the ones whose anchor is gone or
+  # whose text has been overruled. A block the operations merely inserted after,
+  # moved, or never named still exists and still holds the text that proposal
+  # was written against, so it stays live -- adding a chapter is not a reason to
+  # throw away everyone else's paragraphs.
+  #
+  # Title proposals are untouched: a title has no anchor to lose.
   #
   # Keyed by id rather than relying on `accept_all/3` having already moved the
-  # adopted one off `:live`, so the two are independent of each other's order.
-  defp supersede_others(repo, document, %BlockProposal{} = adopted, actor_id) do
+  # adopted ones off `:live`, so the two are independent of each other's order.
+  defp supersede_others(repo, document, %BlockProposal{} = adopted, adopted_blocks, actor_id) do
+    settled = settled_blocks(adopted)
+    kept = [adopted.id | Enum.map(adopted_blocks, & &1.id)]
+
     BlockProposal
     |> where([proposal], proposal.document_id == ^document.id)
     |> where([proposal], proposal.status == :live and proposal.scope in [:block, :document])
-    |> where([proposal], proposal.id != ^adopted.id)
+    |> where([proposal], proposal.id not in ^kept)
     |> repo.all()
+    |> Enum.filter(&invalidated?(&1, settled))
     |> then(&decide_each(repo, &1, :superseded, actor_id, DateTime.utc_now()))
   end
 
-  defp document_revision_attrs(attrs, %BlockProposal{} = proposal, title) do
+  defp invalidated?(%BlockProposal{scope: :document}, _settled), do: true
+
+  defp invalidated?(%BlockProposal{scope: :block, block_id: block_id}, settled),
+    do: MapSet.member?(settled, block_id)
+
+  # The structural operations exactly as they were reviewed, then the selected
+  # blocks' text on top. Both orders would produce the same document -- an
+  # update keeps its block's id and its place, and nothing here can settle a
+  # block twice, `ensure_ops_compatible/2` having refused that already -- but
+  # the reviewed list stays first and unaltered, so what a person approved is
+  # what runs.
+  defp document_revision_attrs(attrs, %BlockProposal{} = proposal, adopted, title) do
     %{
-      block_ops: proposal.block_ops,
+      block_ops: List.wrap(proposal.block_ops) ++ update_ops(adopted),
       base_revision_id: attr(attrs, :base_revision_id, nil),
       source_conversation_id: attr(attrs, :source_conversation_id, nil)
     }
@@ -1773,23 +1871,27 @@ defmodule RintoPMO.Documents do
   end
 
   defp revision_attrs(attrs, adopted, title) do
-    block_ops =
-      Enum.map(adopted, fn proposal ->
-        %{
-          op: :update,
-          block_id: proposal.block_id,
-          actor_id: proposal.actor_id,
-          content: proposal.content
-        }
-      end)
-
     %{
-      block_ops: block_ops,
+      block_ops: update_ops(adopted),
       base_revision_id: attr(attrs, :base_revision_id, nil),
       source_conversation_id: attr(attrs, :source_conversation_id, nil)
     }
     |> maybe_put(:title, title_content(title))
     |> maybe_put(:change_summary, attr(attrs, :change_summary, nil))
+  end
+
+  # The one shape of outcome a block proposal has. Credited to the proposer
+  # rather than to whoever is committing: a committed block still belongs to the
+  # AI that wrote it.
+  defp update_ops(adopted) do
+    Enum.map(adopted, fn proposal ->
+      %{
+        op: :update,
+        block_id: proposal.block_id,
+        actor_id: proposal.actor_id,
+        content: proposal.content
+      }
+    end)
   end
 
   # What settles this revision's title, if anything at all.

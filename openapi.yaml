@@ -6904,7 +6904,9 @@ components:
           type: array
           description: >
             Which blocks to commit. Omit to take every block holding exactly
-            one live proposal.
+            one live proposal -- except alongside `document_proposal_id`, where
+            omitting it commits the document proposal alone and nothing is
+            inferred.
           items:
             type: string
             format: uuid
@@ -6912,13 +6914,26 @@ components:
           type: string
           format: uuid
           description: >
-            Commit one whole-document proposal instead. Named rather than
-            adopted by default, because it settles every block and letting one
-            land implicitly would discard other topics' work without anybody
-            choosing to. Cannot be combined with `block_ids`
-            (`conflicting_commit`), and must be compiled against the current
-            revision (`stale_proposal`). Committing one supersedes every other
-            live block and document proposal; title proposals are untouched.
+            Also commit a whole-document proposal, in the same revision. Named
+            rather than adopted by default, because it settles every block and
+            letting one land implicitly would discard other topics' work
+            without anybody choosing to. It must be compiled against the
+            current revision (`stale_proposal`).
+
+
+            It may be combined with `block_ids`: the document's structural
+            operations and the selected blocks' new text land together. A block
+            is refused only where the document proposal already rewrites
+            (`update`) or removes (`delete`) it -- `conflicting_commit`, whose
+            `details.block_ids` names them. An `insert_after` or `move_after`
+            naming a block claims where it sits, not what it says, so a new
+            section after a block commits with a rewrite of that same block.
+
+
+            Committing one supersedes the other live document proposals, and
+            the live block proposals on the blocks its operations updated or
+            deleted. Proposals on blocks it left alone stay live; title
+            proposals are untouched.
         confirm_annotation_ids:
           type: array
           description: >

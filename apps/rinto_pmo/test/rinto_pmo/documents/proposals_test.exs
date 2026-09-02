@@ -1544,20 +1544,23 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert Enum.map(revision.blocks, & &1.content) == ["## One, theirs", "## Two, mine"]
     end
 
-    test "refuses to be combined with a block selection" do
-      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+    # An absent selection means "everything uncontested" in an ordinary commit.
+    # It cannot mean that here: the operations already reach every block, so
+    # adopting the rest on top would be a second claim nobody made.
+    test "does not adopt block proposals the caller did not name" do
+      %{document: document, blocks: [_first, second]} = document_with_blocks(["One", "Two"])
       actor = insert(:actor)
 
-      assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), "## Rewritten")
+      assert {:ok, %{proposal: theirs}} =
+               propose(document, second.block_id, insert(:conversation), "## Two, theirs")
 
-      assert {:error, :conflicting_commit, _details} =
-               Documents.commit_proposals(document, %{
-                 actor_id: actor.id,
-                 base_revision_id: latest_revision_id(document),
-                 document_proposal_id: proposal.id,
-                 block_ids: [block.block_id]
-               })
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, insert(:conversation), "## One\n\n## Two\n\n## Three")
+
+      assert {:ok, revision} = commit_document(document, actor, proposal)
+
+      assert Enum.map(revision.blocks, & &1.content) == ["## One", "## Two", "## Three"]
+      assert Repo.reload!(theirs).status == :live
     end
 
     test "refuses a proposal that is not live, or not a document proposal" do
@@ -1590,11 +1593,295 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  # A document proposal claims the sequence, not every block's text. Adding a
+  # section after Block 3 and rewriting Block 3 are answers to two different
+  # questions, and refusing the pair -- which is what `scope` alone can tell --
+  # made a person commit twice to say one thing.
+  describe "commit_proposals/2 with a document proposal and block proposals" do
+    test "a new section and a rewrite of the block before it land together" do
+      %{document: document, blocks: [_first, second, third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, %{proposal: block_proposal}} =
+        propose(document, second.block_id, insert(:conversation), "## Two, tighter")
+
+      {:ok, %{proposal: document_proposal}} = propose_appended_section(document)
+
+      assert {:ok, revision} =
+               commit_document(document, actor, document_proposal, [second.block_id])
+
+      assert Enum.map(revision.blocks, & &1.content) ==
+               ["## One", "## Two, tighter", "## Three", "## Four"]
+
+      assert Repo.reload!(document_proposal).status == :accepted
+      assert Repo.reload!(block_proposal).status == :accepted
+
+      # The insertion anchor is Block 3, which nothing moved or renamed.
+      assert Enum.find(revision.blocks, &(&1.content == "## Three")).block_id == third.block_id
+    end
+
+    # The one the insertion hangs off. `insert_after` names it as a position and
+    # `update` replaces its text; `block_id` survives both, so the anchor is
+    # still there to resolve however the two are ordered.
+    test "a new section and a rewrite of its own anchor land together" do
+      %{document: document, blocks: [_first, _second, third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, %{proposal: block_proposal}} =
+        propose(document, third.block_id, insert(:conversation), "## Three, tighter")
+
+      {:ok, %{proposal: document_proposal}} = propose_appended_section(document)
+
+      assert {:ok, revision} =
+               commit_document(document, actor, document_proposal, [third.block_id])
+
+      assert Enum.map(revision.blocks, & &1.content) ==
+               ["## One", "## Two", "## Three, tighter", "## Four"]
+
+      assert Repo.reload!(block_proposal).status == :accepted
+    end
+
+    test "carries every named block into the one revision" do
+      %{document: document, blocks: [_first, second, third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, _proposed} = propose(document, second.block_id, insert(:conversation), "## Two, mine")
+
+      {:ok, _proposed} =
+        propose(document, third.block_id, insert(:conversation), "## Three, theirs")
+
+      {:ok, %{proposal: document_proposal}} = propose_appended_section(document)
+
+      selection = [second.block_id, third.block_id]
+
+      assert {:ok, revision} = commit_document(document, actor, document_proposal, selection)
+
+      assert Enum.map(revision.blocks, & &1.content) ==
+               ["## One", "## Two, mine", "## Three, theirs", "## Four"]
+
+      # One revision, not three: the whole selection is one change to the
+      # document's history.
+      assert revision.parent_id == document.latest_revision.id
+    end
+
+    # Both claim the same block's text. Committing them together would mean one
+    # silently overruling the other, which is the decision this refuses to make
+    # on somebody's behalf.
+    test "refuses a block the document proposal rewrites" do
+      %{document: document, blocks: [_first, second, _third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, %{proposal: block_proposal}} =
+        propose(document, second.block_id, insert(:conversation), "## Two, mine")
+
+      {:ok, %{proposal: document_proposal}} =
+        propose_document(document, insert(:conversation), "## One\n\n## Two, theirs\n\n## Three")
+
+      assert {:error, :conflicting_commit, details} =
+               commit_document(document, actor, document_proposal, [second.block_id])
+
+      assert details.block_ids == [second.block_id]
+
+      assert latest_revision_id(document) == document.latest_revision.id
+      assert Repo.reload!(document_proposal).status == :live
+      assert Repo.reload!(block_proposal).status == :live
+    end
+
+    # Worse than overruled: after the delete there is no block left for the
+    # update to name, and `BlockOps` would fail on an operation nobody wrote.
+    test "refuses a block the document proposal deletes" do
+      %{document: document, blocks: [_first, second, _third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, %{proposal: block_proposal}} =
+        propose(document, second.block_id, insert(:conversation), "## Two, mine")
+
+      {:ok, %{proposal: document_proposal}} =
+        propose_document(document, insert(:conversation), "## One\n\n## Three")
+
+      assert {:error, :conflicting_commit, details} =
+               commit_document(document, actor, document_proposal, [second.block_id])
+
+      assert details.block_ids == [second.block_id]
+      assert Repo.reload!(block_proposal).status == :live
+    end
+
+    # A move claims where a block sits; an update claims what it says. Neither
+    # changes a `block_id`, so the two compose rather than collide.
+    #
+    # `BlockDiff` never compiles a `move_after` -- it expresses a move as a
+    # delete and an insert -- so this one is written by hand, which is also the
+    # only way the operation reaches a proposal today.
+    test "a move and a rewrite of the moved block land together" do
+      %{document: document, blocks: [_first, _second, third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, %{proposal: block_proposal}} =
+        propose(document, third.block_id, insert(:conversation), "## Three, tighter")
+
+      {:ok, document_proposal} =
+        insert_proposal(
+          document_id: document.id,
+          scope: :document,
+          conversation_id: insert(:conversation).id,
+          content: "## Three\n\n## One\n\n## Two",
+          block_ops: [
+            %{"op" => "move_after", "block_id" => third.block_id, "after_block_id" => nil}
+          ],
+          base_revision_id: latest_revision_id(document)
+        )
+
+      assert {:ok, revision} =
+               commit_document(document, actor, document_proposal, [third.block_id])
+
+      assert Enum.map(revision.blocks, & &1.content) ==
+               ["## Three, tighter", "## One", "## Two"]
+
+      assert Repo.reload!(block_proposal).status == :accepted
+    end
+
+    test "refuses a named block with no live proposal on it" do
+      %{document: document, blocks: [_first, second, _third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, %{proposal: document_proposal}} = propose_appended_section(document)
+
+      assert {:error, :no_live_proposal, details} =
+               commit_document(document, actor, document_proposal, [second.block_id])
+
+      assert details.block_id == second.block_id
+    end
+
+    test "refuses a named block that is still contended" do
+      %{document: document, blocks: [_first, second, _third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, _proposed} = propose(document, second.block_id, insert(:conversation), "## Two, mine")
+      {:ok, _proposed} = propose(document, second.block_id, insert(:conversation), "## Two, hers")
+
+      {:ok, %{proposal: document_proposal}} = propose_appended_section(document)
+
+      assert {:error, :unresolved_contention, details} =
+               commit_document(document, actor, document_proposal, [second.block_id])
+
+      assert details.block_ids == [second.block_id]
+    end
+
+    # The stale check comes first and is unchanged by any of this: a rewrite
+    # compiled against an older revision would revert what landed under it
+    # whether or not blocks were named alongside it.
+    test "still refuses a document proposal compiled against an older revision" do
+      %{document: document, blocks: [first, second, _third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, %{proposal: document_proposal}} = propose_appended_section(document)
+
+      {:ok, _proposed} = propose(document, first.block_id, insert(:conversation), "## One, first")
+      {:ok, landed} = commit(document, actor)
+
+      {:ok, %{proposal: block_proposal}} =
+        propose(document, second.block_id, insert(:conversation), "## Two, mine")
+
+      assert {:error, :stale_proposal, details} =
+               commit_document(document, actor, document_proposal, [second.block_id])
+
+      assert details.current_revision_id == landed.id
+
+      assert latest_revision_id(document) == landed.id
+      assert Repo.reload!(document_proposal).status == :live
+      assert Repo.reload!(block_proposal).status == :live
+    end
+
+    # Adding a chapter says nothing about the paragraphs elsewhere, so it is no
+    # reason to throw away what other topics are still holding.
+    test "leaves live proposals on the blocks it did not settle alone" do
+      %{document: document, blocks: [first, second, _third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, %{proposal: untouched}} =
+        propose(document, first.block_id, insert(:conversation), "## One, later")
+
+      {:ok, %{proposal: adopted}} =
+        propose(document, second.block_id, insert(:conversation), "## Two, tighter")
+
+      {:ok, %{proposal: document_proposal}} = propose_appended_section(document)
+
+      assert {:ok, _revision} =
+               commit_document(document, actor, document_proposal, [second.block_id])
+
+      assert Repo.reload!(adopted).status == :accepted
+      assert Repo.reload!(untouched).status == :live
+    end
+
+    # A rival rewrite is superseded whatever it did: its base has just moved,
+    # so it could not be committed again anyway.
+    test "supersedes the other live document proposals" do
+      %{document: document, blocks: [_first, second, _third]} = three_blocks()
+      actor = insert(:actor)
+
+      {:ok, _proposed} = propose(document, second.block_id, insert(:conversation), "## Two, mine")
+
+      {:ok, %{proposal: rival}} =
+        propose_document(document, insert(:conversation), "## Rival rewrite")
+
+      {:ok, %{proposal: document_proposal}} = propose_appended_section(document)
+
+      assert {:ok, _revision} =
+               commit_document(document, actor, document_proposal, [second.block_id])
+
+      assert Repo.reload!(rival).status == :superseded
+      assert Repo.reload!(rival).decided_by_actor_id == actor.id
+    end
+
+    test "writes nothing at all when a later step of the commit fails" do
+      %{document: document, blocks: [_first, second, _third]} = three_blocks()
+      actor = insert(:actor)
+      foreign = insert(:annotation, document: insert(:document))
+
+      {:ok, %{proposal: block_proposal}} =
+        propose(document, second.block_id, insert(:conversation), "## Two, tighter")
+
+      {:ok, %{proposal: document_proposal}} = propose_appended_section(document)
+
+      revisions_before = length(Documents.list_revisions(document))
+
+      assert {:error, :annotation_not_found, _details} =
+               Documents.commit_proposals(document, %{
+                 actor_id: actor.id,
+                 base_revision_id: latest_revision_id(document),
+                 document_proposal_id: document_proposal.id,
+                 block_ids: [second.block_id],
+                 confirm_annotation_ids: [foreign.id]
+               })
+
+      assert length(Documents.list_revisions(document)) == revisions_before
+      assert Repo.reload!(document_proposal).status == :live
+      assert Repo.reload!(block_proposal).status == :live
+    end
+  end
+
+  defp three_blocks, do: document_with_blocks(["One", "Two", "Three"])
+
+  # A section after Block 3 and nothing else: one `insert_after`, anchored on a
+  # block that survives the whole list.
+  defp propose_appended_section(document) do
+    propose_document(document, insert(:conversation), "## One\n\n## Two\n\n## Three\n\n## Four")
+  end
+
   defp commit_document(document, actor, proposal) do
     Documents.commit_proposals(document, %{
       actor_id: actor.id,
       base_revision_id: latest_revision_id(document),
       document_proposal_id: proposal.id
+    })
+  end
+
+  defp commit_document(document, actor, proposal, block_ids) do
+    Documents.commit_proposals(document, %{
+      actor_id: actor.id,
+      base_revision_id: latest_revision_id(document),
+      document_proposal_id: proposal.id,
+      block_ids: block_ids
     })
   end
 

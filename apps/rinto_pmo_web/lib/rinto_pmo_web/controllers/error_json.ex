@@ -66,8 +66,13 @@ defmodule RintoPMOWeb.ErrorJSON do
     no_change_proposed: {422, "The proposed body is the document that already exists."},
     stale_proposal:
       {409, "The whole-document proposal was written against an older revision. Propose again."},
+    # The document proposal and a selected block proposal both claim the same
+    # block. `details.block_ids` names which, so the screen can ask about those
+    # blocks rather than about the whole commit.
     conflicting_commit:
-      {422, "A whole-document proposal is committed on its own, not with a block selection."},
+      {422,
+       "The whole-document proposal already rewrites or removes blocks the selection " <>
+         "also changes."},
     rebase_conflict:
       {409, "The proposal cannot be carried across what landed under it without a decision."},
     invalid_estimate: {422, "The task estimate is invalid."},

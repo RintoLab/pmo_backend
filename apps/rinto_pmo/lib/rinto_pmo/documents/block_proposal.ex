@@ -52,13 +52,23 @@ defmodule RintoPMO.Documents.BlockProposal do
   Two block proposals on one block compete to be that block's next content, so
   picking one is a decision. A document proposal is not competing for a block;
   it claims the whole sequence, including which blocks exist. "Which of these
-  two" does not typecheck between them, and they cannot be committed together:
-  the document proposal's ops already settle every block, and layering another
-  block's `update` on top would either collide with a block it deleted or
-  silently overrule it.
+  two" does not typecheck between them.
 
-  So a document proposal is committed alone, and doing so marks every other live
-  proposal on that document `superseded` -- their anchors may no longer exist.
+  That is not the same as saying they cannot be committed together, which is
+  what this said for a while. A document proposal's `block_ops` reach every
+  block, but they do not *claim* every block: `update` and `delete` settle a
+  block's text and its existence, while `insert_after` and `move_after` settle
+  where it sits and leave both its text and its `block_id` alone. So the two
+  scopes collide per block rather than wholesale, and a commit may carry a
+  document proposal and a named set of block proposals as long as no block is
+  claimed twice -- see `RintoPMO.Documents.commit_proposals/2`.
+
+  Committing a document proposal marks the other live document proposals
+  `superseded`, their base having just moved, along with the block proposals on
+  the blocks its operations updated or deleted -- their anchor is gone or their
+  text has been overruled. Proposals on blocks it merely moved past are left
+  alone; nothing about them stopped being true.
+
   In the other direction nothing special is needed: committing block proposals
   moves the document on, and a document proposal is only committable while
   `base_revision_id` is still the latest revision. Whichever lands first
