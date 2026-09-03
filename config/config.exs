@@ -145,9 +145,8 @@ config :rinto_pmo, RintoPMO.References.Resolver,
   max_excerpt_chars: 200
 
 config :rinto_pmo, RintoPMO.Attachments,
-  # Where uploaded image bytes live. Override per environment; a release should
-  # point this at a volume that outlives the deploy.
-  root: Path.expand("../apps/rinto_pmo/priv/attachments", __DIR__),
+  # Where uploaded image bytes live is set at runtime from RINTO_STORAGE_ROOT.
+  # It must differ by machine and must never be baked into a release.
   # pi caps an inline image at 4.5MB before handing it to a provider
   # (`utils/image-resize-core.js`). Nothing resizes on the RPC path, so this is
   # the real ceiling rather than a hint.

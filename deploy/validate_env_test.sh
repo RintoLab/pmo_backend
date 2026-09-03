@@ -12,8 +12,10 @@ cat > "${tmp}/valid" <<'EOF'
 DATABASE_URL=ecto://user:pass@db/app
 SECRET_KEY_BASE=with spaces and = signs
 RINTO_TOKEN=token
+RINTO_STORAGE_ROOT=/apps/pmo_attachments
 EOF
-bash "${root}/validate_env.sh" "${tmp}/valid" DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN
+bash "${root}/validate_env.sh" "${tmp}/valid" \
+  DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN RINTO_STORAGE_ROOT
 
 for invalid in leading-space-comment whitespace-only export missing-equals bad-key; do
   case "${invalid}" in
@@ -34,8 +36,10 @@ DATABASE_URL=first
 DATABASE_URL=
 SECRET_KEY_BASE=secret
 RINTO_TOKEN=token
+RINTO_STORAGE_ROOT=/apps/pmo_attachments
 EOF
-if bash "${root}/validate_env.sh" "${tmp}/duplicate-empty" DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN >/dev/null 2>&1; then
+if bash "${root}/validate_env.sh" "${tmp}/duplicate-empty" \
+  DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN RINTO_STORAGE_ROOT >/dev/null 2>&1; then
   echo "accepted a required key whose final value is empty" >&2
   exit 1
 fi

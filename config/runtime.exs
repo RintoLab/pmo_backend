@@ -147,6 +147,23 @@ if ai_overrides != [] do
   config :rinto_pmo, :ai, ai_overrides
 end
 
+# Attachment bytes are machine-local data and must outlive a release deploy,
+# so their location is supplied when the application starts rather than baked
+# into the release. Tests keep using the isolated scratch root from test.exs;
+# a developer's or CI worker's environment must not override it.
+if config_env() != :test do
+  storage_root =
+    "RINTO_STORAGE_ROOT"
+    |> System.get_env("")
+    |> String.trim()
+
+  if storage_root == "" do
+    raise "environment variable RINTO_STORAGE_ROOT is missing or blank"
+  end
+
+  config :rinto_pmo, RintoPMO.Attachments, root: storage_root
+end
+
 # Where the repositories registered against a project are kept on disk, so the
 # agent can read a project's code while discussing its documents.
 #

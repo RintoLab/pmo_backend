@@ -8,7 +8,8 @@ defmodule RintoPMO.Attachments.Storage do
   content addressing the same blob may back several rows, and a delete would
   first have to prove nobody else still points at it.
 
-  Configure the root under `config :rinto_pmo, RintoPMO.Attachments, root: ...`.
+  The root is loaded at startup from `RINTO_STORAGE_ROOT` by
+  `config/runtime.exs`.
   """
 
   @doc """

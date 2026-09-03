@@ -55,7 +55,8 @@ test -s env || { echo "the environment file is empty; refusing" >&2; exit 1; }
 # values. Blank means truly empty, comments start with # in column one, and
 # every other line is an exact KEY=value assignment.
 say "checking the environment"
-bash "${staging}/validate_env.sh" env DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN
+bash "${staging}/validate_env.sh" env \
+  DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN RINTO_STORAGE_ROOT
 
 # Group-readable by `deploy`, which needs these to run the migration. That gives
 # away nothing: the service runs as `deploy`, so the same values are in its own

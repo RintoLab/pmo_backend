@@ -46,7 +46,8 @@ test -r "${staging}/validate_env.sh" || {
   echo "the environment validator did not arrive" >&2
   exit 1
 }
-bash "${staging}/validate_env.sh" "${env_file}" DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN
+bash "${staging}/validate_env.sh" "${env_file}" \
+  DATABASE_URL SECRET_KEY_BASE RINTO_TOKEN RINTO_STORAGE_ROOT
 
 # Export exactly the grammar accepted by validate_env.sh. Quoting the whole
 # assignment preserves spaces and additional equals signs in values.
