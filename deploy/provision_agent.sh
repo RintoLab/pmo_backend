@@ -110,14 +110,17 @@ test "${installed}" = "rinto-pmo ${cli_version}" || {
   exit 1
 }
 
-# `--force` rather than plain install: the skill is baked into the binary with
-# `include_str!`, so replacing the binary is exactly when the copy on disk goes
-# stale. Without it every deploy after the first would refuse on differing
-# content, and the machine would sit on a skill describing commands the CLI no
-# longer has -- the drift `include_str!` exists to prevent, arriving late.
-say "installing the agent skills"
+# Automatic server provisioning is Pi-only. Codex installation is an explicit
+# user action, so deployment selects Pi even though interactive installs default
+# to both agents. `--force` rather than plain install: the skill is baked into
+# the binary with `include_str!`, so replacing the binary is exactly when the
+# copy on disk goes stale. Without it every deploy after the first would refuse
+# on differing content, and the machine would sit on a skill describing commands
+# the CLI no longer has -- the drift `include_str!` exists to prevent, arriving
+# late.
+say "installing the Pi skills"
 for skill in ${skills}; do
-  "${cli}" skill install "${skill}" --force
+  "${cli}" skill install "${skill}" --agent pi --force
 done
 
 # Global context, loaded by pi for every process on this machine regardless of

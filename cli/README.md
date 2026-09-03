@@ -4,31 +4,26 @@ The CLI is designed for local coding agents that execute work from Rinto.
 
 ## Install
 
-Published binaries are available for Linux amd64 and macOS Apple Silicon. The
-package assets include the platform in their filename, but this command downloads
-the selected asset to a temporary file and atomically installs it as the stable
-command `~/.local/bin/rinto-pmo`:
+Published binaries are available for Linux amd64 and macOS Apple Silicon. Run
+the rolling channel's installer directly:
 
 ```sh
-CLI_VERSION=0.2.3 # keep this aligned with cli/VERSION
-case "$(uname -s)/$(uname -m)" in
-  Linux/x86_64) asset=rinto-pmo-linux-amd64 ;;
-  Darwin/arm64) asset=rinto-pmo-darwin-arm64 ;;
-  *) echo "unsupported platform: $(uname -s)/$(uname -m)" >&2; exit 1 ;;
-esac
-mkdir -p "$HOME/.local/bin"
-tmp="$HOME/.local/bin/.rinto-pmo.install.$$"
-trap 'rm -f "$tmp"' EXIT
-curl -fsSL "https://gitea.kenton.wang/api/packages/Rinto/generic/rinto-pmo/$CLI_VERSION/$asset" -o "$tmp"
-chmod 0755 "$tmp"
-mv -f "$tmp" "$HOME/.local/bin/rinto-pmo"
-trap - EXIT
-"$HOME/.local/bin/rinto-pmo" --version
+curl -fsSL "https://gitea.kenton.wang/api/packages/Rinto/generic/rinto-pmo/latest/install.sh" | sh
 ```
 
-Add `$HOME/.local/bin` to `PATH` if it is not already there. For example, add
-`export PATH="$HOME/.local/bin:$PATH"` to your shell profile, then verify with
-`rinto-pmo --version`.
+The script detects the operating system and architecture, downloads the matching
+asset, verifies it against `SHA256SUMS`, and atomically installs it under the
+stable name `~/.local/bin/rinto-pmo`. It never leaves the platform suffix on the
+installed command. If `$HOME/.local/bin` is not on `PATH`, the script prints the
+exact `export` to add to the shell profile rather than modifying it silently.
+
+Set `RINTO_INSTALL_DIR` to choose another destination, or `RINTO_VERSION` to
+install an immutable release instead of `latest`:
+
+```sh
+curl -fsSL "https://gitea.kenton.wang/api/packages/Rinto/generic/rinto-pmo/latest/install.sh" \
+  | RINTO_VERSION=0.2.4 sh
+```
 
 ## Configure
 
@@ -141,15 +136,22 @@ this either -- it finds text by meaning, not the ones that wrote this document's
 address down. There is no outbound counterpart, deliberately: what a document
 points at is in its own text, which `doc show` already prints.
 
-**A skill's version is this binary's version.** `skill list` says which version
-it carries, and for anything installed, which version wrote the copy on disk and
-whether that copy is still current -- without writing anything. Before, the only
-way to find out was `skill sync`, which writes. Nothing declares a version: the
-skills are compiled into the binary and describe its own commands, so a
-`version:` in each `SKILL.md` would be a second number to keep in step and the
-first edit that forgot to bump it would make it wrong. "written by 0.1.0 --
-current" is a real state and means the text did not change between those
-releases; nobody maintained a number to say so.
+**Skills install for Pi and Codex, and use this binary's version.** `skill
+install <name>` writes the named skill to both Pi (`~/.pi/agent/skills`) and
+Codex (`~/.agents/skills`) by default. Pass `--agent pi` or `--agent codex` to
+select one; the option can be repeated or comma-separated. `--dir` installs one
+custom copy and cannot be combined with `--agent`. `skill sync` updates every
+recorded copy, including multiple copies of the same skill, but never adds an
+agent destination that was not installed.
+
+`skill list` says which version the binary carries, and for every installed
+copy, which version wrote it and whether it is still current -- without writing
+anything. Before, the only way to find out was `skill sync`, which writes.
+Nothing declares a version: the skills are compiled into the binary and
+describe its own commands, so a `version:` in each `SKILL.md` would be a second
+number to keep in step and the first edit that forgot to bump it would make it
+wrong. "written by 0.1.0 -- current" is a real state and means the text did not
+change between those releases; nobody maintained a number to say so.
 
 **Committing and deciding are not here, on purpose.** An agent proposes; a
 person commits the proposal, settles arguments between competing ones, and
@@ -163,19 +165,19 @@ rinto-pmo update --check
 rinto-pmo update
 ```
 
-The updater reads `manifest.json` from the `latest` pointer version of the
-`Rinto/rinto-pmo` generic package at `https://gitea.kenton.wang`, then downloads
-the current platform asset from the concrete version that manifest declares,
-verifies its size and SHA-256,
-and atomically replaces the running executable at its existing path. Discovery
-deliberately avoids the `/api/v1/packages` versions API: that one requires a
-signed-in Gitea user and answers `401` to the CLI, while package *contents* are
-anonymously readable. The downloaded
-asset name is never used as the installed filename, so an installation named
-`rinto-pmo` remains `rinto-pmo` after every update. If a forced publication replaces
-the same semantic version, the updater compares its own executable to the final
-manifest and offers a same-version refresh when the bytes differ. Automatic
-updates are published for Linux amd64 and macOS Apple Silicon only.
+The updater reads `manifest.json` from the complete, rolling `latest` channel of
+the `Rinto/rinto-pmo` generic package at `https://gitea.kenton.wang`, then
+downloads the current platform asset from the concrete version that manifest
+declares, verifies its size and SHA-256, and atomically replaces the running
+executable at its existing path. Discovery deliberately avoids the
+`/api/v1/packages` versions API: that one requires a signed-in Gitea user and
+answers `401` to the CLI, while package *contents* are anonymously readable.
+The downloaded asset name is never used as the installed filename, so an
+installation named `rinto-pmo` remains `rinto-pmo` after every update. The
+updater still recognizes a same-version byte change for compatibility with
+older publications, although the current release workflow never mutates a
+semantic version. Automatic updates are published for Linux amd64 and macOS
+Apple Silicon only.
 
 ## Publish a release
 
@@ -186,8 +188,13 @@ canonical stable `x.y.z` without leading zeroes, and checks that
 - A push to `main` publishes only when `cli/VERSION` differs from the
   `CLI_VERSION` state in r-nacos.
 - Every tag starts the workflow. It skips only if both the version and commit
-  already match `CLI_VERSION` and `CLI_COMMIT`; otherwise it force-publishes.
-- A manual dispatch always force-publishes.
+  already match `CLI_VERSION` and `CLI_COMMIT`; otherwise it runs publication.
+- A manual dispatch always runs publication, which can repair `latest` and
+  r-nacos state from an existing matching release.
+
+Semantic versions are immutable. Neither a tag nor a manual dispatch deletes an
+existing version: matching CLI sources are reused (even from a later
+server-only commit), and changed CLI sources must bump `cli/VERSION`.
 
 After publication, the workflow writes `CLI_COMMIT` and then `CLI_VERSION`;
 VERSION is the main-branch completion marker, so a partial state write retries.
@@ -196,14 +203,20 @@ Tag names do not supply or validate the CLI version.
 `.gitea/workflows/release.yml` builds locked optimized binaries on the `amd64`
 and `darwin-arm64` runners, executes each native binary and checks its
 version/architecture, stages it under a run-and-attempt-specific identity, and
-publishes binaries, `SHA256SUMS`, and `manifest.json` (last) under the version
-from `cli/VERSION`. The published package is linked to this repository, so it is
-listed under the repository's Packages tab rather than only the org's.
+publishes binaries, `SHA256SUMS`, `install.sh`, and `manifest.json` (last) under
+the version from `cli/VERSION`. The published package is linked to this
+repository, so it is listed under the repository's Packages tab rather than
+only the org's.
 
-It then republishes that same `manifest.json` under the mutable `latest` pointer
-version, which is what `rinto-pmo update` reads. The pointer is written after the
-versioned assets, so it never advertises a partial publication, and the pointer
-name is kept in step with `POINTER_VERSION` in `cli/src/update.rs`.
+Gitea's Generic Package Registry has no mutable alias or channel metadata, so a
+publicly readable latest channel must itself be a real package version. The
+workflow therefore republishes the complete file set—not only the manifest—at
+`latest`. Seeing `latest` and the immutable semantic version with the same
+publication time is intentional: one is the rolling install/update channel and
+the other is the historical release. `manifest.json` is uploaded last, so the
+updater never observes a finalized channel whose binaries or checksums are
+missing. The channel name is kept in step with `CHANNEL_VERSION` in
+`cli/src/update.rs`.
 
 The Server release lives in the same workflow and waits on the CLI, because the
 deploy installs the CLI onto the server's own host. A push that leaves

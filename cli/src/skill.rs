@@ -16,14 +16,39 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 use crate::update::sha256_hex;
 
-/// Where pi discovers user-level skills.
-const DEFAULT_DIR: &str = "~/.pi/agent/skills";
+/// Agents that can discover the installed skills, and their user-level roots.
+///
+/// Codex's user scope deliberately lives under `.agents`, not `.codex`: that
+/// is the Agent Skills location Codex scans for every repository.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum SkillAgent {
+    Pi,
+    Codex,
+}
+
+impl SkillAgent {
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Pi => "~/.pi/agent/skills",
+            Self::Codex => "~/.agents/skills",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Pi => "pi",
+            Self::Codex => "codex",
+        }
+    }
+}
+
+const SKILL_AGENTS: &[SkillAgent] = &[SkillAgent::Pi, SkillAgent::Codex];
 
 /// What was installed, and what it looked like when this CLI wrote it.
 ///
@@ -83,9 +108,9 @@ pub const SKILLS: &[Skill] = &[
 pub enum SkillCommand {
     /// Show the skills this binary carries
     List,
-    /// Write a skill where an agent will discover it
+    /// Write a skill where Pi and Codex will discover it
     Install(InstallArgs),
-    /// Re-install every skill already installed on this machine
+    /// Re-install every skill copy already installed on this machine
     Sync(SyncArgs),
 }
 
@@ -94,8 +119,12 @@ pub struct InstallArgs {
     /// Skill to install; see `rinto-pmo skill list`
     name: String,
 
-    /// Where to install; defaults to pi's user skill directory
-    #[arg(long, value_name = "DIR")]
+    /// Agent to install for; repeat or comma-separate, and omit for both
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "AGENT")]
+    agent: Vec<SkillAgent>,
+
+    /// Install once into a custom skills directory instead of agent defaults
+    #[arg(long, value_name = "DIR", conflicts_with = "agent")]
     dir: Option<PathBuf>,
 
     /// Replace an existing file whose content differs
@@ -130,25 +159,39 @@ fn list() -> Result<()> {
     println!("skills carried by rinto-pmo {}:\n", version());
 
     for skill in SKILLS {
-        let where_installed = match installed.find(skill.name) {
-            Some(record) => format!(
-                "\n  installed: {}\n  {} -- {}",
-                record.path.display(),
+        let mut copies = Vec::new();
+
+        for record in installed.records_for(skill.name) {
+            copies.push(format!(
+                "  {}\n    {} -- {}",
+                installed_at(skill.name, &record.path),
                 written_by(record),
                 status_of(skill, record)
-            ),
-            // No record is not the same as not installed. A file sitting where
-            // an agent reads it is being read on every run, whether or not this
-            // CLI remembers writing it.
-            None => match unrecorded_at_default(skill) {
-                Some((path, existing)) => format!(
-                    "\n  installed: {}\n  not in this CLI's record -- {}",
-                    path.display(),
-                    unrecorded_status(skill, &existing)
-                ),
-                None => String::new(),
-            },
+            ));
+        }
+
+        // No record is not the same as not installed. A file sitting where an
+        // agent reads it is being read on every run, whether or not this CLI
+        // remembers writing it. Check both agents even when the other one's
+        // copy is recorded.
+        for (agent, path, existing) in unrecorded_at_defaults(skill) {
+            if installed.find_at(skill.name, &path).is_some() {
+                continue;
+            }
+            copies.push(format!(
+                "  installed for {}: {}\n    not in this CLI's record -- {}",
+                agent.name(),
+                path.display(),
+                unrecorded_status(skill, &existing)
+            ));
+        }
+
+        let where_installed = if copies.is_empty() {
+            String::new()
+        } else {
+            format!("\n{}", copies.join("\n"))
         };
+
         println!(
             "{}\n  {}{where_installed}\n",
             skill.name,
@@ -156,8 +199,16 @@ fn list() -> Result<()> {
         );
     }
 
-    println!("install with: rinto-pmo skill install <name>");
+    println!("install for Pi and Codex with: rinto-pmo skill install <name>");
+    println!("install for one with: rinto-pmo skill install <name> --agent <pi|codex>");
     Ok(())
+}
+
+fn installed_at(name: &str, path: &Path) -> String {
+    match default_agent_for_path(name, path) {
+        Some(agent) => format!("installed for {}: {}", agent.name(), path.display()),
+        None => format!("installed: {}", path.display()),
+    }
 }
 
 fn written_by(record: &Record) -> String {
@@ -186,25 +237,49 @@ fn status_of(skill: &Skill, record: &Record) -> String {
             // maintain a number to say so.
             Action::Current => "current".to_string(),
             Action::Replace => "out of date; `skill sync` will replace it".to_string(),
-            Action::Edited => {
-                "edited here; `skill sync` leaves it alone (`skill install --force` takes ours)"
-                    .to_string()
-            }
+            Action::Edited => format!(
+                "edited here; `skill sync` leaves it alone (`{}` takes ours)",
+                force_install_command(skill.name, &record.path)
+            ),
         },
     }
 }
 
-/// Where `install` would put `skill` with no `--dir`, and what is there.
-///
-/// Only the default directory, because a record is the only thing that knows
-/// about a `--dir` install -- with no record there is nowhere else to look.
-fn unrecorded_at_default(skill: &Skill) -> Option<(PathBuf, String)> {
-    let path = expand_home(DEFAULT_DIR)
-        .ok()?
-        .join(skill.name)
-        .join("SKILL.md");
-    let existing = std::fs::read_to_string(&path).ok()?;
-    Some((path, existing))
+/// Where `install` would put `skill` for each supported agent, and what is
+/// there. A record is the only way to discover a custom `--dir` installation.
+fn unrecorded_at_defaults(skill: &Skill) -> Vec<(SkillAgent, PathBuf, String)> {
+    SKILL_AGENTS
+        .iter()
+        .filter_map(|agent| {
+            let path = default_skill_path(skill.name, *agent).ok()?;
+            let existing = std::fs::read_to_string(&path).ok()?;
+            Some((*agent, path, existing))
+        })
+        .collect()
+}
+
+fn default_skill_path(name: &str, agent: SkillAgent) -> Result<PathBuf> {
+    Ok(expand_home(agent.directory())?.join(name).join("SKILL.md"))
+}
+
+fn default_agent_for_path(name: &str, path: &Path) -> Option<SkillAgent> {
+    SKILL_AGENTS
+        .iter()
+        .copied()
+        .find(|agent| default_skill_path(name, *agent).ok().as_deref() == Some(path))
+}
+
+fn force_install_command(name: &str, path: &Path) -> String {
+    match default_agent_for_path(name, path) {
+        Some(agent) => format!(
+            "rinto-pmo skill install {name} --agent {} --force",
+            agent.name()
+        ),
+        // `--dir` can contain whitespace and shell metacharacters, so do not
+        // print a command that pretends it can quote an arbitrary recorded
+        // path safely. Sync already knows the exact path.
+        None => "rinto-pmo skill sync --force".to_string(),
+    }
 }
 
 /// What can honestly be said about a file this CLI has no hash for.
@@ -235,49 +310,87 @@ fn install(args: InstallArgs) -> Result<()> {
             ))
         })?;
 
-    let directory = match args.dir {
-        Some(dir) => dir,
-        None => expand_home(DEFAULT_DIR)?,
+    let directories = install_directories(&args.agent, args.dir)?;
+    let mut destinations = Vec::new();
+
+    // Check every destination before writing any of them. The default install
+    // has two outputs now; discovering a tuned Codex copy only after replacing
+    // Pi's would turn one command into a surprising partial install.
+    for root in directories {
+        let directory = root.join(skill.name);
+        let path = directory.join("SKILL.md");
+        let current = match std::fs::read_to_string(&path) {
+            Ok(existing) if existing == skill.body => true,
+            Ok(_) if !args.force => {
+                return Err(Error::Input(format!(
+                    "{} exists and differs; pass --force to replace it",
+                    path.display()
+                )))
+            }
+            Ok(_) => false,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+            Err(err) => {
+                return Err(Error::Io(format!(
+                    "could not read {}: {err}",
+                    path.display()
+                )))
+            }
+        };
+        destinations.push((directory, path, current));
     }
-    .join(skill.name);
 
-    let path = directory.join("SKILL.md");
+    let mut state = State::load()?;
 
-    // An installed skill is editable, and someone may have tuned it. Replacing
-    // that silently would lose work with no trace, so a differing file needs
-    // --force.
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        if existing == skill.body {
+    for (directory, path, current) in destinations {
+        if current {
             println!("already current: {}", path.display());
-            // Still recorded: an install that found the file already right is
-            // how a machine whose state file was lost gets one back.
-            return remember(skill, &path);
-        }
-        if !args.force {
-            return Err(Error::Input(format!(
-                "{} exists and differs; pass --force to replace it",
+        } else {
+            write_skill(skill, &directory, &path)?;
+            println!(
+                "installed {} {} to {}",
+                skill.name,
+                version(),
                 path.display()
-            )));
+            );
         }
+
+        // Finding an already-current file is also an install: it adopts an
+        // unrecorded copy after a lost state file. A skill can have one record
+        // per destination, so Pi and Codex remain independently syncable.
+        state.record(skill, &path);
     }
 
-    write_skill(skill, &directory, &path)?;
-
-    println!(
-        "installed {} {} to {}",
-        skill.name,
-        version(),
-        path.display()
-    );
-    remember(skill, &path)
+    state.save()
 }
 
-/// Re-apply this binary's skills wherever a previous install put them.
+fn install_directories(agents: &[SkillAgent], custom: Option<PathBuf>) -> Result<Vec<PathBuf>> {
+    if let Some(directory) = custom {
+        return Ok(vec![directory]);
+    }
+
+    let selected = if agents.is_empty() {
+        SKILL_AGENTS
+    } else {
+        agents
+    };
+    let mut directories = Vec::new();
+
+    for agent in selected {
+        let directory = expand_home(agent.directory())?;
+        if !directories.contains(&directory) {
+            directories.push(directory);
+        }
+    }
+
+    Ok(directories)
+}
+
+/// Re-apply this binary's skills wherever previous installs put them.
 ///
-/// Runs after a self-update, and by hand. Nothing is installed that was not
-/// installed before -- the record is the whole input for *writing*, so `skill
-/// sync` on a machine that never ran `skill install` writes nothing, which
-/// keeps the "install names one skill, never all of them" split intact.
+/// Runs after a self-update, and by hand. Nothing is installed at an agent
+/// destination that was not installed before -- every recorded Pi, Codex, or
+/// custom copy is an independent input for writing, so `skill sync` updates all
+/// installed copies without turning a Pi-only install into a Pi-and-Codex one.
 ///
 /// Reporting is wider than writing, and has to be. A skill file with no record
 /// -- written before records were kept, or orphaned by a lost `skills.json` --
@@ -343,9 +456,9 @@ fn sync(args: SyncArgs) -> Result<()> {
                 Action::Edited => {
                     println!(
                         "edited since install, left alone: {}\n  \
-                         take this binary's copy with: rinto-pmo skill install {} --force",
+                         take this binary's copy with: {}",
                         record.path.display(),
-                        skill.name
+                        force_install_command(skill.name, &record.path)
                     );
                     said_something = true;
                     kept.push(record);
@@ -381,31 +494,32 @@ fn report_unrecorded(state: &mut State) -> Result<bool> {
     let mut said_something = false;
 
     for skill in SKILLS {
-        if state.find(skill.name).is_some() {
-            continue;
-        }
-        let Some((path, existing)) = unrecorded_at_default(skill) else {
-            continue;
-        };
+        for (agent, path, existing) in unrecorded_at_defaults(skill) {
+            if state.find_at(skill.name, &path).is_some() {
+                continue;
+            }
 
-        said_something = true;
+            said_something = true;
 
-        if existing == skill.body {
-            state.record(skill, &path);
-            println!(
-                "adopted into the record, already current: {}",
-                path.display()
-            );
-        } else {
-            println!(
-                "installed but not in this CLI's record: {}\n  \
-                 {}\n  \
-                 an agent reads it on every run; take this binary's copy with:\n    \
-                 rinto-pmo skill install {} --force",
-                path.display(),
-                unrecorded_status(skill, &existing),
-                skill.name
-            );
+            if existing == skill.body {
+                state.record(skill, &path);
+                println!(
+                    "adopted into the record, already current: {}",
+                    path.display()
+                );
+            } else {
+                println!(
+                    "installed but not in this CLI's record: {}\n  \
+                     {}\n  \
+                     {} reads it on every run; take this binary's copy with:\n    \
+                     rinto-pmo skill install {} --agent {} --force",
+                    path.display(),
+                    unrecorded_status(skill, &existing),
+                    agent.name(),
+                    skill.name,
+                    agent.name()
+                );
+            }
         }
     }
 
@@ -438,12 +552,6 @@ fn write_skill(skill: &Skill, directory: &Path, path: &Path) -> Result<()> {
 
     std::fs::write(path, skill.body)
         .map_err(|err| Error::Io(format!("could not write {}: {err}", path.display())))
-}
-
-fn remember(skill: &Skill, path: &Path) -> Result<()> {
-    let mut state = State::load()?;
-    state.record(skill, path);
-    state.save()
 }
 
 /// What this CLI installed, and what it wrote.
@@ -532,14 +640,24 @@ impl State {
             .unwrap_or_default()
     }
 
-    fn find(&self, name: &str) -> Option<&Record> {
-        self.records.iter().find(|record| record.name == name)
+    fn records_for<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Record> {
+        self.records
+            .iter()
+            .filter(move |record| record.name == name)
     }
 
-    /// One record per skill: installing the same skill somewhere else moves it
-    /// rather than leaving a stale path that sync would keep writing to.
+    fn find_at(&self, name: &str, path: &Path) -> Option<&Record> {
+        self.records
+            .iter()
+            .find(|record| record.name == name && record.path == path)
+    }
+
+    /// One record per installed copy. The same skill can be installed for Pi,
+    /// Codex, and custom directories at once; re-installing one copy refreshes
+    /// only that exact destination.
     fn record(&mut self, skill: &Skill, path: &Path) {
-        self.records.retain(|record| record.name != skill.name);
+        self.records
+            .retain(|record| record.name != skill.name || record.path != path);
         self.records.push(Record {
             name: skill.name.to_string(),
             path: path.to_path_buf(),
@@ -617,12 +735,19 @@ fn description_of(body: &str) -> &str {
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use clap::Parser;
     use serde_json::json;
 
     use super::{
-        decide, description_of, sha256_hex, status_of, unrecorded_status, version, written_by,
-        Action, Record, Skill, State, SKILLS,
+        decide, description_of, install_directories, sha256_hex, status_of, unrecorded_status,
+        version, written_by, Action, Record, Skill, SkillAgent, SkillCommand, State, SKILLS,
     };
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(subcommand)]
+        command: SkillCommand,
+    }
 
     #[test]
     fn every_skill_carries_content() {
@@ -635,9 +760,9 @@ mod tests {
         }
     }
 
-    /// pi keys a skill by its frontmatter `name`, while the install path comes
-    /// from the registry, so a mismatch would install to a directory the agent
-    /// then reports under a different name.
+    /// Pi and Codex key a skill by its frontmatter `name`, while the install
+    /// path comes from the registry, so a mismatch would install to a directory
+    /// the agent then reports under a different name.
     #[test]
     fn frontmatter_name_matches_the_registry() {
         for skill in SKILLS {
@@ -649,6 +774,55 @@ mod tests {
 
             assert_eq!(declared, Some(skill.name));
         }
+    }
+
+    #[test]
+    fn install_defaults_to_both_agents_and_accepts_a_selection() {
+        let parsed = TestCli::try_parse_from(["test", "install", "x"]).unwrap();
+        let SkillCommand::Install(args) = parsed.command else {
+            panic!("install command was not parsed")
+        };
+        assert!(args.agent.is_empty());
+
+        let parsed =
+            TestCli::try_parse_from(["test", "install", "x", "--agent", "codex,pi"]).unwrap();
+        let SkillCommand::Install(args) = parsed.command else {
+            panic!("install command was not parsed")
+        };
+        assert_eq!(args.agent, vec![SkillAgent::Codex, SkillAgent::Pi]);
+
+        assert!(TestCli::try_parse_from([
+            "test",
+            "install",
+            "x",
+            "--agent",
+            "pi",
+            "--dir",
+            "/tmp/skills",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn default_install_directories_cover_pi_and_codex() {
+        let directories = install_directories(&[], None).unwrap();
+        assert_eq!(directories.len(), 2);
+        assert!(directories[0].ends_with(".pi/agent/skills"));
+        assert!(directories[1].ends_with(".agents/skills"));
+
+        let codex = install_directories(&[SkillAgent::Codex], None).unwrap();
+        assert_eq!(codex.len(), 1);
+        assert!(codex[0].ends_with(".agents/skills"));
+
+        let custom = install_directories(
+            &[],
+            Some(PathBuf::from("/tmp/rinto-custom-skill-directory")),
+        )
+        .unwrap();
+        assert_eq!(
+            custom,
+            vec![PathBuf::from("/tmp/rinto-custom-skill-directory")]
+        );
     }
 
     /// The whole reason the record carries a hash: an update must be able to
@@ -681,25 +855,29 @@ mod tests {
     }
 
     #[test]
-    fn the_record_round_trips_and_keeps_one_path_per_skill() {
+    fn the_record_round_trips_and_keeps_one_row_per_installed_copy() {
         let skill = Skill {
             name: "rinto-docs-reference",
             body: "---\nname: rinto-docs-reference\n---\nbody",
         };
+        let one = Path::new("/one/SKILL.md");
+        let two = Path::new("/two/SKILL.md");
         let mut state = State::default();
-        state.record(&skill, Path::new("/one/SKILL.md"));
-        state.record(&skill, Path::new("/two/SKILL.md"));
+        state.record(&skill, one);
+        state.record(&skill, two);
+        state.record(&skill, one);
 
-        assert_eq!(state.records.len(), 1);
-        assert_eq!(
-            state.find("rinto-docs-reference").unwrap().path,
-            PathBuf::from("/two/SKILL.md")
-        );
+        assert_eq!(state.records.len(), 2);
+        assert!(state.find_at("rinto-docs-reference", one).is_some());
+        assert!(state.find_at("rinto-docs-reference", two).is_some());
 
         let restored = State::parse(&state.as_json());
-        assert_eq!(restored.len(), 1);
-        assert_eq!(restored[0].sha256, sha256_hex(skill.body.as_bytes()));
-        assert_eq!(restored[0].path, PathBuf::from("/two/SKILL.md"));
+        assert_eq!(restored.len(), 2);
+        assert!(restored
+            .iter()
+            .all(|record| record.sha256 == sha256_hex(skill.body.as_bytes())));
+        assert!(restored.iter().any(|record| record.path == one));
+        assert!(restored.iter().any(|record| record.path == two));
     }
 
     /// A `sync` immediately after one that replaced a file must be a no-op, so
@@ -743,7 +921,11 @@ mod tests {
         state.record(&skill, Path::new("/x/SKILL.md"));
 
         assert_eq!(
-            state.find("x").unwrap().version.as_deref(),
+            state
+                .find_at("x", Path::new("/x/SKILL.md"))
+                .unwrap()
+                .version
+                .as_deref(),
             Some(env!("CARGO_PKG_VERSION"))
         );
     }

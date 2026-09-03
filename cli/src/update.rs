@@ -13,10 +13,11 @@ const PACKAGE_NAME: &str = "rinto-pmo";
 const USER_AGENT: &str = "rinto-pmo-cli-updater";
 const MAX_BINARY_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_JSON_BYTES: u64 = 1024 * 1024;
-// The package-versions API requires a signed-in Gitea user, so the release
-// republishes the finalized manifest under this fixed pointer version, which is
-// readable through the anonymous package-content route the download already uses.
-const POINTER_VERSION: &str = "latest";
+// The package-versions API requires a signed-in Gitea user. Gitea's Generic
+// Registry has no alias mechanism, so the release republishes a complete,
+// mutable install/update channel under this version. Its manifest remains
+// anonymously readable through the same package-content route as the binaries.
+const CHANNEL_VERSION: &str = "latest";
 
 #[derive(Args)]
 pub struct UpdateArgs {
@@ -111,7 +112,7 @@ fn package_file_url(version: &str, name: &str) -> String {
 }
 
 fn latest_manifest() -> Result<Value> {
-    let url = package_file_url(POINTER_VERSION, "manifest.json");
+    let url = package_file_url(CHANNEL_VERSION, "manifest.json");
     get_json_optional(&url)?
         .ok_or_else(|| Error::Network(format!("Gitea has no finalized CLI package at {url}")))
 }
@@ -123,7 +124,7 @@ fn manifest_version(manifest: &Value) -> Result<Version> {
         .and_then(Version::parse)
         .ok_or_else(|| {
             Error::Network(format!(
-                "the {POINTER_VERSION} CLI manifest has an invalid version"
+                "the {CHANNEL_VERSION} CLI manifest has an invalid version"
             ))
         })
 }
@@ -481,7 +482,7 @@ mod tests {
 
     use super::{
         executable_matches_manifest, install_at, manifest_asset, manifest_version,
-        package_file_url, sha256_hex, verify_sha256, ManifestAsset, Version, POINTER_VERSION,
+        package_file_url, sha256_hex, verify_sha256, ManifestAsset, Version, CHANNEL_VERSION,
     };
 
     #[test]
@@ -496,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_released_version_from_the_pointer_manifest() {
+    fn reads_the_released_version_from_the_channel_manifest() {
         assert_eq!(
             manifest_version(&json!({"version": "1.10.0"})).unwrap(),
             Version::parse("1.10.0").unwrap()
@@ -507,9 +508,9 @@ mod tests {
     }
 
     #[test]
-    fn downloads_assets_from_the_concrete_version_not_the_pointer() {
-        let pointer = package_file_url(POINTER_VERSION, "manifest.json");
-        assert!(pointer.ends_with("/generic/rinto-pmo/latest/manifest.json"));
+    fn discovers_through_latest_but_downloads_the_concrete_version() {
+        let channel = package_file_url(CHANNEL_VERSION, "manifest.json");
+        assert!(channel.ends_with("/generic/rinto-pmo/latest/manifest.json"));
         let asset = package_file_url(
             &Version::parse("1.10.0").unwrap().to_string(),
             "rinto-pmo-linux-amd64",

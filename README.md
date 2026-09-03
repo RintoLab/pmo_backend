@@ -11,31 +11,20 @@ The REST API contract is maintained in [`openapi.yaml`](openapi.yaml).
 
 ## Install the CLI
 
-The published CLI currently supports Linux amd64 and macOS Apple Silicon. This
-installs the platform-specific package atomically under the stable command name
-`~/.local/bin/rinto-pmo`:
+The published CLI currently supports Linux amd64 and macOS Apple Silicon. Run
+the installer directly:
 
 ```sh
-CLI_VERSION=0.2.3 # keep this aligned with cli/VERSION
-case "$(uname -s)/$(uname -m)" in
-  Linux/x86_64) asset=rinto-pmo-linux-amd64 ;;
-  Darwin/arm64) asset=rinto-pmo-darwin-arm64 ;;
-  *) echo "unsupported platform: $(uname -s)/$(uname -m)" >&2; exit 1 ;;
-esac
-mkdir -p "$HOME/.local/bin"
-tmp="$HOME/.local/bin/.rinto-pmo.install.$$"
-trap 'rm -f "$tmp"' EXIT
-curl -fsSL "https://gitea.kenton.wang/api/packages/Rinto/generic/rinto-pmo/$CLI_VERSION/$asset" -o "$tmp"
-chmod 0755 "$tmp"
-mv -f "$tmp" "$HOME/.local/bin/rinto-pmo"
-trap - EXIT
-"$HOME/.local/bin/rinto-pmo" --version
+curl -fsSL "https://gitea.kenton.wang/api/packages/Rinto/generic/rinto-pmo/latest/install.sh" | sh
 ```
 
-Ensure `$HOME/.local/bin` is on `PATH`. `rinto-pmo update` downloads the right
-platform asset but replaces the executable at its existing path, so the command
-continues to be named `rinto-pmo`. See [`cli/README.md`](cli/README.md) for setup
-and update details.
+It detects the operating system and architecture, verifies the selected asset's
+SHA-256, and atomically installs it as `~/.local/bin/rinto-pmo` without a
+platform suffix. If that directory is not on `PATH`, it prints the exact export
+to add to your shell profile; it does not edit profile files automatically.
+Set `RINTO_INSTALL_DIR` to choose another directory or `RINTO_VERSION` to install
+a specific published version. See [`cli/README.md`](cli/README.md) for setup and
+update details.
 
 Ready to run in production? Please [check our deployment guides](https://phoenix.hexdocs.pm/deployment.html).
 ## Umbrella project
