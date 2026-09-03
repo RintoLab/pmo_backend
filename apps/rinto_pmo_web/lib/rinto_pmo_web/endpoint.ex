@@ -5,11 +5,14 @@ defmodule RintoPMOWeb.Endpoint do
   # this means its contents can be read but not tampered with.
   # Set :encryption_salt if you would also like to encrypt it.
   @session_options [
-    store: :cookie,
-    key: "_rinto_pmo_web_key",
-    signing_salt: "i4g2ltj8",
-    same_site: "Lax"
-  ]
+                     store: :cookie,
+                     key: "_rinto_pmo_web_key",
+                     signing_salt: "i4g2ltj8"
+                   ] ++
+                     if(Mix.env() == :dev,
+                       do: [same_site: "None", secure: true],
+                       else: [same_site: "Lax"]
+                     )
 
   # socket "/live", Phoenix.LiveView.Socket,
   #   websocket: [connect_info: [session: @session_options]],
@@ -32,7 +35,13 @@ defmodule RintoPMOWeb.Endpoint do
     raise_on_missing_only: code_reloading?
 
   if Mix.env() == :dev do
-    plug Tidewave
+    plug Tidewave,
+      allow_remote_access: true,
+      allowed_origins:
+        System.get_env("TIDEWAVE_ALLOWED_ORIGINS", "")
+        |> String.split(",", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
   end
 
   # Code reloading can be explicitly enabled under the
