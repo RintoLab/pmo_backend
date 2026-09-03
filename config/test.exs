@@ -6,9 +6,9 @@ import Config
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :rinto_pmo, RintoPMO.Repo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
+  username: System.fetch_env!("DB_USER"),
+  password: System.fetch_env!("DB_PASSWORD"),
+  hostname: System.fetch_env!("DB_HOST"),
   database: "rinto_pmo_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
