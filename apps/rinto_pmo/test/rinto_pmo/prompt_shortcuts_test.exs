@@ -161,12 +161,14 @@ defmodule RintoPMO.PromptShortcutsTest do
     end
 
     test "no preset asks for an annotation write the CLI cannot do yet" do
-      # `doc create` exists, so "拆成任务" is allowed to call it. Creating or
-      # answering an annotation does not, and a preset that asked for one would
-      # buy improvisation rather than a refusal. Widen this when step 3 of
-      # docs/implementation-plan-prompt-shortcuts.md lands.
-      for preset <- Presets.all(), command <- ["doc annotate", "annotation reply"] do
-        refute preset.prompt =~ command, "#{preset.key} asks for a write that cannot happen"
+      # `doc create` and `doc annotation-reply` both exist now. *Creating* an
+      # annotation still does not, and a preset that asked for one would buy
+      # improvisation rather than a refusal. Drop this when the review shortcut
+      # gets the command it needs -- step 5 of
+      # docs/implementation-plan-prompt-shortcuts.md.
+      for preset <- Presets.all() do
+        refute preset.prompt =~ "doc annotate",
+               "#{preset.key} asks for a write that cannot happen"
       end
     end
 

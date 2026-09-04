@@ -7808,9 +7808,25 @@ components:
           type: string
           format: uuid
           description: >
-            Ignored, the same way `AnnotationCreateInput.actor_id` is: the
-            reply is credited to the token's actor, and the AI's replies are
-            written by `annotation_actor` rather than over HTTP.
+            Ignored, the same way `AnnotationCreateInput.actor_id` is. Who a
+            reply is by follows from the token and from `conversation_id`, and
+            a body naming an author is what a model would need in order to sign
+            somebody else's name to its own opinion.
+        conversation_id:
+          type: string
+          format: uuid
+          description: >
+            Present, the reply is a model's and is signed by the `default`
+            actor -- the stand-in for "a model wrote this". Absent, it is the
+            caller's own and is credited to the token's actor.
+
+
+            The topic is not looked up. Nothing here records it, and signing
+            does not depend on which assistant the topic is configured with, so
+            this field says only "a model is writing this".
+
+
+            `422 default_assistant_missing` when setup never created that actor.
         content:
           type: string
           minLength: 1

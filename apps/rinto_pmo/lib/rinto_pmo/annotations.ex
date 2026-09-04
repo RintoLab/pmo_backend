@@ -334,10 +334,26 @@ defmodule RintoPMO.Annotations do
 
   @doc """
   Appends a reply with the next monotonic position.
+
+  ## Who it is by
+
+  `conversation_id` decides. Sent, the reply is a model's and is signed by the
+  stand-in AI; absent, it is the caller's own and keeps the `actor_id` the
+  token put there. The same fork `RintoPMO.Documents.create_document/1` makes,
+  and for the same reason: what a signature answers is model-or-person, and
+  only the caller knows which it is about to be.
+
+  **The topic is not looked up.** Creating a document reads it, because a
+  document *records* which topic produced it and a wrong id would be written
+  down. Nothing here is stored -- since signing stopped depending on which
+  assistant a topic was configured with, `conversation_id` says only "a model
+  is writing this", and checking that the topic exists would not make that
+  claim any truer.
   """
   @impl true
   def create_reply(%Annotation{} = annotation, attrs) do
-    with :ok <- Guard.check(content_of(attrs)) do
+    with :ok <- Guard.check(content_of(attrs)),
+         {:ok, attrs} <- put_reply_author(attrs) do
       Repo.transact(fn repo ->
         locked =
           Annotation
@@ -352,6 +368,42 @@ defmodule RintoPMO.Annotations do
         |> repo.insert()
         |> index_reply(repo)
       end)
+    end
+  end
+
+  defp put_reply_author(attrs) do
+    case attr(attrs, :conversation_id, nil) do
+      conversation_id when is_binary(conversation_id) ->
+        case Utils.module(:actors).get_default_assistant() do
+          # Flat, unlike `RintoPMO.Documents`: that context wraps and unwraps on
+          # the way out, and this one hands the fallback controller its errors
+          # as they are.
+          nil -> {:error, :default_assistant_missing, %{conversation_id: conversation_id}}
+          actor -> {:ok, put_attr(attrs, :actor_id, actor.id)}
+        end
+
+      _absent ->
+        {:ok, attrs}
+    end
+  end
+
+  # Both key shapes, because a controller hands this string keys and everything
+  # inside hands it atoms.
+  defp attr(attrs, key, default) do
+    cond do
+      Map.has_key?(attrs, key) -> Map.get(attrs, key)
+      Map.has_key?(attrs, Atom.to_string(key)) -> Map.get(attrs, Atom.to_string(key))
+      true -> default
+    end
+  end
+
+  # Written back in whichever style the map is already in. Mixing them is not a
+  # near miss -- `Ecto.Changeset.cast/3` refuses a map carrying both.
+  defp put_attr(attrs, key, value) do
+    if Enum.any?(Map.keys(attrs), &is_atom/1) do
+      Map.put(attrs, key, value)
+    else
+      Map.put(attrs, Atom.to_string(key), value)
     end
   end
 

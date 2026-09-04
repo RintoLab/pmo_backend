@@ -23,6 +23,8 @@ pub enum DocCommand {
     Annotations(AnnotationsArgs),
     /// Show one note and the conclusions written under it
     Annotation(AnnotationArgs),
+    /// Answer one note, under it, where the discussion of it already is
+    AnnotationReply(AnnotationReplyArgs),
     /// List what elsewhere in the system points at this document
     Backlinks(BacklinksArgs),
     /// Show where two topics want the same text to say different things
@@ -160,6 +162,29 @@ pub struct AnnotationArgs {
     annotation_id: String,
 }
 
+/// An answer written under one note.
+///
+/// Inside a topic this is how a model answers: the server signs it as the AI
+/// because the request carries a topic, which is the whole of what that field
+/// says. Run by a person outside a topic it is their own reply, signed with
+/// their name.
+///
+/// The text comes from a file rather than an argument for the reason document
+/// bodies do: a reply is prose, prose contains newlines and quotes, and a
+/// shell is a bad place to keep either intact.
+#[derive(Args)]
+pub struct AnnotationReplyArgs {
+    /// Document id
+    document_id: String,
+
+    /// The note being answered
+    annotation_id: String,
+
+    /// File holding the reply
+    #[arg(long, value_name = "FILE")]
+    body: PathBuf,
+}
+
 /// What would have to change with this document, and where it is.
 ///
 /// The first question to ask before rewriting a document: a decision recorded
@@ -215,6 +240,7 @@ pub fn run(command: DocCommand) -> Result<()> {
         DocCommand::Proposals(args) => proposals(client, &config, args),
         DocCommand::Annotations(args) => annotations(client, args),
         DocCommand::Annotation(args) => annotation(client, args),
+        DocCommand::AnnotationReply(args) => annotation_reply(client, &config, args),
         DocCommand::Backlinks(args) => backlinks(client, args),
         DocCommand::Contentions(args) => contentions(client, args),
         DocCommand::Rebase(args) => rebase(client, args),
@@ -1005,6 +1031,34 @@ fn attribute(payload: &mut Map<String, Value>, config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Writes one reply and says which note now carries it.
+///
+/// One call, one reply. A model answering thirty notes runs this thirty times
+/// and is told each time whether that one landed -- which is what lets it
+/// report "28 of 30, and here is why the other two did not" instead of
+/// guessing. Batching them would collapse thirty answers into one exit code.
+fn annotation_reply(client: &Client, config: &Config, args: AnnotationReplyArgs) -> Result<()> {
+    let content = read(&args.body)?;
+
+    let mut payload = Map::new();
+    payload.insert("content".to_string(), json!(content));
+    attribute(&mut payload, config)?;
+
+    let path = format!(
+        "/documents/{}/annotations/{}/replies",
+        args.document_id, args.annotation_id
+    );
+    let reply = client::data(client.post(&path, Value::Object(payload))?)?;
+
+    println!(
+        "replied to {}  {}",
+        args.annotation_id,
+        string(&reply, "id", "?")
+    );
+
+    Ok(())
+}
+
 fn content_of(block: &Value) -> &str {
     block.get("content").and_then(Value::as_str).unwrap_or("")
 }
@@ -1254,9 +1308,10 @@ mod tests {
     /// checked that they ask the endpoints that show it what it has standing.
     mod api {
         use super::super::{
-            annotation, annotations, backlinks, contentions, create, proposals, propose, rebase,
-            working, AnnotationArgs, AnnotationsArgs, BacklinksArgs, ContentionsArgs, CreateArgs,
-            ProposalsArgs, ProposeArgs, RebaseArgs, ShowArgs,
+            annotation, annotation_reply, annotations, backlinks, contentions, create, proposals,
+            propose, rebase, working, AnnotationArgs, AnnotationReplyArgs, AnnotationsArgs,
+            BacklinksArgs, ContentionsArgs, CreateArgs, ProposalsArgs, ProposeArgs, RebaseArgs,
+            ShowArgs,
         };
         use crate::config::Config;
         use crate::testing::{client, Reply, StubServer};
@@ -1422,6 +1477,70 @@ mod tests {
                     "scope": "title",
                     "content": "A better name"
                 })
+            );
+        }
+
+        fn reply_args(body: &std::path::Path) -> AnnotationReplyArgs {
+            AnnotationReplyArgs {
+                document_id: "doc-1".to_string(),
+                annotation_id: "note-1".to_string(),
+                body: body.to_path_buf(),
+            }
+        }
+
+        /// Inside a topic the reply is a model's, and the topic is the whole of
+        /// how the server knows. No actor is sent: choosing one is what would
+        /// let a model sign a person's name to its own opinion.
+        #[test]
+        fn a_reply_from_a_topic_names_the_topic_and_no_actor() {
+            let server = StubServer::start(vec![Reply::json(
+                201,
+                json!({"data": {"id": "reply-1", "position": 0}}),
+            )]);
+            let body = markdown_file("The section above already says the opposite.");
+
+            annotation_reply(
+                &client(&server),
+                &inside_a_topic(&server),
+                reply_args(&body),
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].method, "POST");
+            assert_eq!(
+                requests[0].target,
+                "/api/v1/documents/doc-1/annotations/note-1/replies"
+            );
+            assert_eq!(
+                requests[0].json(),
+                json!({
+                    "conversation_id": TOPIC,
+                    "content": "The section above already says the opposite."
+                })
+            );
+        }
+
+        /// Outside one it is a person writing, so it carries an actor instead.
+        #[test]
+        fn a_reply_outside_a_topic_is_the_configured_humans() {
+            let server = StubServer::start(vec![Reply::json(
+                201,
+                json!({"data": {"id": "reply-1", "position": 0}}),
+            )]);
+            let body = markdown_file("I disagree.");
+
+            annotation_reply(
+                &client(&server),
+                &outside_a_topic(&server),
+                reply_args(&body),
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(
+                requests[0].json(),
+                json!({"actor_id": "human-id", "content": "I disagree."})
             );
         }
 

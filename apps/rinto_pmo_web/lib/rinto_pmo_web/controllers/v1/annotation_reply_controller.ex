@@ -5,11 +5,17 @@ defmodule RintoPMOWeb.V1.AnnotationReplyController do
   alias RintoPMOWeb.Plugs.ActorToken
 
   @doc """
-  Writes a follow-up under a note, credited to whoever is calling.
+  Writes a follow-up under a note.
 
-  The same rule the note itself follows: a person writes here, and the AI's
-  replies are written by `annotation_actor` through `RintoPMO.Annotations`,
-  never over HTTP.
+  Credited to whoever is calling, unless the request names a topic --
+  `conversation_id` makes it a model's reply, signed by the stand-in AI. The
+  token still says who the caller is; the topic says the caller is writing on a
+  model's behalf rather than their own.
+
+  `actor_id` is never read from the body either way. Naming an author is the
+  one thing about a reply nobody outside the server gets to say, because it is
+  what a model would have to be able to do to sign somebody else's name to its
+  own opinion.
   """
   def create(conn, %{"document_id" => document_id, "annotation_id" => annotation_id} = params) do
     context = annotations_context()

@@ -3,6 +3,8 @@ defmodule RintoPMO.AnnotationsTest do
 
   use Oban.Testing, repo: RintoPMO.Repo
 
+  alias RintoPMO.Actors
+  alias RintoPMO.ActorsMock
   alias RintoPMO.Agent.AnnotationResponderMock
   alias RintoPMO.Agent.DocumentReviewer
   alias RintoPMO.Agent.DocumentReviewerMock
@@ -352,6 +354,74 @@ defmodule RintoPMO.AnnotationsTest do
       assert_raise Ecto.NoResultsError, fn ->
         Annotations.get_reply!(other, reply.id)
       end
+    end
+  end
+
+  describe "who a reply is by" do
+    setup do
+      stub_with(ActorsMock, Actors)
+      :ok
+    end
+
+    test "signs as the stand-in AI when the reply comes from a topic" do
+      annotation = insert(:annotation)
+      signatory = default_assistant()
+      caller = insert(:actor)
+
+      assert {:ok, reply} =
+               Annotations.create_reply(annotation, %{
+                 "actor_id" => caller.id,
+                 "conversation_id" => Ecto.UUID.generate(),
+                 "content" => "The section above already says the opposite."
+               })
+
+      assert reply.actor_id == signatory.id
+      refute reply.actor_id == caller.id
+    end
+
+    test "keeps the caller when there is no topic" do
+      annotation = insert(:annotation)
+      default_assistant()
+      caller = insert(:actor)
+
+      assert {:ok, reply} =
+               Annotations.create_reply(annotation, %{
+                 "actor_id" => caller.id,
+                 "content" => "I wrote this myself."
+               })
+
+      assert reply.actor_id == caller.id
+    end
+
+    # Nothing stores the topic, and signing no longer depends on which
+    # assistant it was configured with, so `conversation_id` says only "a model
+    # is writing this". Looking the topic up would not make that truer.
+    test "does not look the topic up" do
+      annotation = insert(:annotation)
+      signatory = default_assistant()
+
+      assert {:ok, reply} =
+               Annotations.create_reply(annotation, %{
+                 "actor_id" => insert(:actor).id,
+                 "conversation_id" => Ecto.UUID.generate(),
+                 "content" => "Still signed."
+               })
+
+      assert reply.actor_id == signatory.id
+    end
+
+    test "refuses when setup never made the stand-in" do
+      annotation = insert(:annotation)
+      conversation_id = Ecto.UUID.generate()
+
+      assert {:error, :default_assistant_missing, details} =
+               Annotations.create_reply(annotation, %{
+                 "actor_id" => insert(:actor).id,
+                 "conversation_id" => conversation_id,
+                 "content" => "Nobody signs this."
+               })
+
+      assert details.conversation_id == conversation_id
     end
   end
 
