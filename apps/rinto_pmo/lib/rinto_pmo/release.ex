@@ -18,6 +18,8 @@ defmodule RintoPMO.Release do
   service when it fails.
   """
 
+  alias RintoPMO.PromptShortcuts.Presets
+
   @app :rinto_pmo
 
   @doc """
@@ -69,6 +71,31 @@ defmodule RintoPMO.Release do
         IO.puts(RintoPMO.Setup.describe(RintoPMO.Setup.ensure_default_project()))
         IO.puts(RintoPMO.Setup.describe(RintoPMO.Setup.ensure_default_assistant()))
         IO.puts(RintoPMO.Setup.describe(RintoPMO.Setup.ensure_human(name)))
+      end)
+
+    :ok
+  end
+
+  @doc """
+  Writes the prompt shortcuts this system ships with.
+
+  Safe to run on every deploy, and meant to be: a shortcut nobody has edited
+  takes the new wording, an edited one keeps its own and gets the new default
+  as what "reset" will hand it, and one somebody deleted comes back. See
+  `RintoPMO.PromptShortcuts.Presets` for the rule in full.
+
+  Run by hand for that last reason. On boot, resurrecting a deleted row would
+  be a bug; in a deploy script it is why the command is being run.
+  """
+  @spec seed_prompt_shortcuts() :: :ok
+  def seed_prompt_shortcuts do
+    load_app()
+
+    {:ok, _result, _apps} =
+      Ecto.Migrator.with_repo(RintoPMO.Repo, fn _repo ->
+        for outcome <- Presets.seed() do
+          IO.puts(Presets.describe(outcome))
+        end
       end)
 
     :ok

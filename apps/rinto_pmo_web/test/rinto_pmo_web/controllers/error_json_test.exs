@@ -160,6 +160,8 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {409, "There is no pending OpenAI Codex authorization to cancel.", %{}},
     codex_auth_unavailable:
       {503, "The Pi OpenAI Codex authorization helper is unavailable.", %{}},
+    not_a_preset:
+      {422, "This prompt shortcut was not shipped with the system, so it has no default.", %{}},
     attachment_unwritable: {500, "The attachment could not be stored.", %{reason: "enospc"}},
     attachment_unreadable:
       {500, "The attachment bytes are missing or unreadable.", %{reason: "enoent"}}

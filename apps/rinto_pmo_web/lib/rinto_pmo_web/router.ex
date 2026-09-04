@@ -26,6 +26,20 @@ defmodule RintoPMOWeb.Router do
     # looking at the actor list, and changed after seeing a few of the results.
     get "/settings", SettingController, :index
     put "/settings/:key", SettingController, :update
+
+    # The quick prompts offered beside the composer. Rows rather than a table
+    # baked into the client, so that rewording one is a request instead of a
+    # release -- and so the client stops knowing which of them exist.
+    #
+    # No filter on `index`: which ones to show follows from what the message
+    # being composed references, and that changes on every mention added or
+    # removed. The client holds the list and matches it.
+    resources "/prompt_shortcuts", PromptShortcutController,
+      only: [:index, :show, :create, :update, :delete]
+
+    # Puts a preset's prompt back to what the last deployment wrote. An action
+    # rather than a field: see the controller.
+    post "/prompt_shortcuts/:id/reset", PromptShortcutController, :reset
     # What each week holds and what did not fit. Not nested under a project:
     # a week's minutes are shared across every project, so packing one project
     # alone would hand it the whole week. A per-project view filters this.

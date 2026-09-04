@@ -107,6 +107,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     # smaller review than it asked for concludes the rest was clean.
     no_review_actor:
       {422, "No actor holds the review role. Set one with `PUT /settings/review_actor`."},
+    # A shortcut somebody created through the API has no default wording to be
+    # put back to: nobody but its author ever chose one.
+    not_a_preset:
+      {422, "This prompt shortcut was not shipped with the system, so it has no default."},
     no_documents: {422, "A review needs at least one document."},
     # One document named twice in one batch commit. Two ideas about what a
     # single commit is, and the second would be against a revision the first

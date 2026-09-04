@@ -1068,6 +1068,192 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
+  /prompt_shortcuts:
+    get:
+      tags: [Prompt shortcuts]
+      operationId: listPromptShortcuts
+      summary: The quick prompts offered beside the composer
+      description: >-
+        Answers with all of them and takes no filter. Which ones to show follows
+        from what the message being composed references: collect the reference
+        types in the composer and keep the shortcuts whose `resource_type` is
+        among them. A shortcut with `resource_type: null` is the one to offer
+        when nothing is referenced at all.
+
+
+        Filtering here was refused deliberately -- the composer's reference set
+        changes on every mention added or removed, so a server-side filter would
+        be a request per keystroke against a dozen rows. Fetch once, match
+        locally.
+
+
+        Ordering is yours as well: there is no position column, so the only
+        order that exists is the one this returns.
+
+
+        The prompts themselves carry no placeholders. What the message
+        references is expanded into the model's prompt separately, so a shortcut
+        says "review the referenced document" and never needs to name which one.
+      responses:
+        "200":
+          description: Every shortcut
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptShortcutListResponse"
+    post:
+      tags: [Prompt shortcuts]
+      operationId: createPromptShortcut
+      summary: Add a shortcut
+      description: >-
+        `key` and `default_prompt` are not read from the request. The first is
+        generated -- a client that could choose one could then recognise one,
+        and the point of these living server-side is that the client stops
+        knowing which shortcuts exist. The second belongs to the deployment: a
+        shortcut created here is nobody's default, so `default_prompt` is null
+        and `reset` refuses it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PromptShortcutInput"
+      responses:
+        "201":
+          description: The shortcut
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptShortcutResponse"
+        "422":
+          description: >-
+            `validation_error`. `resource_type` must be one of the reference
+            types, or null.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /prompt_shortcuts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Prompt shortcuts]
+      operationId: getPromptShortcut
+      summary: One shortcut
+      responses:
+        "200":
+          description: The shortcut
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptShortcutResponse"
+        "404":
+          description: "`not_found`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      tags: [Prompt shortcuts]
+      operationId: updatePromptShortcut
+      summary: Edit a shortcut
+      description: >-
+        Editing a preset's `prompt` is ordinary, and is how a row stops tracking
+        what ships with the system: from here on `prompt` and `default_prompt`
+        differ, a deployment leaves the wording alone, and `reset` is the way
+        back.
+
+
+        Editing `label` or `icon` is permanent in the same way -- a deployment
+        writes those once, when it creates the row, and never again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PromptShortcutInput"
+      responses:
+        "200":
+          description: The shortcut
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptShortcutResponse"
+        "404":
+          description: "`not_found`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [Prompt shortcuts]
+      operationId: deletePromptShortcut
+      summary: Remove a shortcut
+      description: >-
+        Presets included -- a button nobody wants is a button nobody wants. The
+        way back is to run the seeding task on the server, which recreates it
+        under the same `key`.
+      responses:
+        "204":
+          description: Gone
+        "404":
+          description: "`not_found`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /prompt_shortcuts/{id}/reset:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Prompt shortcuts]
+      operationId: resetPromptShortcut
+      summary: Put a preset's prompt back to what shipped
+      description: >-
+        An action rather than `PATCH {"prompt": null}`: it is a thing somebody
+        does, not a field being given a value that happens to mean something
+        else.
+
+
+        Only the prompt moves. A renamed button stays renamed, because `label`
+        and `icon` belong to whoever set them.
+
+
+        The value it restores is whatever the *last* deployment wrote, which is
+        not necessarily what this row was created with -- an edited shortcut
+        keeps its own wording while its `default_prompt` follows each release,
+        so resetting is how it catches up.
+      responses:
+        "200":
+          description: The shortcut, with its prompt back
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptShortcutResponse"
+        "404":
+          description: "`not_found`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            `not_a_preset` -- the shortcut was created through this API and has
+            no default to return to.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /reviews:
     post:
       tags: [Annotations]
@@ -4173,6 +4359,107 @@ components:
           schema:
             $ref: "#/components/schemas/APIError"
   schemas:
+    PromptShortcut:
+      type: object
+      description: >-
+        One quick prompt offered beside the composer.
+
+
+        Rows rather than a table baked into the client, so that rewording one is
+        a request instead of a release.
+      required: [id, key, resource_type, label, icon, prompt, default_prompt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        key:
+          type: string
+          description: >-
+            Stable across deployments, which the id is not: the seeding task
+            finds the row it wrote last time by this. A random string, and
+            nothing should branch on it -- the whole point of these living
+            server-side is that the client stops knowing which shortcuts exist.
+        resource_type:
+          type: string
+          nullable: true
+          description: >-
+            One reference type. Show this shortcut when the composer references
+            something of that type. Null means "show it when nothing is
+            referenced".
+          enum:
+            [
+              document,
+              block,
+              annotation,
+              task,
+              project,
+              attachment,
+              proposal,
+              conversation,
+              null,
+            ]
+        label:
+          type: string
+          description: The button's text. Yours; a deployment never rewrites it.
+        icon:
+          type: string
+          nullable: true
+          description: >-
+            A name from your own icon set. Never validated here -- naming
+            somebody else's namespace would mean a database change every time
+            they rename something.
+        prompt:
+          type: string
+          description: >-
+            What goes into the composer. No placeholders: what the message
+            references is expanded into the model's prompt separately, so this
+            says "the referenced document" and never names one.
+        default_prompt:
+          type: string
+          nullable: true
+          description: >-
+            What the last deployment wrote. Equal to `prompt` means nobody has
+            edited this row -- that one comparison is the whole of the
+            edited/unedited distinction, which is why there is no `modified`
+            flag. Null marks a shortcut created through this API: there is no
+            default to reset it to.
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    PromptShortcutInput:
+      type: object
+      description: >-
+        `key` and `default_prompt` are ignored if sent: the first is generated,
+        the second belongs to the deployment.
+      required: [label, prompt]
+      properties:
+        resource_type:
+          type: string
+          nullable: true
+        label:
+          type: string
+        icon:
+          type: string
+          nullable: true
+        prompt:
+          type: string
+    PromptShortcutResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/PromptShortcut"
+    PromptShortcutListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PromptShortcut"
     ActorKind:
       type: string
       enum: [human, ai]
