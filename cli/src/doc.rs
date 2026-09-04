@@ -25,6 +25,8 @@ pub enum DocCommand {
     Annotation(AnnotationArgs),
     /// Answer one note, under it, where the discussion of it already is
     AnnotationReply(AnnotationReplyArgs),
+    /// Open a note on a document, saying what is wrong with it
+    Annotate(AnnotateArgs),
     /// List what elsewhere in the system points at this document
     Backlinks(BacklinksArgs),
     /// Show where two topics want the same text to say different things
@@ -162,6 +164,30 @@ pub struct AnnotationArgs {
     annotation_id: String,
 }
 
+/// A note opened on a document.
+///
+/// `--block` pins it to a section. The server resolves that id against the
+/// document as it stands: a block that is not there any more, or one that was
+/// never there, leaves the note **unanchored** rather than refusing it -- the
+/// text still says what it is about. The line this prints says which happened,
+/// so a wrong id is visible rather than assumed.
+///
+/// Without `--block` the note is about the document as a whole, which is an
+/// ordinary thing for one to be about.
+#[derive(Args)]
+pub struct AnnotateArgs {
+    /// Document id
+    document_id: String,
+
+    /// File holding the note
+    #[arg(long, value_name = "FILE")]
+    body: PathBuf,
+
+    /// Block to pin the note to; omit for a note about the whole document
+    #[arg(long, value_name = "BLOCK_ID")]
+    block: Option<String>,
+}
+
 /// An answer written under one note.
 ///
 /// Inside a topic this is how a model answers: the server signs it as the AI
@@ -241,6 +267,7 @@ pub fn run(command: DocCommand) -> Result<()> {
         DocCommand::Annotations(args) => annotations(client, args),
         DocCommand::Annotation(args) => annotation(client, args),
         DocCommand::AnnotationReply(args) => annotation_reply(client, &config, args),
+        DocCommand::Annotate(args) => annotate(client, &config, args),
         DocCommand::Backlinks(args) => backlinks(client, args),
         DocCommand::Contentions(args) => contentions(client, args),
         DocCommand::Rebase(args) => rebase(client, args),
@@ -1031,6 +1058,43 @@ fn attribute(payload: &mut Map<String, Value>, config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Opens one note and says where it landed.
+///
+/// The anchor is reported back rather than assumed, because the server is
+/// allowed to drop it: a `--block` naming a block that is not in the document
+/// leaves an unanchored note, and a caller that never heard about it would go
+/// on believing its ids were good.
+fn annotate(client: &Client, config: &Config, args: AnnotateArgs) -> Result<()> {
+    let content = read(&args.body)?;
+
+    let mut payload = Map::new();
+    payload.insert("content".to_string(), json!(content));
+    if let Some(block_id) = args.block.as_deref() {
+        payload.insert("block_id".to_string(), json!(block_id));
+    }
+    attribute(&mut payload, config)?;
+
+    let path = format!("/documents/{}/annotations", args.document_id);
+    let annotation = client::data(client.post(&path, Value::Object(payload))?)?;
+
+    match annotation.get("block_id").and_then(Value::as_str) {
+        Some(block_id) => println!(
+            "{}  anchored to block {block_id}",
+            string(&annotation, "id", "?")
+        ),
+        None if args.block.is_some() => println!(
+            "{}  unanchored -- the block you named is not in this document",
+            string(&annotation, "id", "?")
+        ),
+        None => println!(
+            "{}  about the document as a whole",
+            string(&annotation, "id", "?")
+        ),
+    }
+
+    Ok(())
+}
+
 /// Writes one reply and says which note now carries it.
 ///
 /// One call, one reply. A model answering thirty notes runs this thirty times
@@ -1308,10 +1372,10 @@ mod tests {
     /// checked that they ask the endpoints that show it what it has standing.
     mod api {
         use super::super::{
-            annotation, annotation_reply, annotations, backlinks, contentions, create, proposals,
-            propose, rebase, working, AnnotationArgs, AnnotationReplyArgs, AnnotationsArgs,
-            BacklinksArgs, ContentionsArgs, CreateArgs, ProposalsArgs, ProposeArgs, RebaseArgs,
-            ShowArgs,
+            annotate, annotation, annotation_reply, annotations, backlinks, contentions, create,
+            proposals, propose, rebase, working, AnnotateArgs, AnnotationArgs, AnnotationReplyArgs,
+            AnnotationsArgs, BacklinksArgs, ContentionsArgs, CreateArgs, ProposalsArgs,
+            ProposeArgs, RebaseArgs, ShowArgs,
         };
         use crate::config::Config;
         use crate::testing::{client, Reply, StubServer};
@@ -1517,6 +1581,71 @@ mod tests {
                 json!({
                     "conversation_id": TOPIC,
                     "content": "The section above already says the opposite."
+                })
+            );
+        }
+
+        /// A finding from a review names the block it is about, and carries the
+        /// topic so the server signs it as the AI rather than as the person
+        /// whose token the agent is holding.
+        #[test]
+        fn a_note_from_a_topic_carries_its_block_and_the_topic() {
+            let server = StubServer::start(vec![Reply::json(
+                201,
+                json!({"data": {"id": "note-1", "block_id": "block-9"}}),
+            )]);
+            let body = markdown_file("Section 2 and section 4 cannot both be true.");
+
+            annotate(
+                &client(&server),
+                &inside_a_topic(&server),
+                AnnotateArgs {
+                    document_id: "doc-1".to_string(),
+                    body: body.to_path_buf(),
+                    block: Some("block-9".to_string()),
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].target, "/api/v1/documents/doc-1/annotations");
+            assert_eq!(
+                requests[0].json(),
+                json!({
+                    "conversation_id": TOPIC,
+                    "block_id": "block-9",
+                    "content": "Section 2 and section 4 cannot both be true."
+                })
+            );
+        }
+
+        /// No block is an ordinary note about the whole document, not a missing
+        /// argument, so nothing is sent in its place.
+        #[test]
+        fn a_note_about_the_whole_document_sends_no_block() {
+            let server = StubServer::start(vec![Reply::json(
+                201,
+                json!({"data": {"id": "note-1", "block_id": null}}),
+            )]);
+            let body = markdown_file("This document never says who decides.");
+
+            annotate(
+                &client(&server),
+                &inside_a_topic(&server),
+                AnnotateArgs {
+                    document_id: "doc-1".to_string(),
+                    body: body.to_path_buf(),
+                    block: None,
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(
+                requests[0].json(),
+                json!({
+                    "conversation_id": TOPIC,
+                    "content": "This document never says who decides."
                 })
             );
         }

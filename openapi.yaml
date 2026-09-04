@@ -6898,18 +6898,45 @@ components:
           type: string
           format: uuid
           description: >
-            Ignored. The note is credited to the token's actor, because writing
-            one here is a person's action; the AI's notes are written by
-            `annotation_actor` and `review_actor` and never come through this
-            endpoint. Sent anyway it is overwritten rather than refused, so a
-            client that has always sent it keeps working.
+            Ignored. Who a note is by follows from the token and from
+            `conversation_id`; a body naming an author is what a model would
+            need in order to leave an opinion under somebody else's name. Sent
+            anyway it is overwritten rather than refused, so a client that has
+            always sent it keeps working.
+        conversation_id:
+          type: string
+          format: uuid
+          description: >
+            Present, the note is a model's and is signed by the `default`
+            actor. Absent, it is the caller's own and is credited to the
+            token's actor.
+
+
+            `422 default_assistant_missing` when setup never created that actor.
         block_id:
           type: string
           format: uuid
           nullable: true
+          description: >
+            The block this note is about. Resolved against the document as it
+            stands: a block that is not there -- gone since the caller read it,
+            or never there at all -- leaves the note **unanchored** rather than
+            refusing it, because the text still says what it is about. The
+            response carries where it actually landed, which is the only way a
+            caller learns its id was wrong.
+
+
+            Omit it for a note about the document as a whole. That is an
+            ordinary thing for a note to be about, not a missing field.
         block_text:
           type: string
           nullable: true
+          description: >
+            The block's text as it read when the note was written. Filled in
+            from the block when omitted, and never overwritten when supplied: a
+            client that captured it as somebody highlighted a phrase holds the
+            snapshot that matches its `selected_text`, and replacing it would
+            leave the two describing different revisions.
         selected_text:
           type: string
           nullable: true

@@ -121,10 +121,32 @@ defmodule RintoPMO.Annotations do
 
   @doc """
   Creates an annotation on a document. Replies start empty.
+
+  ## Who it is by
+
+  `conversation_id` decides, the same fork `create_reply/2` makes: sent, the
+  note is a model's and is signed by the stand-in AI; absent, it is the
+  caller's own.
+
+  ## Where it lands
+
+  A `block_id` is resolved against the document's current blocks. Found, the
+  block's text is snapshotted alongside it if the caller did not supply one --
+  the snapshot is what lets the note still say which paragraph it was about
+  after that paragraph is rewritten. Not found, the note is written
+  **unanchored** rather than refused: the text still names what it is about,
+  and an opinion with no pin in the margin is a shape this system already has.
+
+  That degradation matters most for a model, which can name a block that never
+  existed or one that has gone since it read the document. It is not restricted
+  to models, because a dangling anchor is nobody's idea of a good outcome.
   """
   @impl true
   def create_annotation(%Document{} = document, attrs) do
-    with :ok <- Guard.check(content_of(attrs)) do
+    with :ok <- Guard.check(content_of(attrs)),
+         {:ok, attrs} <- put_author(attrs) do
+      attrs = anchor(attrs, document, attr(attrs, :block_id, nil))
+
       Repo.transact(fn repo ->
         %Annotation{document_id: document.id}
         |> Annotation.changeset(attrs)
@@ -353,7 +375,7 @@ defmodule RintoPMO.Annotations do
   @impl true
   def create_reply(%Annotation{} = annotation, attrs) do
     with :ok <- Guard.check(content_of(attrs)),
-         {:ok, attrs} <- put_reply_author(attrs) do
+         {:ok, attrs} <- put_author(attrs) do
       Repo.transact(fn repo ->
         locked =
           Annotation
@@ -371,7 +393,7 @@ defmodule RintoPMO.Annotations do
     end
   end
 
-  defp put_reply_author(attrs) do
+  defp put_author(attrs) do
     case attr(attrs, :conversation_id, nil) do
       conversation_id when is_binary(conversation_id) ->
         case Utils.module(:actors).get_default_assistant() do
@@ -635,13 +657,49 @@ defmodule RintoPMO.Annotations do
   # still names what it is about, and an opinion with no pin in the margin is
   # the shape this system already has for one about the whole document.
   defp anchor(attrs, %Document{} = document, block_id) when is_binary(block_id) do
-    case Enum.find(document.latest_revision.blocks, &(&1.block_id == block_id)) do
-      nil -> attrs
-      block -> Map.merge(attrs, %{"block_id" => block.block_id, "block_text" => block.content})
+    case blocks_of(document) do
+      # Nobody looked. A caller holding a document whose blocks were never
+      # loaded has told us nothing about whether this anchor is good, and
+      # treating silence as "the block is gone" would drop anchors that are
+      # perfectly fine. Every path that cares loads them --
+      # `RintoPMO.Documents.get_document!/1` preloads the latest revision's
+      # blocks, and both the controller and the review path go through it.
+      :unloaded -> attrs
+      blocks -> place_on(attrs, blocks, block_id)
     end
   end
 
   defp anchor(attrs, _document, _block_id), do: attrs
+
+  defp place_on(attrs, blocks, block_id) do
+    case Enum.find(blocks, &(&1.block_id == block_id)) do
+      # Dropped rather than kept: an id pointing at no block anchors the note to
+      # nothing while claiming otherwise, and every reader of `block_id` would
+      # have to defend against it.
+      nil ->
+        attrs |> drop_attr(:block_id) |> drop_attr(:block_text)
+
+      block ->
+        attrs
+        |> put_attr(:block_id, block.block_id)
+        |> snapshot(block)
+    end
+  end
+
+  # Filled, never overwritten. A client that captured the text as somebody
+  # highlighted a phrase holds the snapshot that matches its `selected_text`;
+  # replacing it with what the block says now would leave the two describing
+  # different revisions.
+  defp snapshot(attrs, block) do
+    if attr(attrs, :block_text, nil),
+      do: attrs,
+      else: put_attr(attrs, :block_text, block.content)
+  end
+
+  defp blocks_of(%Document{latest_revision: %{blocks: blocks}}) when is_list(blocks), do: blocks
+  defp blocks_of(_not_loaded), do: :unloaded
+
+  defp drop_attr(attrs, key), do: Map.drop(attrs, [key, Atom.to_string(key)])
 
   defp succeed_review(job_id, documents, written) do
     Enum.each(documents, fn document ->

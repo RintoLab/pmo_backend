@@ -160,18 +160,6 @@ defmodule RintoPMO.PromptShortcutsTest do
       refute back.id == preset.id
     end
 
-    test "no preset asks for an annotation write the CLI cannot do yet" do
-      # `doc create` and `doc annotation-reply` both exist now. *Creating* an
-      # annotation still does not, and a preset that asked for one would buy
-      # improvisation rather than a refusal. Drop this when the review shortcut
-      # gets the command it needs -- step 5 of
-      # docs/implementation-plan-prompt-shortcuts.md.
-      for preset <- Presets.all() do
-        refute preset.prompt =~ "doc annotate",
-               "#{preset.key} asks for a write that cannot happen"
-      end
-    end
-
     test "the breakdown preset's preamble convention survives filing" do
       # The breakdown preset asks for a `rinto://` line above the first `##`,
       # to leave the source reachable from what was derived from it. That only

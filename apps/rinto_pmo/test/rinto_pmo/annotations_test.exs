@@ -14,6 +14,8 @@ defmodule RintoPMO.AnnotationsTest do
   alias RintoPMO.Annotations.ReviewWorker
   alias RintoPMO.Documents.Notifier
   alias RintoPMO.DocumentsMock
+  alias RintoPMO.Projects
+  alias RintoPMO.ProjectsMock
   alias RintoPMO.Settings
 
   describe "annotations" do
@@ -354,6 +356,98 @@ defmodule RintoPMO.AnnotationsTest do
       assert_raise Ecto.NoResultsError, fn ->
         Annotations.get_reply!(other, reply.id)
       end
+    end
+  end
+
+  describe "who a note is by, and where it lands" do
+    setup do
+      stub_with(ActorsMock, Actors)
+      # Building a document to anchor onto files it in the default project.
+      stub_with(ProjectsMock, Projects)
+      insert(:default_project)
+      :ok
+    end
+
+    test "signs as the stand-in AI when the note comes from a topic" do
+      %{document: document} = document_with_blocks(["## One\n\nText"])
+      signatory = default_assistant()
+      caller = insert(:actor)
+
+      assert {:ok, annotation} =
+               Annotations.create_annotation(document, %{
+                 "actor_id" => caller.id,
+                 "conversation_id" => Ecto.UUID.generate(),
+                 "content" => "This contradicts the section above."
+               })
+
+      assert annotation.actor_id == signatory.id
+      refute annotation.actor_id == caller.id
+    end
+
+    test "snapshots the block's text when the caller named a block but no text" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["## One\n\nText"])
+      default_assistant()
+
+      assert {:ok, annotation} =
+               Annotations.create_annotation(document, %{
+                 "actor_id" => insert(:actor).id,
+                 "block_id" => block.block_id,
+                 "content" => "Wrong."
+               })
+
+      assert annotation.block_id == block.block_id
+      assert annotation.block_text == block.content
+    end
+
+    # A client that captured the text when somebody highlighted it holds the
+    # snapshot matching its `selected_text`. Replacing it with what the block
+    # says now would leave the two describing different revisions.
+    test "keeps a block_text the caller supplied" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["## One\n\nText"])
+
+      assert {:ok, annotation} =
+               Annotations.create_annotation(document, %{
+                 "actor_id" => insert(:actor).id,
+                 "block_id" => block.block_id,
+                 "block_text" => "what it said when I highlighted it",
+                 "content" => "Wrong."
+               })
+
+      assert annotation.block_text == "what it said when I highlighted it"
+    end
+
+    test "writes the note unanchored when the block is not there" do
+      %{document: document} = document_with_blocks(["## One\n\nText"])
+
+      assert {:ok, annotation} =
+               Annotations.create_annotation(document, %{
+                 "actor_id" => insert(:actor).id,
+                 "block_id" => Ecto.UUID.generate(),
+                 "block_text" => "a block that never existed",
+                 "content" => "Still worth saying."
+               })
+
+      # Dropped, not kept: an id pointing at no block claims an anchor it does
+      # not have, and every reader of `block_id` would have to defend against it.
+      assert annotation.block_id == nil
+      assert annotation.block_text == nil
+      assert annotation.content == "Still worth saying."
+    end
+
+    # Silence is not evidence. A caller holding a document whose blocks were
+    # never loaded has said nothing about whether the anchor is good.
+    test "leaves the anchor alone when the document's blocks were never loaded" do
+      document = insert(:document)
+      block_id = UUIDv7.generate()
+
+      assert {:ok, annotation} =
+               Annotations.create_annotation(document, %{
+                 "actor_id" => insert(:actor).id,
+                 "block_id" => block_id,
+                 "content" => "Unverifiable, and kept."
+               })
+
+      assert annotation.block_id == block_id
     end
   end
 
@@ -884,6 +978,18 @@ defmodule RintoPMO.AnnotationsTest do
   defp review_context do
     actor = Settings.get_actor("review_actor")
     %{actor: actor}
+  end
+
+  defp document_with_blocks(sections) do
+    {:ok, document} =
+      RintoPMO.Documents.create_document(%{
+        title: "Document",
+        actor_id: insert(:actor).id,
+        markdown: Enum.join(sections, "\n\n")
+      })
+
+    document = RintoPMO.Documents.get_document!(document.id)
+    %{document: document, blocks: document.latest_revision.blocks}
   end
 
   # `run_reply/2` reads the document through the injector, so a test of it has

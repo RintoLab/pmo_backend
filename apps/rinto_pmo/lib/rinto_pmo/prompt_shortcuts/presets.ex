@@ -50,10 +50,8 @@ defmodule RintoPMO.PromptShortcuts.Presets do
   What went away is the click, not the capability -- which is the general
   shape: reserve a preset for the prompt somebody would not write from scratch.
 
-  Nothing here asks for an annotation to be *created*, because the CLI still
-  cannot -- see `docs/implementation-plan-prompt-shortcuts.md`. A preset asking
-  for a write that cannot happen is worse than no preset at all: the model
-  improvises rather than refusing.
+  Every write here has the command it needs. That was the constraint the order
+  of this file was built around, and it is now met.
 
   ## Removing one is two acts
 
@@ -193,6 +191,93 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
       When you are done, say what you created and give its id. Do not paste the \
       breakdown back into the conversation -- it is a document now.
+      """
+    },
+    %{
+      key: "tiqkolltvkaa6n7q",
+      resource_type: "document",
+      label: "审阅文档",
+      icon: "file-search",
+      prompt: """
+      You are reviewing design documents for a team that has to build from \
+      them. The documents referenced in this message are the ones to review.
+
+      Read all of them before writing anything. Then report what is wrong, as \
+      notes left on the documents.
+
+      ## Review the set, not each one in turn
+
+      The findings worth the most are the ones no single document contains -- \
+      two documents that cannot both be true -- and reviewing them one after \
+      another puts the comparison back on whoever asked. One document is a set \
+      of one.
+
+      ## What is worth reporting
+
+      - **Contradictions.** Two places that cannot both be true. Across \
+      documents is the most valuable kind: you were given them together because \
+      nobody reading one alone would find it.
+      - **Decisions that were never made.** A design that names a mechanism \
+      without saying what it does in the case that will actually happen.
+      - **Statements that will mislead somebody building from this**, including \
+      text that has been overtaken by a decision recorded elsewhere in what you \
+      were given.
+      - **Gaps that matter.** Not everything absent is a gap; a document is \
+      allowed to have a scope.
+
+      What is not worth reporting: wording, tone, formatting, section order, or \
+      anything you would preface with "consider". Nobody asked for this in \
+      order to be told a paragraph could be tightened.
+
+      ## Rules
+
+      - **At most 12 findings.** If you have more, report the ones that would \
+      cost the most to discover later. Somebody has to read every one of these \
+      and decide about it, and forty notes on a document sized for the handful \
+      a person leaves is a workspace nobody can use.
+      - Each finding stands alone: say what is wrong and why it matters. Do not \
+      number them, do not refer to "the previous point", do not write a summary \
+      finding.
+      - **Say the problem, not the edit.** A note cannot change the document \
+      and nothing you write will be applied -- somebody reads each of these and \
+      decides. Wanting a change is a separate request, made in this topic.
+      - Write in the same language as the document.
+      - **Nothing wrong is a real answer.** Say so and leave no notes, rather \
+      than filling a quota.
+
+      ## Getting the block ids
+
+      The documents in this prompt mark their blocks `[block:b1]`, `[block:b2]`
+      -- those are labels for reading, **not ids**. Before annotating a
+      document, get its real ids:
+
+          rinto-pmo doc show <document-id> --with-block-ids
+
+      Never invent one. A block id that is not in the document leaves the note \
+      unanchored -- the command says so when it happens, and a note that lost \
+      its anchor is a note nobody can place.
+
+      ## Leaving each finding
+
+      One call per finding, on the document that should change:
+
+          rinto-pmo doc annotate <document-id> \\
+            --block <block-id> \\
+            --body finding.md
+
+      Omit `--block` only when the finding is about the document as a whole.
+
+      When two documents contradict each other, decide which one is wrong, put \
+      the note there, and cite the other in the text as \
+      `[its title](rinto://document/<its id>)` -- that is a live link in this \
+      system, so use the id you were given and nothing else.
+
+      Read what each call prints. It tells you where the note landed, and \
+      "unanchored" means the block id was wrong.
+
+      When you are done, say how many notes you left and on which documents, or \
+      say that you found nothing. Do not paste the findings back into the \
+      conversation -- they are on the documents now.
       """
     },
     %{

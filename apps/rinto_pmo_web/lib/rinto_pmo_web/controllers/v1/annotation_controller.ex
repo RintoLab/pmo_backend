@@ -21,14 +21,21 @@ defmodule RintoPMOWeb.V1.AnnotationController do
   end
 
   @doc """
-  Writes a note on a document, credited to whoever is calling.
+  Writes a note on a document.
 
-  This endpoint is a person leaving a note, so `actor_id` is the token's rather
-  than the body's. The AI's notes never come through here: a reply is written
-  by whoever holds `annotation_actor`, and a review's findings by
-  `review_actor` -- both through `RintoPMO.Annotations` directly, naming the
-  actor they were run as. Which is exactly why the HTTP door does not need to
-  accept an author, and should not: the one caller here is a person.
+  Credited to whoever is calling, unless the request names a topic --
+  `conversation_id` makes it a model's note, signed by the stand-in AI. The
+  same fork replies make.
+
+  `actor_id` is never read from the body either way. Naming an author is the
+  one thing about a note nobody outside the server gets to say, and it is
+  exactly what a model would need in order to leave an opinion under somebody
+  else's name.
+
+  A `block_id` naming no block in the document leaves the note unanchored
+  rather than refusing it -- see `RintoPMO.Annotations.create_annotation/2`.
+  The response says where it actually landed, which is how a caller finds out
+  its id was wrong.
   """
   def create(conn, %{"document_id" => document_id} = params) do
     document = get_document!(document_id)
