@@ -4605,10 +4605,10 @@ components:
         default:
           type: boolean
           description: >
-            True on the one actor that stands in for an AI nobody named: what
-            an AI writes into a document from a plain-chat topic is signed with
-            it, because that topic has a provider and a model where an actor
-            topic has an assistant to credit.
+            True on the one actor that stands in for an AI nobody named.
+            Everything an AI writes from a topic is signed with it -- documents,
+            proposals, annotation replies -- whatever mode the topic is in and
+            whichever assistant it is configured to call.
 
 
             It carries no `provider`, `model` or `thinking_level`, and never
@@ -4975,15 +4975,19 @@ components:
           format: uuid
           description: >
             Ignored. Every block of a new document is credited to the token's
-            actor when the document is written outside a topic, and to whoever
-            the topic derives when `conversation_id` is sent -- its assistant,
-            or the `default` actor for a plain chat. Sent anyway it is
-            overwritten rather than refused.
+            actor when the document is written outside a topic, and to the
+            `default` actor -- the stand-in for "a model wrote this" -- when
+            `conversation_id` is sent. Sent anyway it is overwritten rather
+            than refused.
 
 
-            `422 assistant_actor_required` when the topic is an actor topic
-            with no assistant chosen, and `422 default_assistant_missing` when
-            it is a plain chat and setup never created the default actor.
+            The topic's own assistant is deliberately not used, whichever mode
+            it is in: a signature answers model-or-person, and which persona
+            was configured is a question the conversation itself answers.
+
+
+            `422 default_assistant_missing` when setup never created that
+            actor.
         markdown:
           type: string
           description: >-

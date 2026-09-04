@@ -1,5 +1,16 @@
 defmodule RintoPMO.Documents.ProposalsTest do
-  use RintoPMO.DataCase, async: true
+  # Not async: every test here writes from a topic, so every one of them has to
+  # insert the stand-in AI -- one row behind a partial unique index. Two async
+  # transactions inserting it deadlock on that index, which is a fixture racing
+  # itself rather than anything about the code under test.
+  use RintoPMO.DataCase, async: false
+
+  # Every proposal is signed by the stand-in AI, so it has to exist before any
+  # of this can write.
+  setup do
+    default_assistant()
+    :ok
+  end
 
   alias RintoPMO.Actors
   alias RintoPMO.ActorsMock
@@ -43,9 +54,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert proposal.content == "Tighter one"
       assert proposal.base_revision_id == latest_revision_id(document)
 
-      # Proposing is how an AI writes, so the author is the assistant this topic
-      # is talking to -- derived here, never supplied.
-      assert proposal.actor_id == conversation.assistant_actor_id
+      # Proposing is how an AI writes, so the author is the stand-in AI --
+      # derived here, never supplied. See "who a proposal is by".
+      assert proposal.actor_id == default_assistant().id
     end
 
     test "a topic revising the same block keeps exactly one live proposal" do
@@ -427,10 +438,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert Enum.map(blocks, & &1.content) == ["Rewritten one", "## Original two"]
       # Block identity survives the rewrite; only the snapshot is new.
       assert Enum.map(blocks, & &1.block_id) == [first_block.block_id, second_block.block_id]
-      # The block is attributed to whoever wrote the text -- the topic's assistant
-      # -- and not to whoever approved it.
+      # The block is attributed to whoever wrote the text -- the stand-in AI --
+      # and not to whoever approved it.
       assert Enum.map(blocks, & &1.actor_id) ==
-               [conversation.assistant_actor_id, second_block.actor_id]
+               [default_assistant().id, second_block.actor_id]
 
       refute committer.id in Enum.map(blocks, & &1.actor_id)
 
@@ -729,8 +740,9 @@ defmodule RintoPMO.Documents.ProposalsTest do
   # attributing a model's work to a person erases the distinction the review flow
   # rests on.
   describe "who a proposal is by" do
-    test "ignores an actor a caller tries to supply" do
+    test "signs as the stand-in AI, ignoring the caller and the topic's persona" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      signatory = default_assistant()
       conversation = insert(:conversation)
       impostor = insert(:actor)
 
@@ -742,38 +754,49 @@ defmodule RintoPMO.Documents.ProposalsTest do
                  content: "Tighter"
                })
 
-      assert proposal.actor_id == conversation.assistant_actor_id
+      assert proposal.actor_id == signatory.id
       refute proposal.actor_id == impostor.id
+      refute proposal.actor_id == conversation.assistant_actor_id
     end
 
     for scope <- [:title, :document] do
-      test "the #{scope} scope is attributed the same way" do
+      test "the #{scope} scope is signed the same way" do
         %{document: document} = document_with_blocks(["One"])
-        conversation = insert(:conversation)
+        signatory = default_assistant()
 
         assert {:ok, %{proposal: proposal}} =
-                 propose_scope(unquote(scope), document, conversation, "## Rewritten")
+                 propose_scope(unquote(scope), document, insert(:conversation), "## Rewritten")
 
-        assert proposal.actor_id == conversation.assistant_actor_id
+        assert proposal.actor_id == signatory.id
       end
     end
 
-    test "refuses a topic with no assistant, having nobody to attribute it to" do
-      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
-      conversation = insert(:conversation, assistant_actor: nil)
+    # Chat and actor topics used to sign differently -- the default actor for
+    # one, the configured persona for the other. They no longer do: what a
+    # signature answers is model-or-person, and which persona was configured is
+    # a question the conversation already answers.
+    test "a plain chat and an actor topic sign identically" do
+      %{document: document, blocks: [one, two | _rest]} = document_with_blocks(["One", "Two"])
+      signatory = default_assistant()
 
-      assert {:error, :assistant_actor_required, details} =
-               propose(document, block.block_id, conversation, "Tighter")
+      assert {:ok, %{proposal: from_chat}} =
+               propose(document, one.block_id, plain_chat(), "Tighter")
 
-      assert details.conversation_id == conversation.id
+      assert {:ok, %{proposal: from_actor}} =
+               propose(document, two.block_id, insert(:conversation), "Tighter")
+
+      assert from_chat.actor_id == signatory.id
+      assert from_actor.actor_id == signatory.id
     end
 
-    # A plain chat is talking to a model rather than to a persona, so there is
-    # no assistant to credit and the default actor is the name it writes under.
-    test "signs a plain chat's proposal with the default actor" do
+    # This used to be `assistant_actor_required`. A topic still choosing its
+    # assistant has nothing to *call*, which `RintoPMO.Conversations.Sessions`
+    # still refuses -- but it has always had something to sign as, and failing
+    # the write took the writing down with a decision nobody had made yet.
+    test "proposes from a topic that has not chosen an assistant yet" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
       signatory = default_assistant()
-      conversation = plain_chat()
+      conversation = insert(:conversation, assistant_actor: nil)
 
       assert {:ok, %{proposal: proposal}} =
                propose(document, block.block_id, conversation, "Tighter")
@@ -781,43 +804,19 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert proposal.actor_id == signatory.id
     end
 
-    for scope <- [:title, :document] do
-      test "a plain chat's #{scope} scope is signed the same way" do
-        %{document: document} = document_with_blocks(["One"])
-        signatory = default_assistant()
-
-        assert {:ok, %{proposal: proposal}} =
-                 propose_scope(unquote(scope), document, plain_chat(), "## Rewritten")
-
-        assert proposal.actor_id == signatory.id
-      end
-    end
-
     # No default actor is refused rather than falling back to the person who
     # owns the topic: crediting a model's work to them is the one mistake this
-    # derivation exists to prevent.
-    test "refuses a plain chat when setup never made the default actor" do
+    # derivation exists to prevent. It now covers every AI write rather than
+    # plain chats alone.
+    test "refuses when setup never made the default actor" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
-      conversation = plain_chat()
+      Repo.delete!(default_assistant())
+      conversation = insert(:conversation)
 
       assert {:error, :default_assistant_missing, details} =
                propose(document, block.block_id, conversation, "Tighter")
 
       assert details.conversation_id == conversation.id
-    end
-
-    # The default actor stands in for an absent assistant; it does not replace
-    # one that is there.
-    test "leaves an actor topic signed by its own assistant" do
-      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
-      signatory = default_assistant()
-      conversation = insert(:conversation)
-
-      assert {:ok, %{proposal: proposal}} =
-               propose(document, block.block_id, conversation, "Tighter")
-
-      assert proposal.actor_id == conversation.assistant_actor_id
-      refute proposal.actor_id == signatory.id
     end
 
     test "refuses a topic that does not exist" do
@@ -1927,12 +1926,6 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
   # No actor: a proposal is attributed to the topic's assistant, and a caller
   # able to name an author could name the wrong one.
-  defp default_assistant do
-    case Setup.ensure_default_assistant() do
-      {:created, :assistant, assistant} -> assistant
-      {:present, :assistant, assistant} -> assistant
-    end
-  end
 
   defp plain_chat do
     insert(:conversation,

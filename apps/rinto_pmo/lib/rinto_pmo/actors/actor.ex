@@ -18,12 +18,15 @@ defmodule RintoPMO.Actors.Actor do
 
   ## One row is the AI nobody named
 
-  A plain-chat topic talks to a provider and a model the person picked, not to
-  a persona -- so when an AI writes into a document from one, there is no actor
-  standing there to credit. `default` marks the row that stands in: an ordinary
-  AI actor except that it carries no model configuration, because its model is
-  whatever the topic was using. It answers "a model wrote this, not a person",
-  which is the distinction the review flow rests on, and nothing more.
+  `default` marks the row that signs everything an AI writes -- documents,
+  proposals, annotation replies -- from any topic, in any mode. An ordinary AI
+  actor except that it carries no model configuration, because there is no one
+  model behind it: whatever the topic was using.
+
+  It answers "a model wrote this, not a person", which is the distinction the
+  review flow rests on, and nothing more. Which persona a topic was configured
+  to call is a different question, and the conversation answers it: signing and
+  calling were two jobs on one column until they came apart.
 
   At most one row has it, and it is set at setup rather than cast from a
   caller: see `RintoPMO.Setup.ensure_default_assistant/0`. Nothing runs on it

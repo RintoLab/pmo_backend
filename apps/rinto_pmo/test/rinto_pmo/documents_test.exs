@@ -75,7 +75,8 @@ defmodule RintoPMO.DocumentsTest do
   # human actor, so without this the pi running inside a topic would have
   # credited its documents to a person.
   describe "who a new document is by" do
-    test "credits the topic's assistant, ignoring an actor the caller supplies" do
+    test "signs as the stand-in AI, ignoring both the caller and the topic's persona" do
+      signatory = default_assistant()
       conversation = insert(:conversation)
       impostor = insert(:actor)
 
@@ -88,8 +89,13 @@ defmodule RintoPMO.DocumentsTest do
                })
 
       blocks = Documents.get_document!(document.id).latest_revision.blocks
-      assert Enum.map(blocks, & &1.actor_id) == [conversation.assistant_actor_id]
+      assert Enum.map(blocks, & &1.actor_id) == [signatory.id]
+
+      # Not the caller's, which was never theirs to say, and not the topic's
+      # assistant either: what a signature answers is model-or-person, and the
+      # persona is a question the conversation already answers.
       refute impostor.id in Enum.map(blocks, & &1.actor_id)
+      refute conversation.assistant_actor_id in Enum.map(blocks, & &1.actor_id)
     end
 
     test "credits the named actor when there is no topic" do
@@ -109,6 +115,7 @@ defmodule RintoPMO.DocumentsTest do
     # The same question every later revision can answer, and no reason for the
     # first one to be the exception.
     test "records which topic produced it" do
+      default_assistant()
       conversation = insert(:conversation)
 
       assert {:ok, document} =
@@ -121,17 +128,24 @@ defmodule RintoPMO.DocumentsTest do
       assert document.latest_revision.source_conversation_id == conversation.id
     end
 
-    test "refuses a topic with no assistant, having nobody to credit" do
+    # This used to be `assistant_actor_required`. A topic still choosing its
+    # assistant has nothing to *call*, which `RintoPMO.Conversations.Sessions`
+    # still refuses -- but it has always had something to sign as, and failing
+    # the write was a decision nobody had made yet taking the writing down
+    # with it.
+    test "writes from a topic that has not chosen an assistant yet" do
+      signatory = default_assistant()
       conversation = insert(:conversation, assistant_actor: nil)
 
-      assert {:error, :assistant_actor_required, details} =
+      assert {:ok, document} =
                Documents.create_document(%{
-                 title: "Nobody wrote this",
+                 title: "Nobody chose a persona",
                  conversation_id: conversation.id,
                  markdown: "## One\n\nText"
                })
 
-      assert details.conversation_id == conversation.id
+      blocks = Documents.get_document!(document.id).latest_revision.blocks
+      assert Enum.map(blocks, & &1.actor_id) == [signatory.id]
     end
 
     # A plain chat is talking to a model rather than to a persona, so the
@@ -743,17 +757,6 @@ defmodule RintoPMO.DocumentsTest do
 
   defp document_ids(documents) do
     documents |> Enum.map(& &1.id) |> MapSet.new()
-  end
-
-  defp default_assistant do
-    {:ok, assistant} =
-      Setup.ensure_default_assistant()
-      |> case do
-        {:created, :assistant, assistant} -> {:ok, assistant}
-        {:present, :assistant, assistant} -> {:ok, assistant}
-      end
-
-    assistant
   end
 
   defp plain_chat do

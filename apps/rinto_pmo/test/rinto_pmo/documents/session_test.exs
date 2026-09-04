@@ -1,7 +1,13 @@
 defmodule RintoPMO.Documents.SessionTest do
-  use RintoPMO.DataCase, async: true
+  # Not async: every test here writes from a topic, so every one of them has to
+  # insert the stand-in AI -- one row behind a partial unique index. Two async
+  # transactions inserting it deadlock on that index, which is a fixture racing
+  # itself rather than anything about the code under test.
+  use RintoPMO.DataCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias RintoPMO.Actors
+  alias RintoPMO.ActorsMock
   alias RintoPMO.Annotations
   alias RintoPMO.AnnotationsMock
   alias RintoPMO.Conversations
@@ -16,9 +22,12 @@ defmodule RintoPMO.Documents.SessionTest do
 
   setup do
     stub_with(AnnotationsMock, Annotations)
-    # Proposing attributes itself to the topic's assistant, so it reads the real
-    # context rather than asserting an author.
+    # Proposing signs itself as the stand-in AI, so both of these are read for
+    # real rather than asserted against: the topic to check it exists, and the
+    # actor to sign as.
     stub_with(ConversationsMock, Conversations)
+    stub_with(ActorsMock, Actors)
+    default_assistant()
     # A document created without a project is filed in the default one, which
     # therefore has to exist.
     stub_with(ProjectsMock, Projects)
@@ -237,6 +246,8 @@ defmodule RintoPMO.Documents.SessionTest do
     # test's caller chain, so the stubs have to be lent to it by hand.
     Mox.allow(ConversationsMock, self(), pid)
     Mox.allow(AnnotationsMock, self(), pid)
+    # Signing a proposal reads the stand-in AI, so this one is lent too.
+    Mox.allow(ActorsMock, self(), pid)
     on_exit(fn -> Session.discard(document.id) end)
     pid
   end

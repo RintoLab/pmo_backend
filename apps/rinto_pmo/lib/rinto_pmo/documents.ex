@@ -1689,23 +1689,25 @@ defmodule RintoPMO.Documents do
       {:error, {:conversation_not_found, %{conversation_id: conversation_id}}}
   end
 
-  # A plain chat is talking to a model, not to a persona, so there is no
-  # assistant to credit and the default actor stands in for one -- see
-  # `RintoPMO.Actors.Actor`. Nobody chose it and nobody configures it: it is
-  # there from setup, which is why this is not a question the caller can get
-  # wrong.
-  defp author_of(%{mode: :chat, id: conversation_id}) do
+  # Everything an AI writes is signed by the one actor that stands in for "a
+  # model wrote this" -- see `RintoPMO.Actors.Actor`. Not by the topic's
+  # persona, even where there is one.
+  #
+  # The distinction anything downstream actually reads is model-or-person, and
+  # that is the whole of what this row says. Which persona was configured on
+  # the topic at the time is a different question, it is answered by the
+  # conversation itself, and resolving it here bought a branch per topic mode
+  # plus a refusal (`assistant_actor_required`) for a topic still choosing its
+  # assistant -- a write path failing on a decision nobody had made yet.
+  #
+  # `assistant_actor_id` is untouched and still decides what to *call*. Signing
+  # and calling were two jobs on one column; this is them coming apart.
+  defp author_of(%{id: conversation_id}) do
     case actors().get_default_assistant() do
       nil -> {:error, {:default_assistant_missing, %{conversation_id: conversation_id}}}
       actor -> {:ok, actor.id}
     end
   end
-
-  defp author_of(%{assistant_actor_id: nil, id: conversation_id}) do
-    {:error, {:assistant_actor_required, %{conversation_id: conversation_id}}}
-  end
-
-  defp author_of(%{assistant_actor_id: actor_id}), do: {:ok, actor_id}
 
   # Cut by the same rules as a new document's body, because the grain is this
   # layer's decision and a proposal choosing its own would drift from every

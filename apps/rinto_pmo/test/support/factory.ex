@@ -27,6 +27,23 @@ defmodule RintoPMO.Factory do
     }
   end
 
+  @doc """
+  The one actor every AI write is signed by, created if setup has not run.
+
+  Not a factory: there is at most one of these and `RintoPMO.Setup` decides
+  what it looks like, so building a second from a factory would be building the
+  thing the unique index exists to prevent.
+
+  Any test that writes from a topic needs it -- since signing stopped resolving
+  the topic's persona, this row is the signature.
+  """
+  def default_assistant do
+    case RintoPMO.Setup.ensure_default_assistant() do
+      {:created, :assistant, assistant} -> assistant
+      {:present, :assistant, assistant} -> assistant
+    end
+  end
+
   def project_factory do
     %Project{
       name: sequence(:project_name, &"Project #{&1}"),
