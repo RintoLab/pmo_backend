@@ -22,7 +22,7 @@ install an immutable release instead of `latest`:
 
 ```sh
 curl -fsSL "https://gitea.kenton.wang/api/packages/Rinto/generic/rinto-pmo/latest/install.sh" \
-  | RINTO_VERSION=0.2.4 sh
+  | RINTO_VERSION=0.3.0 sh
 ```
 
 ## Configure

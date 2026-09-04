@@ -104,6 +104,20 @@ if ! ./bin/pmo_backend eval 'RintoPMO.Release.setup_human()'; then
   exit 1
 fi
 
+# Also before the swap, and for the same reason: a release whose shortcuts are
+# the only way to reach breaking a document down, reviewing one, or the rest of
+# what used to be a button, must not go live with none of them.
+#
+# Idempotent, and deliberately not idempotent in one respect: a shortcut
+# deleted through the API comes back. That is what running this means -- see
+# `RintoPMO.PromptShortcuts.Presets`. A shortcut whose prompt was edited keeps
+# the edit; only ones nobody has touched follow the new wording.
+say "making sure the quick prompts are there"
+if ! ./bin/pmo_backend eval 'RintoPMO.Release.seed_prompt_shortcuts()'; then
+  echo "seeding the prompt shortcuts failed; the prior release path remains in place" >&2
+  exit 1
+fi
+
 # Only after migration and setup succeed do the on-disk paths change. Keep the
 # old tree beside the new one until the new service passes its health check.
 # Failures after this point deliberately require explicit operator recovery:
