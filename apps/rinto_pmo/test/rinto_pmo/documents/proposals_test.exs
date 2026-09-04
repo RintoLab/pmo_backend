@@ -23,7 +23,6 @@ defmodule RintoPMO.Documents.ProposalsTest do
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Projects
   alias RintoPMO.ProjectsMock
-  alias RintoPMO.Setup
 
   setup do
     # Commit resolves annotations through the injected context; these tests are
