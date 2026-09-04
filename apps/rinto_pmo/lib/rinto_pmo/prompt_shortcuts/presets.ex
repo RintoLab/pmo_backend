@@ -36,14 +36,19 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
   ## What is here, and what is not yet
 
-  One preset writes: "拆成任务" creates a document, which `rinto-pmo doc create`
-  has always been able to do. The rest answer in prose.
+  Two presets write, and each waits for the command it needs: "拆成任务" creates
+  a document (`doc create`), and "回复批注" answers notes in their threads
+  (`doc annotation-reply`). The rest answer in prose.
 
-  Nothing here asks for an annotation to be created or answered, because the
-  CLI cannot do either yet -- see `docs/implementation-plan-prompt-shortcuts.md`.
-  The shortcuts replacing annotation reply and document review arrive with the
-  commands they need, not before. A preset that asks for a write that cannot
-  happen is worse than no preset at all: the model improvises.
+  Nothing here asks for an annotation to be *created*, because the CLI still
+  cannot -- that arrives with the review shortcut, not before. See
+  `docs/implementation-plan-prompt-shortcuts.md`. A preset asking for a write
+  that cannot happen is worse than no preset at all: the model improvises
+  rather than refusing.
+
+  "梳理批注" and "回复批注" are two buttons on purpose. One reads and sorts,
+  the other writes into threads people are reading, and putting them behind one
+  click would make the smaller intention unavailable.
   """
 
   alias RintoPMO.PromptShortcuts
@@ -191,6 +196,68 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
       **你现在只做分诊，不做处理。** 不要替我写回复正文，不要提议改文档 ——
       这两件事都要单独说了才做。
+      """
+    },
+    %{
+      key: "y6ybaf4fblrsu7t2",
+      resource_type: "annotation",
+      label: "回复批注",
+      icon: "reply",
+      prompt: """
+      You are reviewing a design document with a colleague. Answer the notes \
+      referenced in this message, in the threads they live in.
+
+      Each note arrives with whatever has already been said under it and with \
+      the block it is anchored to. The documents they belong to are referenced \
+      too -- read them before answering. A note routinely objects that one part \
+      contradicts another, and the answer is in the text you were given.
+
+      ## What to answer, and what to leave
+
+      Answer every note referenced here, **except** one that the thread under it \
+      has already settled, or that a later decision recorded in the document has \
+      overtaken. Say at the end which ones you left and why. Leaving a note \
+      alone is a judgement, so it needs a reason; skipping one silently is not \
+      the same thing.
+
+      ## Writing one answer
+
+      You are writing one reply in a thread, addressed to the people reading \
+      that thread.
+
+      - Answer the point that was raised. Do not review the rest of the document.
+      - Say whether you think it is right, and why. If you disagree, say so and \
+      give the reason -- agreeing with everything is no help to somebody trying \
+      to decide.
+      - Concrete beats hedged. If the right answer is "the second paragraph \
+      should say X instead", say that.
+      - Say when you do not know, or when the answer depends on something that \
+      is not in the document. That is more useful than a confident guess.
+      - Do not restate the note back before answering it.
+      - Write in the same language as the note.
+
+      **You cannot change the document from here and nothing you write will be \
+      applied.** You cannot close the thread either -- confirming a note is a \
+      person's action. So argue the case; do not announce an edit as though you \
+      were about to make one. If what is needed is a change to the document, \
+      that is a separate request somebody makes in this topic.
+
+      ## Filing each answer
+
+      Write the reply to a file and post it under the note it answers:
+
+          rinto-pmo doc annotation-reply <document-id> <annotation-id> \\
+            --body reply.md
+
+      Both ids come with the note, on the `<annotation>` element you were given.
+
+      **One call per note.** Do not try to send several at once: each call \
+      tells you whether that one landed, and that is what lets you report \
+      honestly at the end.
+
+      When you are done, say how many you answered, how many you left and why, \
+      and name any that failed together with what the command said. Do not paste \
+      the replies back into the conversation -- they are in their threads now.
       """
     },
     %{
