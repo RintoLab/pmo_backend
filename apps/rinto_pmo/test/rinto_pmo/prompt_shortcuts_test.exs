@@ -1,9 +1,12 @@
 defmodule RintoPMO.PromptShortcutsTest do
   use RintoPMO.DataCase, async: true
 
+  alias RintoPMO.Documents.DocumentBlock
+  alias RintoPMO.Documents.Markdown
   alias RintoPMO.PromptShortcuts
   alias RintoPMO.PromptShortcuts.Presets
   alias RintoPMO.PromptShortcuts.PromptShortcut
+  alias RintoPMO.Tasks.Breakdown
 
   defp attrs(overrides \\ %{}) do
     Map.merge(
@@ -157,14 +160,39 @@ defmodule RintoPMO.PromptShortcutsTest do
       refute back.id == preset.id
     end
 
-    test "every preset asks only for prose, because the CLI cannot write annotations yet" do
-      # A preset that told a model to run a command that does not exist would
-      # get improvisation instead of a refusal. Remove this test in step 3 of
-      # docs/implementation-plan-prompt-shortcuts.md, together with the
-      # constraint it records.
-      for preset <- Presets.all() do
-        refute preset.prompt =~ "rinto-pmo", "#{preset.key} asks for a write that cannot happen"
+    test "no preset asks for an annotation write the CLI cannot do yet" do
+      # `doc create` exists, so "拆成任务" is allowed to call it. Creating or
+      # answering an annotation does not, and a preset that asked for one would
+      # buy improvisation rather than a refusal. Widen this when step 3 of
+      # docs/implementation-plan-prompt-shortcuts.md lands.
+      for preset <- Presets.all(), command <- ["doc annotate", "annotation reply"] do
+        refute preset.prompt =~ command, "#{preset.key} asks for a write that cannot happen"
       end
+    end
+
+    test "the breakdown preset's preamble convention survives filing" do
+      # The breakdown preset asks for a `rinto://` line above the first `##`,
+      # to leave the source reachable from what was derived from it. That only
+      # costs nothing if the filer ignores it -- so this pins the assumption
+      # the prompt is written against.
+      markdown = """
+      从 [上线流程](rinto://document/01a06d44-c193-7a87-b31a-74ab60726db5) 拆出。
+
+      ## 灰度发布
+
+      ### 接入十分之一流量
+
+      先切 10% 流量。
+
+      - 错误率不高于基线
+      """
+
+      {:ok, contents} = Markdown.split(markdown)
+      blocks = Enum.map(contents, &%DocumentBlock{content: &1})
+
+      assert {:ok, [chunk]} = Breakdown.parse(blocks)
+      assert chunk.title == "灰度发布"
+      assert [%{title: "接入十分之一流量"}] = chunk.tasks
     end
   end
 

@@ -36,11 +36,12 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
   ## What is here, and what is not yet
 
-  Everything below answers in prose. Nothing tells a model to write to the
-  database, because the only writing channel is the `rinto-pmo` CLI and it
-  cannot yet create or answer an annotation -- see
-  `docs/implementation-plan-prompt-shortcuts.md`. The shortcuts that replace
-  document breakdown, annotation reply and document review arrive with the
+  One preset writes: "拆成任务" creates a document, which `rinto-pmo doc create`
+  has always been able to do. The rest answer in prose.
+
+  Nothing here asks for an annotation to be created or answered, because the
+  CLI cannot do either yet -- see `docs/implementation-plan-prompt-shortcuts.md`.
+  The shortcuts replacing annotation reply and document review arrive with the
   commands they need, not before. A preset that asks for a write that cannot
   happen is worse than no preset at all: the model improvises.
   """
@@ -83,6 +84,95 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       不要评论措辞、语气、格式或章节顺序。没人是为了被告诉某段可以更紧凑才让你读的。
 
       如果这篇文档在你看来没有上述任何问题，就直接说没有，不要为了凑满三条而编。
+      """
+    },
+    %{
+      key: "rhbmy27l64mhvwef",
+      resource_type: "document",
+      label: "拆成任务",
+      icon: "list-tree",
+      prompt: """
+      You break a plan down into the work it implies, and you file the result as \
+      a task document.
+
+      The document to break down is the one referenced in this message. Read all \
+      of it first.
+
+      Before writing anything, run `rinto-pmo doc show <id>` on it and note the \
+      `project_id` it reports: the breakdown belongs beside its source, not in \
+      the default project.
+
+      ## The shape, and follow it exactly
+
+      - `##` -- a chunk of work. Everything in the breakdown lives under one of \
+      these.
+      - `###` -- one task somebody can pick up and finish. Belongs to the `##` \
+      above it.
+      - Text under either heading -- what that chunk or task is, and then how \
+      somebody will know it is done. Nothing marks the boundary: the criteria \
+      are the bullets at the end.
+
+      A chunk that is one single task is written as a `##` with **no `###` under \
+      it**, and the text under it describes that task. Do not write a `##` and \
+      then a single `###` saying the same thing.
+
+      Never write `#`, and never write `####` or deeper. Every `###` must sit \
+      under a `##`; a `###` before the first `##` is refused outright when the \
+      breakdown is filed.
+
+      Open with one line naming what this breaks down, before the first `##`:
+
+      从 [源文档标题](rinto://document/<源文档 id>) 拆出。
+
+      Text above the first heading is a preamble and is ignored when the tasks \
+      are filed, so it costs nothing -- and the link makes the source reachable \
+      from the breakdown afterwards.
+
+      ## Acceptance criteria
+
+      - **A bullet is a criterion, and nothing else is a bullet.** Anything that \
+      is not a criterion goes in the prose above them -- and if it was a piece \
+      of work, it was a task and belongs in its own `###`.
+      - A criterion says what is **observably true once the work is finished**. \
+      Not what the doer will do, not that a test exists, not what somebody \
+      downstream can then build. "The list keeps its scroll position across a \
+      reload" is a criterion; "handle scroll position" is the title again; "add \
+      tests for it" is the doer's business.
+      - One line each, and each one has to be settleable by looking at the \
+      result. A line nobody could call true or false is not a criterion.
+      - Take them from the document. A task the document gives no grounds for \
+      gets none: an invented criterion is a requirement nobody agreed to.
+
+      ## Rules
+
+      - Break down the work the document implies. Do not restate the document.
+      - A task is one person's next piece of work, not a phase and not a whole \
+      feature.
+      - Say what the task is, not how to do it. The person doing it decides that.
+      - Write in the same language as the document.
+      - Never invent work the document gives no reason for. If a section implies \
+      nothing to do, it gets no task.
+      - Do not estimate. How long something takes is decided elsewhere.
+
+      ## Filing it
+
+      Write the breakdown to a file and create it as a document:
+
+          rinto-pmo doc create \\
+            --title "<源文档标题> · 任务分解" \\
+            --project-id <the project_id you read above> \\
+            --body breakdown.md
+
+      Run it once with `--dry-run` first and check that the sections split into \
+      the blocks you meant -- one block per `##` and per `###`. That check is \
+      free and it is the only thing standing between a mis-split heading and a \
+      task nobody can file.
+
+      Creating the document does **not** create the tasks. Somebody reads the \
+      breakdown and files it, which is a separate action and theirs to take.
+
+      When you are done, say what you created and give its id. Do not paste the \
+      breakdown back into the conversation -- it is a document now.
       """
     },
     %{
