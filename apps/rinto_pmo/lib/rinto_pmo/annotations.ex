@@ -12,34 +12,32 @@ defmodule RintoPMO.Annotations do
   design rather than a gap. What a person has not looked at is not something
   this module is in a position to know.
 
-  ## The AI writes here only when asked
+  ## The AI writes here through the same door a person does
 
-  There are two doors and a person opens both. `request_reply/1` answers *this*
-  note as the actor holding the `annotation_actor` role; `request_review/1`
-  reads whole documents and opens notes as the actor holding `review_actor`.
-  They are separate because answering a discussion and reviewing a document
-  need different personas and prompts, even though both leave annotations.
+  There is one write path and everything uses it. A model answering a note or
+  reviewing a document is a topic running `rinto-pmo doc annotation`, which is
+  an API call into `create_annotation/2` and `create_reply/2` -- so what it
+  writes is positioned, indexed and reference-checked exactly like anybody
+  else's, and a dead `rinto://` link earns it the same refusal.
 
-  Conversations never write here: a topic produces proposals against the
-  document, and that is a different output on a different resource.
+  There used to be two more doors: `request_reply/1` and `request_review/1`,
+  each a background job calling a model configured by a system-wide role. Both
+  are gone. They were one person clicking one button about one thing, which is
+  a conversation with the asking hidden -- and hiding it cost the ability to
+  say "again, but shorter". See `docs/implementation-plan-prompt-shortcuts.md`.
 
-  That is what makes the boundary honest. Nothing has to work out whether a
-  discussion has concluded, because the asking *is* the boundary: one click,
-  one answer.
+  What survives that removal is the boundary itself. Nothing has to work out
+  whether a discussion has concluded, because somebody asking *is* the
+  boundary.
   """
 
   use RintoPMO, :context
 
-  alias RintoPMO.Agent.DocumentReviewer
   alias RintoPMO.Annotations.Annotation
   alias RintoPMO.Annotations.AnnotationReply
-  alias RintoPMO.Annotations.ReplyWorker
-  alias RintoPMO.Annotations.ReviewWorker
   alias RintoPMO.Documents.Document
-  alias RintoPMO.Documents.Notifier
   alias RintoPMO.Links
   alias RintoPMO.References.Guard
-  alias RintoPMO.Settings
   alias RintoPMO.Utils
 
   defmodule Behaviour do
@@ -68,14 +66,6 @@ defmodule RintoPMO.Annotations do
     @callback unconfirm_annotation(Annotation.t()) ::
                 {:ok, Annotation.t()} | {:error, Ecto.Changeset.t()}
 
-    @callback request_reply(Annotation.t()) ::
-                {:ok, Oban.Job.t()} | {:error, atom(), map()} | {:error, Ecto.Changeset.t()}
-    @callback run_reply(integer(), UUIDv7.t()) :: :ok | {:cancel, String.t()}
-
-    @callback request_review([Document.t()]) ::
-                {:ok, Oban.Job.t()} | {:error, atom(), map()} | {:error, Ecto.Changeset.t()}
-    @callback run_review(integer(), [UUIDv7.t()]) :: :ok | {:cancel, String.t()}
-
     @callback create_reply(Annotation.t(), map()) ::
                 {:ok, AnnotationReply.t()} | {:error, Ecto.Changeset.t()}
     @callback update_reply(AnnotationReply.t(), map()) ::
@@ -86,12 +76,6 @@ defmodule RintoPMO.Annotations do
   end
 
   @behaviour Behaviour
-
-  # Eight documents is a design and the things it touches, which is the size of
-  # question a review is for. It is a ceiling on the request rather than on the
-  # model: past it the answer stops being a review of a set and becomes a
-  # skim of a library.
-  @max_documents 8
 
   @doc """
   Lists annotations for a document without preloading replies.
@@ -219,139 +203,6 @@ defmodule RintoPMO.Annotations do
     annotation
     |> Annotation.unconfirm_changeset()
     |> Repo.update()
-  end
-
-  @doc """
-  Asks the AI for one reply to one annotation.
-
-  The only way anything but a person writes here. A person is looking at a note
-  and wants the model's read on it; what comes back is an ordinary reply,
-  appended like any other, which somebody can act on, argue with, or ignore.
-
-  Answers with the *job*, before the model has been asked -- the call takes as
-  long as it takes, and what a client does next is watch `document:{id}` on the
-  socket. `GET /jobs/{id}` is the way back for one that was not listening.
-
-  Refused when nobody holds the `annotation_actor` role. That is a condition of
-  asking rather than an outcome of the answer, so it is reported here and
-  synchronously, to whoever is making the mistake.
-
-  Asking twice is allowed and appends twice: replies are a list, and a second
-  opinion is a second opinion. What it does not do is fire twice for one
-  double-click -- while a reply to this annotation is in flight, `Oban` hands
-  back the job already queued.
-
-  A confirmed annotation is not refused. Somebody may well want the model's
-  read on a decision already taken, and refusing would mean this module had an
-  opinion about why they were asking.
-  """
-  @impl true
-  def request_reply(%Annotation{} = annotation) do
-    with {:ok, _actor} <- annotation_actor() do
-      %{annotation_id: annotation.id}
-      |> ReplyWorker.new()
-      |> Oban.insert()
-    end
-  end
-
-  @doc """
-  Runs one reply: the model call, the write, and the word to whoever is watching.
-
-  Called by the worker and not by a request. What it leaves behind is the reply
-  itself, so the only thing that needs announcing is that it is over -- which
-  goes out on the document's own topic either way.
-
-  Answers `:ok`, or `{:cancel, reason}` when the model call failed. `:cancel`
-  and not `:error`, for the reason `RintoPMO.Tasks.run_estimation/3` gives:
-  this is finished either way, and asking the identical question nineteen more
-  times is not a retry policy.
-  """
-  @impl true
-  def run_reply(job_id, annotation_id) do
-    case Repo.get(Annotation, annotation_id) do
-      # Deleted while the job waited. Nothing to answer, and the note whose
-      # thread this would join is not there to hold it.
-      nil -> :ok
-      annotation -> reply_and_append(job_id, Repo.preload(annotation, :replies))
-    end
-  end
-
-  @doc """
-  Asks the AI to read documents end to end and leave what it finds.
-
-  The other door. `request_reply/1` answers a note somebody already wrote; this
-  one opens notes, which is the only thing in this system that writes an
-  annotation nobody pointed at a paragraph to make.
-
-  It is still a person's action -- the asking is the boundary, exactly as it is
-  for a reply. Nothing decides on its own that a document is due for review.
-
-  ## Why it takes a set
-
-  The findings worth the most are the ones no single document contains: two
-  documents that cannot both be true. Reviewing them one at a time and
-  comparing afterwards puts the comparison back on whoever asked, which is the
-  work they were trying to hand over. So the unit is a selection, and one
-  document is a selection of one.
-
-  At most `max_documents/0`. Refused rather than truncated, for the reason
-  `too_many_references` is: a caller silently given a smaller review than it
-  asked for concludes the rest was clean.
-
-  Duplicates collapse and the list is sorted before it becomes the job's key,
-  so the same selection is the same job however it was ordered.
-
-  Refused when nobody holds the `review_actor` role -- a condition of
-  asking rather than an outcome of the answer, so it is reported here and
-  synchronously.
-  """
-  @impl true
-  def request_review(documents) when is_list(documents) do
-    document_ids = documents |> Enum.map(& &1.id) |> Enum.uniq() |> Enum.sort()
-
-    with :ok <- ensure_reviewable(document_ids),
-         {:ok, _actor} <- review_actor() do
-      %{document_ids: document_ids}
-      |> ReviewWorker.new()
-      |> Oban.insert()
-    end
-  end
-
-  @doc """
-  The most documents one review may be asked about.
-  """
-  @spec max_documents() :: pos_integer()
-  def max_documents, do: @max_documents
-
-  @doc """
-  Runs one review: the model call, the annotations it produces, and the word to
-  whoever is watching.
-
-  Called by the worker and not by a request. Every document in the set is told
-  about separately, because a client is watching one document's topic and not
-  the selection somebody made three tabs ago.
-
-  ## A finding that cannot be placed is dropped, not raised
-
-  Three things can be wrong with what comes back, and each degrades on its own:
-
-    * a `document_id` outside the set -- dropped, because there is nowhere
-      honest to put it
-    * a `block_id` that is not in that document's latest revision -- written
-      unanchored, because the text still names what it is about
-    * a note the write path refuses, a dead `rinto://` most likely -- skipped
-
-  None of them takes the other findings down. A model that invents one
-  reference should not cost somebody the eleven notes it got right.
-  """
-  @impl true
-  def run_review(job_id, document_ids) when is_list(document_ids) do
-    case load_documents(document_ids) do
-      # Every one of them deleted while the job waited. Nothing to review and
-      # nowhere to say so.
-      [] -> :ok
-      documents -> review_and_annotate(job_id, documents)
-    end
   end
 
   @doc """
@@ -488,170 +339,6 @@ defmodule RintoPMO.Annotations do
 
   defp content_of(attrs), do: Map.get(attrs, :content) || Map.get(attrs, "content")
 
-  # The model is given the note, what it is anchored to, everything already
-  # said under it, and the document as it currently stands. The document is not
-  # optional: an annotation says "this contradicts the section above", and an
-  # answer written without the section above is a guess about what it meant.
-  defp reply_and_append(job_id, %Annotation{} = annotation) do
-    with {:ok, actor} <- annotation_actor(),
-         {:ok, document} <- fetch_document(annotation),
-         {:ok, text} <- call_responder(annotation, document, actor),
-         {:ok, _reply} <- append_reply(annotation, actor, text) do
-      succeed(job_id, annotation)
-    else
-      {:error, :no_annotation_actor, _details} ->
-        fail(job_id, annotation, "no actor holds the annotation role")
-
-      {:error, %Ecto.Changeset{}} ->
-        fail(job_id, annotation, "the model's answer could not be written down")
-
-      {:error, reason} ->
-        fail(job_id, annotation, failure_reason(reason))
-    end
-  end
-
-  defp fetch_document(%Annotation{} = annotation) do
-    {:ok, Utils.module(:documents).get_document!(annotation.document_id)}
-  rescue
-    Ecto.NoResultsError -> {:error, :document_gone}
-  end
-
-  defp call_responder(%Annotation{} = annotation, document, actor) do
-    input = %{
-      annotation: %{
-        content: annotation.content,
-        block_text: annotation.block_text,
-        selected_text: annotation.selected_text,
-        replies: Enum.map(annotation.replies, & &1.content)
-      },
-      document: %{
-        title: document.latest_revision.title,
-        blocks: Enum.map(document.latest_revision.blocks, & &1.content)
-      }
-    }
-
-    Utils.module(:annotation_responder).respond(input,
-      provider: actor.provider,
-      model: actor.model,
-      thinking: actor.thinking_level
-    )
-  end
-
-  # Through `create_reply/2` rather than around it, so the AI's reply is
-  # positioned, indexed and reference-checked exactly like a person's. A model
-  # that writes a dead `rinto://` link earns the same refusal anybody would.
-  defp append_reply(%Annotation{} = annotation, actor, text) do
-    create_reply(annotation, %{"actor_id" => actor.id, "content" => text})
-  end
-
-  defp annotation_actor do
-    case Settings.get_actor("annotation_actor") do
-      nil -> {:error, :no_annotation_actor, %{}}
-      actor -> {:ok, actor}
-    end
-  end
-
-  defp review_actor do
-    case Settings.get_actor("review_actor") do
-      nil -> {:error, :no_review_actor, %{}}
-      actor -> {:ok, actor}
-    end
-  end
-
-  defp ensure_reviewable([]), do: {:error, :no_documents, %{}}
-
-  defp ensure_reviewable(document_ids) when length(document_ids) > @max_documents do
-    {:error, :too_many_documents, %{limit: @max_documents}}
-  end
-
-  defp ensure_reviewable(_document_ids), do: :ok
-
-  # One at a time, and a missing one is left out rather than failing the batch:
-  # a document deleted between the click and the job is not a reason to abandon
-  # the review of the others. At most `@max_documents` of them, so the query
-  # count is bounded by the same number that bounds the request.
-  defp load_documents(document_ids) do
-    Enum.flat_map(document_ids, &load_document/1)
-  end
-
-  defp load_document(document_id) do
-    [Utils.module(:documents).get_document!(document_id)]
-  rescue
-    Ecto.NoResultsError -> []
-  end
-
-  defp review_and_annotate(job_id, documents) do
-    with {:ok, actor} <- review_actor(),
-         {:ok, findings} <- call_reviewer(documents, actor) do
-      succeed_review(job_id, documents, place_and_write(documents, findings, actor))
-    else
-      {:error, :no_review_actor, _details} ->
-        fail_review(job_id, documents, "no actor holds the review role")
-
-      {:error, reason} ->
-        fail_review(job_id, documents, failure_reason(reason))
-    end
-  end
-
-  defp call_reviewer(documents, actor) do
-    input = %{documents: Enum.map(documents, &reviewer_document/1)}
-
-    Utils.module(:document_reviewer).review(input,
-      provider: actor.provider,
-      model: actor.model,
-      thinking: actor.thinking_level,
-      system_prompt: actor.system_prompt
-    )
-  end
-
-  # Block ids travel with the text so a finding can name where it belongs. They
-  # are ids rather than positions, the way `RintoPMO.Agent.TaskEstimator` hands
-  # over task ids: a position means nothing once the answer is read back against
-  # a revision that has moved.
-  #
-  # `block_id` and not the snapshot's primary key -- that is the identity an
-  # annotation anchors to, and it is the one that survives the next revision.
-  defp reviewer_document(document) do
-    %{
-      id: document.id,
-      title: document.latest_revision.title,
-      blocks: Enum.map(document.latest_revision.blocks, &%{id: &1.block_id, text: &1.content})
-    }
-  end
-
-  # Through `create_annotation/2` rather than around it, so a note the model
-  # wrote is positioned, indexed and reference-checked exactly like a person's.
-  # A model that writes a dead `rinto://` link earns the same refusal anybody
-  # would -- and only that note is lost.
-  defp place_and_write(documents, findings, actor) do
-    by_id = Map.new(documents, &{&1.id, &1})
-
-    findings
-    |> Enum.take(DocumentReviewer.max_findings())
-    |> Enum.reduce(%{}, fn finding, written ->
-      with {:ok, document, attrs} <- place(finding, by_id),
-           {:ok, _annotation} <-
-             create_annotation(document, Map.put(attrs, "actor_id", actor.id)) do
-        Map.update(written, document.id, 1, &(&1 + 1))
-      else
-        _unwritable -> written
-      end
-    end)
-  end
-
-  defp place(finding, by_id) when is_map(finding) do
-    with content when is_binary(content) <- Map.get(finding, "content"),
-         trimmed = String.trim(content),
-         false <- trimmed == "",
-         %Document{} = document <- Map.get(by_id, Map.get(finding, "document_id")) do
-      {:ok, document, anchor(%{"content" => trimmed}, document, Map.get(finding, "block_id"))}
-    else
-      _unplaceable -> :error
-    end
-  end
-
-  defp place(_finding, _by_id), do: :error
-
   # A block id the model invented, or one that has gone since it read the
   # document, leaves the note unanchored rather than throwing it away. The text
   # still names what it is about, and an opinion with no pin in the margin is
@@ -663,7 +350,7 @@ defmodule RintoPMO.Annotations do
       # treating silence as "the block is gone" would drop anchors that are
       # perfectly fine. Every path that cares loads them --
       # `RintoPMO.Documents.get_document!/1` preloads the latest revision's
-      # blocks, and both the controller and the review path go through it.
+      # blocks, and the controller every write comes through goes through it.
       :unloaded -> attrs
       blocks -> place_on(attrs, blocks, block_id)
     end
@@ -700,53 +387,6 @@ defmodule RintoPMO.Annotations do
   defp blocks_of(_not_loaded), do: :unloaded
 
   defp drop_attr(attrs, key), do: Map.drop(attrs, [key, Atom.to_string(key)])
-
-  defp succeed_review(job_id, documents, written) do
-    Enum.each(documents, fn document ->
-      :ok =
-        Notifier.broadcast_review(
-          job_id,
-          document.id,
-          :succeeded,
-          nil,
-          Map.get(written, document.id, 0)
-        )
-    end)
-
-    :ok
-  end
-
-  defp fail_review(job_id, documents, reason) when is_binary(reason) do
-    Enum.each(documents, fn document ->
-      :ok = Notifier.broadcast_review(job_id, document.id, :failed, reason, 0)
-    end)
-
-    {:cancel, reason}
-  end
-
-  defp succeed(job_id, %Annotation{} = annotation) do
-    :ok = Notifier.broadcast_annotation_reply(job_id, annotation, :succeeded, nil)
-    :ok
-  end
-
-  # Said twice on purpose, the same way an estimation says it: the broadcast is
-  # for the person watching and is gone once delivered; the `:cancel` leaves
-  # the same words in the job's `errors`, which is where somebody debugging a
-  # provider looks.
-  defp fail(job_id, %Annotation{} = annotation, reason) when is_binary(reason) do
-    :ok = Notifier.broadcast_annotation_reply(job_id, annotation, :failed, reason)
-    {:cancel, reason}
-  end
-
-  defp failure_reason({:pi_exit, code, ""}), do: "the model call exited #{code}, saying nothing"
-  defp failure_reason({:pi_exit, _code, complaint}), do: complaint
-  defp failure_reason({:provider_refused, complaint}), do: complaint
-  defp failure_reason(:stalled), do: "the model stopped responding"
-  defp failure_reason(:empty_output), do: "the model answered with nothing"
-  defp failure_reason(:pi_not_found), do: "the agent runtime is not installed on the server"
-  defp failure_reason(:document_gone), do: "the document this annotation is on is gone"
-  defp failure_reason(:invalid_output), do: "the model's answer was not a list of findings"
-  defp failure_reason(other), do: inspect(other)
 
   defp filter_annotations(query, filter) do
     Enum.reduce(filter, query, fn

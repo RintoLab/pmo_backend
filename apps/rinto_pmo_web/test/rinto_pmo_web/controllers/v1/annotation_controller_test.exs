@@ -282,42 +282,6 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
              json_response(conn, 200)["data"]
   end
 
-  test "POST annotations/:id/reply answers with the job", %{conn: conn} do
-    document = expect_document()
-    annotation = insert(:annotation, document: document)
-
-    expect(AnnotationsMock, :get_annotation!, fn ^document, _id ->
-      %{annotation | replies: []}
-    end)
-
-    expect(AnnotationsMock, :request_reply, fn _annotation ->
-      {:ok, queued_job(annotation.id)}
-    end)
-
-    conn = post(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/reply")
-
-    assert %{"id" => 42, "status" => "running"} = json_response(conn, 202)["data"]
-  end
-
-  # A condition of asking, not an outcome, so it is answered here rather than
-  # queued and failed somewhere the person who clicked is not looking.
-  test "POST annotations/:id/reply says when nobody holds the role", %{conn: conn} do
-    document = expect_document()
-    annotation = insert(:annotation, document: document)
-
-    expect(AnnotationsMock, :get_annotation!, fn ^document, _id ->
-      %{annotation | replies: []}
-    end)
-
-    expect(AnnotationsMock, :request_reply, fn _annotation ->
-      {:error, :no_annotation_actor, %{}}
-    end)
-
-    conn = post(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}/reply")
-
-    assert %{"error" => "no_annotation_actor"} = json_response(conn, 422)
-  end
-
   test "GET annotations/:id/conversations lists the topics that discussed it", %{conn: conn} do
     document = expect_document()
     annotation = insert(:annotation, document: document)
@@ -353,22 +317,6 @@ defmodule RintoPMOWeb.V1.AnnotationControllerTest do
 
     conn = delete(conn, ~p"/api/v1/documents/#{document.id}/annotations/#{annotation.id}")
     assert response(conn, 204) == ""
-  end
-
-  # Built rather than inserted, like `TaskControllerTest`: the controller only
-  # reads it, and Oban's queues are off in test so nothing would run it anyway.
-  defp queued_job(annotation_id) do
-    %Oban.Job{
-      id: 42,
-      worker: "RintoPMO.Annotations.ReplyWorker",
-      queue: "default",
-      state: "available",
-      args: %{"annotation_id" => annotation_id},
-      errors: [],
-      priority: 0,
-      inserted_at: ~U[2026-08-28 09:00:00.000000Z],
-      scheduled_at: ~U[2026-08-28 09:00:00.000000Z]
-    }
   end
 
   defp expect_document do

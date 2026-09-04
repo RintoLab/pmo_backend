@@ -31,8 +31,9 @@ defmodule RintoPMO.Calendar do
   ## The default is Monday to Friday, and the tables hold only departures
 
   `daily_capacity/0` is 480 minutes: eight hours. It is a constant rather than
-  a setting, because `RintoPMO.Settings` is a table of which actor plays which
-  role and says as much in its own first line.
+  a setting, because the only table of settings this system has is
+  `RintoPMO.AIRoles`, which is about how two automatic jobs call a model and
+  says as much in its own first line.
 
   What varies is not the length of a working day but which days are worked,
   and `RintoPMO.Calendar.Day` holds exactly the days that depart from the

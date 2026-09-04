@@ -27,9 +27,9 @@ info:
     `POST /conversations`, `POST /tasks/{id}/claim` and
     `POST /documents/{id}/proposals/{id}/decide` credit the token holder and
     ignore any `actor_id` in the body. Endpoints naming *another* actor --
-    `POST /tasks/{id}/assign`, `PUT /settings/{key}`, an assistant switch, and
-    anything an AI can author -- still take one, because they are about
-    somebody other than the caller.
+    `POST /tasks/{id}/assign`, an assistant switch, and anything an AI can
+    author -- still take one, because they are about somebody other than the
+    caller.
   version: 0.1.0
 security:
   - ActorToken: []
@@ -137,12 +137,17 @@ tags:
       the way back for a client that lost its connection while something was
       running. Absent means finished -- pruning only ever reaches jobs that are
       over.
-  - name: Settings
+  - name: AI roles
     description: >
-      Which actor does a job that belongs to the system rather than to any one
-      topic -- naming conversations, so far. Deliberately runtime state rather
-      than configuration: it is chosen while looking at the actor list, and
-      changed again after seeing a few of the results.
+      How the two jobs that happen outside a conversation call a model: naming a
+      topic, and estimating a task. Each carries a provider, a model, a thinking
+      level and an optional standing instruction.
+
+
+      Deliberately runtime state rather than deploy configuration: which model
+      does a job is tuned by reading what came back, and a config file would
+      make each adjustment a release. The set of jobs is fixed -- a role exists
+      because code reads it by name -- so there is no `POST`.
 paths:
   /actors:
     get:
@@ -254,65 +259,84 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
-  /settings:
+  /ai_roles:
     get:
-      tags: [Settings]
-      operationId: listSettings
-      summary: Who does each system-wide job
+      tags: [AI roles]
+      operationId: listAIRoles
+      summary: How each automatic job calls a model
       description: >
-        Answers with every role the system has, including the empty ones, so a
-        client renders the same list whether or not anybody has chosen
-        anything. Each role carries the actor whole rather than an id.
+        Answers with every job the system has, including the ones nobody has
+        configured, so a client renders the same screen whether or not anything
+        has been set up. An unconfigured job is `null` rather than an object of
+        nulls.
       responses:
         "200":
-          description: Every role and the actor in it
+          description: Every job and its configuration
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SettingsResponse"
-  /settings/{key}:
+                $ref: "#/components/schemas/AIRolesResponse"
+  /ai_roles/{key}:
     parameters:
-      - $ref: "#/components/parameters/SettingKey"
+      - $ref: "#/components/parameters/AIRoleKey"
     put:
-      tags: [Settings]
-      operationId: putSetting
-      summary: Put an actor in a role
+      tags: [AI roles]
+      operationId: putAIRole
+      summary: Configure an automatic job
       description: >
-        Replaces whoever was in the role; send `"actor_id": null` to empty it.
-        The actor must be an enabled AI actor -- a human has no model to ask.
-        Disabling or deleting the actor later is not an error: the role reads
-        as empty, and what that means is the reader's to decide. `title_actor`
-        falls back to the topic's own assistant configuration;
-        `decomposition_actor` has no
-        conversation to inherit from, so decomposition is refused until the
-        role is filled again.
+        Writes the row whole. `provider`, `model` and `thinking_level` are
+        required together -- a role holding two of the three is a call nobody
+        can make -- and `system_prompt` left out of the body clears whatever was
+        there, which is how a standing instruction is removed.
 
 
-        An actor with no model configuration -- the one marked `default`, which
-        exists to sign what a plain chat writes -- cannot be put in a role: a
-        role is somebody to *call*, and it has nothing to call.
-
-
-        Roles are defined by the system, so an unknown `key` is a 404 rather
-        than the creation of a new one. The response is the full set, the same
-        shape `GET /settings` returns.
+        The keys are defined by the system, so an unknown one is a 404 rather
+        than the creation of a new job: a row nothing reads would be
+        configuration for work that never happens. The response is the full set,
+        the same shape `GET /ai_roles` returns.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SettingUpdateInput"
+              $ref: "#/components/schemas/AIRoleUpdateInput"
       responses:
         "200":
-          description: Every role and the actor in it
+          description: Every job and its configuration
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SettingsResponse"
+                $ref: "#/components/schemas/AIRolesResponse"
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [AI roles]
+      operationId: deleteAIRole
+      summary: Empty an automatic job
+      description: >
+        What an empty job means belongs to the job, and the two answer
+        differently. `topic_naming` falls back to the topic's own model
+        configuration -- naming happens inside a conversation, so there is
+        always another configuration right there to inherit.
+        `task_estimation` refuses: it belongs to no conversation, so there is
+        nothing to fall back to, and `POST /tasks/{id}/estimate` answers
+        `no_estimation_ai` until it is configured again.
+
+
+        Emptying a job nobody configured succeeds -- what was asked for is true
+        either way. Answers with the full set rather than `204`, because the
+        client is looking at the screen this changed.
+      responses:
+        "200":
+          description: Every job and its configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AIRolesResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /projects:
     get:
       tags: [Projects]
@@ -1254,195 +1278,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /reviews:
-    post:
-      tags: [Annotations]
-      operationId: requestDocumentReview
-      summary: Ask the AI to read documents end to end and leave what it finds
-      description: >-
-        The other door into annotations. `POST .../annotations/{id}/reply`
-        answers a note somebody already wrote; this one opens notes, and it is
-        the only thing in the system that writes an annotation nobody pointed
-        at a paragraph to make. Everything it writes is an ordinary annotation,
-        credited to whichever actor holds the `review_actor` role, and a
-        person confirms or deletes it like any other.
-
-
-        The role is separate from `annotation_actor`: its actor's
-        `system_prompt` customizes what the review pays attention to, while the
-        built-in id and JSON output contract remains in force.
-
-
-        It is still a person's action. Nothing decides on its own that a
-        document is due for review.
-
-
-        **It takes a set, not a document.** The findings worth the most are the
-        ones no single document contains -- two documents that cannot both be
-        true -- and reviewing them one at a time puts the comparison back on
-        whoever asked. One document is a set of one. A cross-document finding
-        lands on the document that should change and cites the other as a
-        `rinto://document/{id}` link in its text.
-
-
-        Answers with the **job**, before the model has been asked. What a
-        client does next is watch `document:{id}` for `document_review`, which
-        carries how many notes landed on *that* document; the notes themselves
-        are read with `GET /documents/{id}/annotations`. `GET /jobs/{job_id}`
-        is the way back if it was not listening.
-
-
-        A double-click is not two reviews: while one is in flight for the same
-        selection, the job already queued comes back. Order and duplicates do
-        not make a second one. A different selection, even an overlapping one,
-        is a different question and runs.
-
-
-        Findings that cannot be placed degrade rather than fail the review: a
-        block id that is not in the document's latest revision leaves the note
-        unanchored, a document id outside the selection is dropped, and a note
-        the write path refuses -- a dead `rinto://` most likely -- is skipped
-        without taking the others down.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DocumentReviewInput"
-      responses:
-        "202":
-          description: The review was queued
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/JobResponse"
-        "400":
-          description: "`document_ids` is missing or is not a list of ids"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIError"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          description: >
-            `no_documents` -- the selection is empty; `too_many_documents` --
-            more than one review carries, refused rather than trimmed so that
-            nobody reads a smaller review as a clean bill of health; or
-            `no_review_actor` -- nobody holds the role, so there is nothing
-            to write as.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIError"
-  /references/resolve:
-    post:
-      tags: [References]
-      operationId: resolveReferences
-      summary: Resolve rinto:// URIs into what they point at
-      description: >-
-        Answers what each `rinto://` URI in a body points at: a title to preview,
-        and whether the target is still there. A client holds the body, so it can
-        find its own outbound references without asking -- what it cannot do is
-        say what is at them.
-
-
-        A POST because the input is a list of URIs containing slashes: a body with
-        thirty references would need every one escaped into a query string long
-        enough to be refused. Nothing is stored, the same as
-        `POST /documents/preview_blocks`.
-
-
-        Results come back in the order asked, and a URI repeated in the request is
-        repeated in the response -- a client lines these up against the occurrences
-        in the text, and a collapsed list would misalign them.
-
-
-        No URLs are returned, deliberately. A result names a type and identifiers;
-        where those live in a client is the client's decision. Returning paths would
-        bind bodies stored in the database to a web application's routing, which is
-        the coupling `rinto://` exists to avoid.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ResolveReferencesInput"
-      responses:
-        "200":
-          description: One result per URI asked about, in order
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ResolveReferencesResponse"
-        "400":
-          description: "`uris` is missing or is not a list of strings"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIError"
-        "422":
-          description: More references than one request carries
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIError"
-  /documents/preview_blocks:
-    post:
-      tags: [Documents]
-      operationId: previewDocumentBlocks
-      summary: Preview how a Markdown body cuts into blocks
-      description: >-
-        Reports the blocks `POST /documents` would produce from this body, creating
-        nothing. The split is the server's decision, so this is how an author checks
-        the grain before living with it.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DocumentPreviewBlocksInput"
-      responses:
-        "200":
-          description: The blocks the body would be cut into, in document order
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DocumentPreviewBlocksResponse"
-        "400":
-          description: The body is missing
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIError"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-  /documents/{document_id}:
-    parameters:
-      - $ref: "#/components/parameters/DocumentId"
-    get:
-      tags: [Documents]
-      operationId: getDocument
-      summary: Get a document with its latest revision and blocks
-      responses:
-        "200":
-          description: Document details
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DocumentResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    delete:
-      tags: [Documents]
-      operationId: archiveDocument
-      summary: Archive a document
-      description: Idempotently archives the document. Archived documents are omitted from lists.
-      responses:
-        "204":
-          description: Document archived
-        "404":
-          $ref: "#/components/responses/NotFound"
   /documents/{document_id}/formalize:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -1480,83 +1315,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
-  /documents/{document_id}/decompose:
-    parameters:
-      - $ref: "#/components/parameters/DocumentId"
-    post:
-      tags: [Documents]
-      operationId: decomposeDocument
-      summary: Break a formal document down into a task document
-      description: >
-        Answers `202` with the *attempt*, not the breakdown. The model call
-        takes as long as it takes, so it runs in a background job and what a
-        client does next is watch.
-
-
-        **Watching is the socket**, not this endpoint: join `document:{id}` on
-        `/socket` (see `RintoPMOWeb.DocumentChannel`). It carries the model's
-        output as it is produced -- `decomposition_output` frames whose `chunk`
-        values you append in order -- and a `decomposition` frame every time the
-        attempt changes state. `GET /documents/{document_id}/decomposition`
-        answers the same row for a client that would rather ask than listen,
-        but it cannot show the output: nothing is stored.
-
-
-        The breakdown is an ordinary document. When the attempt succeeds,
-        `result_document_id` names it, and it starts `draft` like anything else
-        -- somebody still has to read it and adopt it.
-
-
-        Refused, all of them here rather than inside the job so that a person
-        clicking a button hears no while they are still looking at it:
-        `document_not_formal` (only an adopted plan is worth turning into
-        work), `decomposition_exists` (one breakdown at a time -- archive the
-        standing one to make another), `no_decomposition_actor` (nobody holds
-        the role, and unlike naming there is no fallback), and
-        `decomposition_in_flight` (`409`, somebody clicked twice).
-      responses:
-        "202":
-          description: The queued attempt
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DecompositionResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          description: An attempt is already running for this document
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIError"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-  /documents/{document_id}/decomposition:
-    parameters:
-      - $ref: "#/components/parameters/DocumentId"
-    get:
-      tags: [Documents]
-      operationId: getDocumentDecomposition
-      summary: The most recent attempt to break this document down
-      description: >
-        `data` is `null` when the document has never been broken down. Most
-        recent rather than in-flight: an attempt that failed a minute ago is
-        exactly what somebody opening the page needs to see.
-
-
-        This answers the row only. The model's output is broadcast as it is
-        produced and kept nowhere, so a client that was not listening cannot
-        get it back -- what survives is the document named by
-        `result_document_id`.
-      responses:
-        "200":
-          description: The attempt, or null
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DecompositionResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
   /documents/{document_id}/file_breakdown:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -1565,11 +1323,20 @@ paths:
       operationId: fileDocumentBreakdown
       summary: File an adopted task document as the project's work breakdown
       description: >
-        The other end of `POST /documents/{document_id}/decompose`. That turned
-        a plan into a document somebody could argue with; this turns the
-        document they settled on into the work itself. Between them sits the
-        only gate that matters -- somebody adopted it, with
-        `POST /documents/{document_id}/formalize`.
+        The other end of the breakdown prompt shortcut. A topic turned a plan
+        into a task document somebody could argue with; this turns the document
+        they settled on into the work itself. Between them sits the only gate
+        that matters -- a person adopted it, with
+        `POST /documents/{document_id}/formalize`. Nothing a model does files
+        work.
+
+
+        **Which document the tasks point at.** Each task's `document_id` is the
+        *source* -- the design that was broken down, not the list of work it
+        produced -- read from the breakdown's own preamble, the line above the
+        first heading naming a `rinto://document/{id}`. A breakdown that names
+        no source files tasks pointing at nothing, which is allowed: somebody
+        may write one by hand.
 
 
         **What it reads.** A `##` with `###` under it becomes a summary node
@@ -1855,55 +1622,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
-  /documents/{document_id}/annotations/{id}/reply:
-    parameters:
-      - $ref: "#/components/parameters/DocumentId"
-      - $ref: "#/components/parameters/AnnotationId"
-    post:
-      tags: [Annotations]
-      operationId: replyToAnnotationWithAI
-      summary: Ask the AI to answer this annotation
-      description: >
-        The only thing that writes a reply here that is not a person. One
-        request, one reply, appended to the thread like any other and credited
-        to whichever actor holds the `annotation_actor` role.
-
-
-        Nothing works out on its own whether a discussion has concluded,
-        because the asking is the boundary: somebody clicked, so somebody wants
-        an answer to this note. Conversations never write here -- a topic
-        produces proposals against the document, which is a different output on
-        a different resource.
-
-
-        Answers with the **job**, before the model has been asked. What a
-        client does next is watch `document:{id}` for `annotation_reply`;
-        `GET /jobs/{job_id}` is the way back if it was not listening. The reply
-        itself is read with `GET .../annotations/{id}`.
-
-
-        Asking twice appends twice -- replies are a list, and a second opinion
-        is a second opinion. A double-click is not two calls: while one is in
-        flight, the job already queued comes back. A confirmed annotation is
-        not refused; wanting the model's read on a decision already taken is
-        nobody else's business.
-      responses:
-        "202":
-          description: The reply was queued
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/JobResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          description: >
-            No actor holds the `annotation_actor` role. Set one with
-            `PUT /settings/annotation_actor`.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
   /documents/{document_id}/annotations/{id}/conversations:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -3642,8 +3360,8 @@ paths:
         Refused before anything is queued: `bad_request` (no `kind`, or one
         that is not `difficulty` or `time`), `nothing_to_estimate` (every work
         item already has a value, or the cover has no work), and
-        `no_estimation_actor` (nobody holds the role, and unlike naming there
-        is no fallback).
+        `no_estimation_ai` (the `task_estimation` role is not configured, and
+        unlike naming there is no fallback -- see `PUT /ai_roles/{key}`).
       requestBody:
         required: true
         content:
@@ -4128,15 +3846,14 @@ components:
         type: string
         enum: [oldest, plan]
         default: oldest
-    SettingKey:
+    AIRoleKey:
       name: key
       in: path
       required: true
-      description: The system-wide role being filled.
+      description: The automatic job being configured.
       schema:
         type: string
-        enum:
-          [title_actor, decomposition_actor, estimation_actor, annotation_actor, review_actor]
+        enum: [topic_naming, task_estimation]
     ActorId:
       name: id
       in: path
@@ -4613,9 +4330,9 @@ components:
 
             It carries no `provider`, `model` or `thinking_level`, and never
             will -- what wrote the text is whichever model the person had
-            selected. So it cannot be a topic's assistant and cannot be put in
-            a `/settings` role, and a client offering either should leave it
-            out of the list. It is created by
+            selected. So it cannot be a topic's assistant, and a client
+            offering that choice should leave it out of the list. It is created
+            by
             `mix rinto.actors.setup_human`; `name` and `description` are
             editable like any other actor's, and it is the name a reader sees
             beside an AI-written block.
@@ -5134,21 +4851,6 @@ components:
         archived:
           type: boolean
           description: Whether the result, or the document carrying it, has been archived.
-    DocumentReviewInput:
-      type: object
-      required: [document_ids]
-      properties:
-        document_ids:
-          type: array
-          minItems: 1
-          maxItems: 8
-          description: >
-            The documents to review together. Duplicates collapse and order is
-            not significant -- the same selection is the same job however it
-            was written. A missing document is a `404` and nothing is queued.
-          items:
-            type: string
-            format: uuid
     ResolveReferencesInput:
       type: object
       required: [uris]
@@ -7401,47 +7103,36 @@ components:
           type: string
           format: date-time
       additionalProperties: false
-    Decomposition:
+    AIRole:
       type: object
       required:
-        [
-          id,
-          source_document_id,
-          result_document_id,
-          status,
-          error,
-          inserted_at,
-          updated_at,
-        ]
+        [id, key, provider, model, thinking_level, system_prompt, inserted_at, updated_at]
       properties:
         id:
           type: string
           format: uuid
-        source_document_id:
+        key:
           type: string
-          format: uuid
-          description: The formal document being broken down.
-        result_document_id:
+          enum: [topic_naming, task_estimation]
+        provider:
           type: string
-          format: uuid
-          nullable: true
-          description: >-
-            The task document this attempt produced. Null until it succeeds,
-            and null forever if it does not.
-        status:
+          description: A provider id from `GET /ai_models`.
+        model:
           type: string
-          enum: [pending, running, succeeded, failed]
-          description: >-
-            `pending` and `running` are in flight; `succeeded` and `failed` are
-            over. Nothing moves out of a finished state -- asking again makes a
-            new attempt, which is what "try again" means once the first answer
-            is recorded.
-        error:
+          description: A model id offered by that provider.
+        thinking_level:
+          type: string
+          description: >
+            One of the levels `GET /ai_models` reports for the model. Naming is
+            usually configured with it off -- it is a fixed, tiny job.
+        system_prompt:
           type: string
           nullable: true
-          description: >-
-            Filled only by `failed`, and relayed as it came. There is nothing
-            to classify it into: the reasons a provider refuses are its own.
+          description: >
+            Standing instructions, put in front of the job's own prompt rather
+            than in place of it. Use it to steer what the model pays attention
+            to; the built-in prompt keeps the last word on the shape of the
+            answer, which is what the caller parses.
         inserted_at:
           type: string
           format: date-time
@@ -7449,84 +7140,53 @@ components:
           type: string
           format: date-time
       additionalProperties: false
-    DecompositionResponse:
+    AIRoles:
+      type: object
+      required: [topic_naming, task_estimation]
+      properties:
+        topic_naming:
+          allOf:
+            - $ref: "#/components/schemas/AIRole"
+          nullable: true
+          description: >
+            Names a conversation from its first user message. Null means nobody
+            has configured it, in which case each topic is named by its own
+            assistant actor or plain-chat model configuration instead -- with no
+            standing instruction, since an assistant's persona is written for
+            holding a discussion rather than for titling one.
+        task_estimation:
+          allOf:
+            - $ref: "#/components/schemas/AIRole"
+          nullable: true
+          description: >
+            Rates a task's difficulty, or produces its three-point estimate.
+            Null means nobody has configured it, and unlike naming there is no
+            fallback: the job belongs to no conversation, so
+            `POST /tasks/{id}/estimate` answers `no_estimation_ai` until it is.
+      additionalProperties: false
+    AIRolesResponse:
       type: object
       required: [data]
       properties:
         data:
-          allOf:
-            - $ref: "#/components/schemas/Decomposition"
-          nullable: true
+          $ref: "#/components/schemas/AIRoles"
       additionalProperties: false
-    Settings:
+    AIRoleUpdateInput:
       type: object
-      required:
-        [title_actor, decomposition_actor, estimation_actor, annotation_actor, review_actor]
+      required: [provider, model, thinking_level]
       properties:
-        title_actor:
-          allOf:
-            - $ref: "#/components/schemas/Actor"
-          nullable: true
-          description: >
-            The actor that names conversations from their first user message.
-            Null means nobody has been chosen, or the chosen one has since been
-            disabled or deleted -- in which case each topic is named by its own
-            assistant actor or plain-chat model configuration instead.
-        decomposition_actor:
-          allOf:
-            - $ref: "#/components/schemas/Actor"
-          nullable: true
-          description: >
-            The actor that breaks a formal document down into a task document.
-            Null means nobody has been chosen, or the chosen one has since been
-            disabled or deleted -- and unlike naming there is no fallback:
-            decomposition belongs to no conversation, so there is no assistant
-            to inherit from and the attempt is refused until somebody fills the
-            role.
-        estimation_actor:
-          allOf:
-            - $ref: "#/components/schemas/Actor"
-          nullable: true
-          description: >
-            The actor that rates a task's difficulty or produces its three-point
-            estimate. Same as decomposition: the job belongs to no conversation,
-            so an empty role is a refusal rather than a fallback.
-        annotation_actor:
-          allOf:
-            - $ref: "#/components/schemas/Actor"
-          nullable: true
-          description: >
-            The actor that answers an annotation when somebody asks it to. Same
-            as the two above: a person clicked a button on a note rather than
-            spoke inside a topic, so there is no assistant to inherit from and
-            an empty role is a refusal.
-        review_actor:
-          allOf:
-            - $ref: "#/components/schemas/Actor"
-          nullable: true
-          description: >
-            The actor that reads selected documents end to end and opens
-            annotations for its findings. Separate from `annotation_actor` so
-            its persona and review criteria can be configured independently.
-            Its `system_prompt` is added to the review instructions; null means
-            a review request is refused because there is no fallback actor.
-      additionalProperties: false
-    SettingsResponse:
-      type: object
-      required: [data]
-      properties:
-        data:
-          $ref: "#/components/schemas/Settings"
-      additionalProperties: false
-    SettingUpdateInput:
-      type: object
-      required: [actor_id]
-      properties:
-        actor_id:
+        provider:
           type: string
-          format: uuid
+        model:
+          type: string
+        thinking_level:
+          type: string
+        system_prompt:
+          type: string
           nullable: true
-          description: An enabled AI actor, or null to empty the role.
+          description: >
+            Omit it or send null to clear the standing instruction: this is a
+            `PUT` and the row is written whole.
       additionalProperties: false
     ConversationResponse:
       type: object
@@ -7981,8 +7641,6 @@ components:
         - validation_error
         - task_blocked
         - review_round_open
-        - no_documents
-        - too_many_documents
         - duplicate_document
         - invalid_block_op
         - invalid_markdown
@@ -7992,13 +7650,8 @@ components:
         - invalid_actual
         - task_not_splittable
         - document_not_formal
-        - decomposition_exists
-        - no_decomposition_actor
-        - decomposition_in_flight
-        - no_estimation_actor
+        - no_estimation_ai
         - nothing_to_estimate
-        - no_annotation_actor
-        - no_review_actor
         - no_chunks
         - task_before_chunk
         - corrupt_image

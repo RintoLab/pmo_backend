@@ -3,14 +3,13 @@ defmodule RintoPMO.TasksTest do
   use Oban.Testing, repo: RintoPMO.Repo
 
   alias RintoPMO.Agent.TaskEstimatorMock
-  alias RintoPMO.Agent.WbsGeneratorMock
+  alias RintoPMO.AIRoles
   alias RintoPMO.Conversations
   alias RintoPMO.ConversationsMock
   alias RintoPMO.Documents
   alias RintoPMO.DocumentsMock
   alias RintoPMO.Projects
   alias RintoPMO.ProjectsMock
-  alias RintoPMO.Settings
   alias RintoPMO.Tasks
   alias RintoPMO.Tasks.EstimationWorker
   alias RintoPMO.Tasks.Notifier
@@ -1216,38 +1215,80 @@ defmodule RintoPMO.TasksTest do
     end
 
     # The spec somebody implements against is the design that was broken down,
-    # not the list of work it produced.
-    test "points the tasks at the document the breakdown came from" do
+    # not the list of work it produced -- and the breakdown says which that was
+    # in its own preamble, which is the line the breakdown prompt writes.
+    test "points the tasks at the document named in the preamble" do
       project = insert(:project)
-      actor = insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
-      {:ok, _settings} = Settings.put_actor("decomposition_actor", actor.id)
 
       {:ok, source} =
         Documents.create_document(%{
           title: "上线方案",
           project_id: project.id,
-          actor_id: actor.id,
+          actor_id: insert(:actor).id,
           markdown: "## 灰度\n\n先接十分之一。"
         })
 
-      {:ok, source} = Documents.formalize_document(source)
-      {:ok, attempt} = Documents.request_decomposition(source)
+      breakdown =
+        adopted(project, """
+        从 [上线方案](rinto://document/#{source.id}) 拆出。
 
-      expect(WbsGeneratorMock, :generate, fn _input, _opts ->
-        {:ok, "## 灰度发布\n\n### 接入十分之一流量\n"}
-      end)
+        ## 灰度发布
 
-      :ok = Documents.run_decomposition(attempt)
-
-      breakdown = Documents.breakdown_of(source)
-      {:ok, breakdown} = Documents.formalize_document(breakdown)
+        ### 接入十分之一流量
+        """)
 
       assert {:ok, filed} = Tasks.file_breakdown(breakdown)
       assert Enum.all?(filed, &(&1.document_id == source.id))
+
+      # And the preamble files nothing: it is above the first heading.
+      assert Enum.map(filed, & &1.title) == ["灰度发布", "接入十分之一流量"]
     end
 
-    # Written by hand rather than generated: no source, and no less fileable.
-    test "leaves the spec pointer empty when nothing generated the document" do
+    # A link in a task's body is somebody citing a document, not saying where
+    # the breakdown came from. Only the preamble is provenance.
+    test "ignores a reference that is not in the preamble" do
+      project = insert(:project)
+
+      {:ok, cited} =
+        Documents.create_document(%{
+          title: "接口约定",
+          project_id: project.id,
+          actor_id: insert(:actor).id,
+          markdown: "## 约定\n\n照这个来。"
+        })
+
+      breakdown =
+        adopted(project, """
+        ## 接上游
+
+        照 [接口约定](rinto://document/#{cited.id}) 做。
+        """)
+
+      assert {:ok, [task]} = Tasks.file_breakdown(breakdown)
+      assert task.document_id == nil
+    end
+
+    # The preamble is prose and may cite anything the writer felt like citing.
+    # Only a document can be a spec, so anything else reads as no spec at all
+    # rather than as a task pointing at a task.
+    test "ignores a preamble reference that is not a document" do
+      project = insert(:project)
+      cited = insert(:task, project: project)
+
+      breakdown =
+        adopted(project, """
+        接着 [上一件活](rinto://task/#{cited.id}) 拆的。
+
+        ## 一件活
+        """)
+
+      assert {:ok, [task]} = Tasks.file_breakdown(breakdown)
+      assert task.document_id == nil
+    end
+
+    # Written by hand rather than generated: no preamble, no source, and no
+    # less fileable.
+    test "leaves the spec pointer empty when the document names no source" do
       breakdown = adopted(insert(:project), "## 一件活\n")
 
       assert {:ok, [task]} = Tasks.file_breakdown(breakdown)
@@ -1510,11 +1551,15 @@ defmodule RintoPMO.TasksTest do
 
   describe "requesting and running an estimation" do
     setup do
-      actor =
-        insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
+      {:ok, roles} =
+        AIRoles.put_role("task_estimation", %{
+          "provider" => "google",
+          "model" => "flash",
+          "thinking_level" => "off",
+          "system_prompt" => "Round up when the work touches the scheduler."
+        })
 
-      {:ok, _settings} = Settings.put_actor("estimation_actor", actor.id)
-      {:ok, actor: actor}
+      {:ok, role: Map.fetch!(roles, "task_estimation")}
     end
 
     test "answers with the job and leaves the work to the queue" do
@@ -1595,12 +1640,28 @@ defmodule RintoPMO.TasksTest do
       assert reason =~ "no work items"
     end
 
-    test "refuses when nobody holds the role" do
-      {:ok, _settings} = Settings.put_actor("estimation_actor", nil)
+    test "refuses when the estimation AI is not configured" do
+      {:ok, _roles} = AIRoles.delete_role("task_estimation")
       task = insert(:task)
 
-      assert {:error, :no_estimation_actor, %{}} = Tasks.request_estimation(task, :difficulty)
+      assert {:error, :no_estimation_ai, %{}} = Tasks.request_estimation(task, :difficulty)
       refute_enqueued(worker: EstimationWorker)
+    end
+
+    # The role's standing instruction travels with the model configuration.
+    # `TaskEstimator` is what puts it in front of the built-in prompt; what is
+    # pinned here is that this context hands it over at all.
+    test "passes the role's standing instruction to the estimator" do
+      task = insert(:task)
+      {:ok, job} = Tasks.request_estimation(task, :difficulty)
+
+      expect(TaskEstimatorMock, :estimate_difficulty, fn _input, opts ->
+        assert opts[:system_prompt] == "Round up when the work touches the scheduler."
+
+        {:ok, [%{"id" => to_string(task.id), "difficulty" => 5}]}
+      end)
+
+      assert :ok = Tasks.run_estimation(job.id, task.id, :difficulty)
     end
 
     test "writes ratings onto unfilled work and leaves filled work alone" do

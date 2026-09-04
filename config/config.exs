@@ -37,10 +37,7 @@ config :rinto_pmo,
     # that everything around them -- eligibility, fallbacks, conditional writes
     # -- is testable without a model.
     title_generator: RintoPMO.Agent.TitleGenerator,
-    wbs_generator: RintoPMO.Agent.WbsGenerator,
     task_estimator: RintoPMO.Agent.TaskEstimator,
-    annotation_responder: RintoPMO.Agent.AnnotationResponder,
-    document_reviewer: RintoPMO.Agent.DocumentReviewer,
     # Reading what a `rinto://` reference points at. Only the read side is
     # injected: parsing a reference is pure and belongs to every write path,
     # and mocking it would let a document test lie about what it stored.
@@ -62,9 +59,10 @@ config :rinto_pmo,
 #
 # Not pi. pi is a coding assistant that holds a conversation, and neither of
 # these is a conversation -- they are single-shot calls whose whole job is to
-# turn text into numbers. They also have no actor behind them: `title_actor`
-# and the rest name *who* is answering, and nobody is answering here. So this
-# is configured as a service address rather than through `RintoPMO.Settings`.
+# turn text into numbers. Nor is there anything to choose: `RintoPMO.AIRoles`
+# exists because somebody tunes which model does a job by reading what came
+# back, and there is nothing to read here. So this is a service address in a
+# config file rather than a row.
 #
 # `token` is deliberately absent from this file. It is a credential, and
 # credentials are read at runtime -- see `config/runtime.exs`, and
@@ -206,44 +204,27 @@ config :rinto_pmo, RintoPMO.Conversations.Titles,
   max_summary_chars: 120
 
 config :rinto_pmo, RintoPMO.Agent.TitleGenerator,
-  # Which model names topics is *not* configured here: it is whichever actor
-  # was put in the `title_actor` role, which is a runtime choice -- see
-  # `RintoPMO.Settings` and `PUT /settings/title_actor`.
+  # Which model names topics is *not* configured here: that is the
+  # `"topic_naming"` role, which is a runtime choice -- see `RintoPMO.AIRoles`
+  # and `PUT /ai_roles/topic_naming`.
   #
   # Wall clock for the whole call. Nothing waits on it, but a naming job should
   # not hold a queue slot for a provider that has stopped answering.
   timeout: 20_000
 
-config :rinto_pmo, RintoPMO.Agent.WbsGenerator,
-  # Which model breaks documents down is *not* configured here either: it is
-  # whichever actor holds the `decomposition_actor` role -- see
-  # `RintoPMO.Settings` and `PUT /settings/decomposition_actor`.
-  #
-  # How long the call may produce **nothing** before it is treated as dead.
-  # There is no budget for the call as a whole, deliberately: what decides how
-  # long a breakdown takes is how much work the document implies, and cutting a
-  # model off mid-answer throws away everything it has done. A model still
-  # producing output is still working. See `RintoPMO.Agent.WbsGenerator`.
-  #
-  # The number has to clear the longest silence in a *healthy* call, which is
-  # the wait before the first token. Three real design documents ran 98s to
-  # 120s end to end when this was measured, so three minutes of complete
-  # silence is well past anything a working call does.
-  idle_timeout: 180_000
-
 config :rinto_pmo, RintoPMO.Agent.TaskEstimator,
   # Which model rates difficulty and produces estimates is *not* configured
-  # here: it is whichever actor holds the `estimation_actor` role -- see
-  # `RintoPMO.Settings` and `PUT /settings/estimation_actor`.
+  # here: that is the `"task_estimation"` role -- see `RintoPMO.AIRoles` and
+  # `PUT /ai_roles/task_estimation`.
   #
-  # Silence, not duration, same as `WbsGenerator`: a model that is still
-  # producing is still working. Three minutes of complete silence is well past
-  # anything a working call does.
-  idle_timeout: 180_000
-
-config :rinto_pmo, RintoPMO.Agent.AnnotationResponder,
-  # Same as the two above: the actor is the `annotation_actor` role, and the
-  # timeout is on silence rather than on how long an answer takes.
+  # How long the call may produce **nothing** before it is treated as dead.
+  # Silence rather than a budget for the call as a whole, deliberately: a model
+  # still producing output is still working, and cutting one off mid-answer
+  # throws away everything it has done.
+  #
+  # The number has to clear the longest silence in a *healthy* call, which is
+  # the wait before the first token. Three minutes of complete silence is well
+  # past anything a working call does.
   idle_timeout: 180_000
 
 config :rinto_pmo, RintoPMO.Agent.PromptBuilder,
@@ -323,19 +304,18 @@ config :rinto_pmo, Oban,
     embeddings: 1
   ],
   plugins: [
-    # Both workers that ask a model anything deduplicate over `:incomplete`,
-    # which assumes a job cannot sit in `executing` forever. A node that dies
-    # mid-call -- Ctrl-C on the dev server, a deploy -- leaves exactly that,
-    # and the row then holds its uniqueness slot for good: that document can
-    # never be decomposed again, that task can never be estimated again.
+    # Estimation deduplicates over `:incomplete`, which assumes a job cannot
+    # sit in `executing` forever. A node that dies mid-call -- Ctrl-C on the
+    # dev server, a deploy -- leaves exactly that, and the row then holds its
+    # uniqueness slot for good: that task can never be estimated again.
     # Lifeline is what makes the assumption true.
     #
     # `rescue_after` has to clear the longest *healthy* run, because Lifeline
-    # cannot tell a dead node from a slow one and will rescue either. Neither
-    # model call has a wall-clock budget -- they stop on silence, not on
-    # duration (see `RintoPMO.Agent.WbsGenerator`) -- so there is no number to
-    # derive this from. An hour is far past the two minutes real documents
-    # take, and being late to rescue costs only waiting.
+    # cannot tell a dead node from a slow one and will rescue either. The model
+    # call has no wall-clock budget -- it stops on silence, not on duration
+    # (see `RintoPMO.Agent.TaskEstimator`) -- so there is no number to derive
+    # this from. An hour is far past anything a real estimation takes, and
+    # being late to rescue costs only waiting.
     {Oban.Plugins.Lifeline, rescue_after: :timer.minutes(60)},
 
     # `RintoPMO.Jobs` answers "no such job" as "it is over, stop waiting", and

@@ -71,12 +71,14 @@ defmodule RintoPMO.Tasks do
 
   alias Ecto.Changeset
   alias RintoPMO.Actors.Actor
+  alias RintoPMO.AIRoles
   alias RintoPMO.Documents.Document
   alias RintoPMO.Links
   alias RintoPMO.Projects.Project
+  alias RintoPMO.References
   alias RintoPMO.References.Guard
+  alias RintoPMO.References.Reference
   alias RintoPMO.Schedule
-  alias RintoPMO.Settings
   alias RintoPMO.Tasks.Breakdown
   alias RintoPMO.Tasks.Dependency
   alias RintoPMO.Tasks.DependencyGraph
@@ -506,10 +508,10 @@ defmodule RintoPMO.Tasks do
   @doc """
   Files a task document as this project's work breakdown.
 
-  The other end of `RintoPMO.Documents.decompose_document/1`: that turned a
-  plan into a document somebody could read and argue with, and this turns the
-  document they settled on into the work itself. Between the two sits the only
-  gate that matters -- somebody adopted it.
+  The other end of the breakdown prompt shortcut: a topic turned a plan into a
+  document somebody could read and argue with, and this turns the document they
+  settled on into the work itself. Between the two sits the only gate that
+  matters -- a person adopted it. Nothing a model does files work.
 
   ## What it makes
 
@@ -519,10 +521,22 @@ defmodule RintoPMO.Tasks do
   going to do it, and no ordering beyond the order they were written in, which
   is the order they come back in.
 
-  Every task points at the **source** document rather than at the breakdown --
-  `document_id` is the spec somebody implements against, and that is the design
-  that was broken down, not the list of work it produced. A breakdown written
-  by hand has no source, and its tasks point at nothing, which is allowed.
+  ## Which document the tasks point at
+
+  The **source**, not the breakdown: `document_id` is the spec somebody
+  implements against, and that is the design that was broken down, not the list
+  of work it produced.
+
+  It is read out of the breakdown's own preamble -- the line above the first
+  heading, which the shortcut's prompt writes as a `rinto://document/{id}`
+  link. The provenance is therefore a claim the document makes in its own text,
+  which is why it survives being written by a topic through the ordinary
+  document API: there is no attempt row recording who broke down what, because
+  there is no attempt.
+
+  A breakdown that names no source, or names one that has since gone, files
+  tasks pointing at nothing. That is allowed and always was -- somebody may
+  write a breakdown by hand, and it is no less fileable for having no spec.
 
   ## Once, and all of it
 
@@ -539,9 +553,10 @@ defmodule RintoPMO.Tasks do
   """
   @impl true
   def file_breakdown(%Document{} = breakdown) do
-    with {:ok, chunks} <- read_breakdown(breakdown) do
+    with {:ok, blocks} <- breakdown_blocks(breakdown),
+         {:ok, chunks} <- Breakdown.parse(blocks) do
       chunks
-      |> file(breakdown, documents().source_of(breakdown))
+      |> file(breakdown, spec_of(blocks))
       |> unwrap_refusal()
     end
   end
@@ -560,17 +575,52 @@ defmodule RintoPMO.Tasks do
   # one inside is the guarantee; this one is so that a person who clicked the
   # wrong button is told which document and what state, rather than getting a
   # changeset error about a field they never sent.
-  defp read_breakdown(%Document{status: :formal} = breakdown) do
-    breakdown.id
-    |> documents().get_document!()
-    |> Map.fetch!(:latest_revision)
-    |> Map.fetch!(:blocks)
-    |> Breakdown.parse()
+  defp breakdown_blocks(%Document{status: :formal} = breakdown) do
+    blocks =
+      breakdown.id
+      |> documents().get_document!()
+      |> Map.fetch!(:latest_revision)
+      |> Map.fetch!(:blocks)
+
+    {:ok, blocks}
   end
 
-  defp read_breakdown(%Document{status: status}) do
+  defp breakdown_blocks(%Document{status: status}) do
     {:error, :document_not_formal, %{status: status}}
   end
+
+  # The first document the preamble points at. First rather than only: a
+  # preamble is prose and may cite more than one thing, and the line the prompt
+  # writes puts the source at the front of it.
+  #
+  # A body that will not parse, a link to something that is not a document, an
+  # id that no longer resolves -- all of them come back as no spec rather than
+  # as a refusal. Filing work is the point of the call, and a broken provenance
+  # line is not a reason to withhold the tasks somebody adopted.
+  defp spec_of(blocks) do
+    blocks
+    |> Breakdown.preamble()
+    |> Enum.flat_map(&references_in/1)
+    |> Enum.find_value(&fetch_document/1)
+  end
+
+  defp references_in(%{content: content}) when is_binary(content) do
+    case References.extract(content) do
+      {:ok, found} -> Enum.map(found, & &1.reference)
+      {:error, _unparseable} -> []
+    end
+  end
+
+  defp references_in(_block), do: []
+
+  defp fetch_document(%Reference{type: "document", key: id}) do
+    documents().get_document!(id)
+  rescue
+    Ecto.NoResultsError -> nil
+    Ecto.Query.CastError -> nil
+  end
+
+  defp fetch_document(_other_type), do: nil
 
   # Answered flat, in the order things were written, with `parent_id` on every
   # row -- the same shape `list_tasks/2` gives and for the same reason: a
@@ -897,9 +947,10 @@ defmodule RintoPMO.Tasks do
   estimated as the work under it that still has no value. Answers with the
   *job*, before the model has been asked -- the call takes as long as it takes.
 
-  Refused when there is nothing left to estimate, or when nobody holds the
-  `estimation_actor` role. Both are answered here, synchronously, because both
-  are conditions of asking rather than outcomes of the answer.
+  Refused when there is nothing left to estimate, or when the
+  `"task_estimation"` role has not been configured. Both are answered here,
+  synchronously, because both are conditions of asking rather than outcomes of
+  the answer.
 
   Asking twice is not refused. This is a helper for somebody who has an empty
   field and does not feel like filling it in, so a second ask is a second ask;
@@ -913,7 +964,7 @@ defmodule RintoPMO.Tasks do
   @impl true
   def request_estimation(%Task{} = task, kind) when kind in @estimation_kinds do
     with :ok <- something_to_estimate(task, kind),
-         {:ok, _actor} <- estimation_actor() do
+         {:ok, _role} <- estimation_ai() do
       enqueue_estimation(task, kind)
     end
   end
@@ -997,10 +1048,14 @@ defmodule RintoPMO.Tasks do
     end)
   end
 
-  defp estimation_actor do
-    case Settings.get_actor("estimation_actor") do
-      nil -> {:error, :no_estimation_actor, %{}}
-      actor -> {:ok, actor}
+  # Refused rather than fallen back on. Estimation belongs to no conversation,
+  # so unlike naming there is no other configuration standing there to inherit
+  # -- and picking a model off the catalogue would be this module inventing an
+  # answer nobody gave it.
+  defp estimation_ai do
+    case AIRoles.get_role("task_estimation") do
+      nil -> {:error, :no_estimation_ai, %{}}
+      role -> {:ok, role}
     end
   end
 
@@ -1015,26 +1070,27 @@ defmodule RintoPMO.Tasks do
   end
 
   defp estimate_and_apply(job_id, %Task{} = task, kind, targets) do
-    with {:ok, actor} <- estimation_actor(),
-         {:ok, items} <- call_estimator(kind, task, targets, actor) do
+    with {:ok, role} <- estimation_ai(),
+         {:ok, items} <- call_estimator(kind, task, targets, role) do
       case apply_estimation(kind, targets, items) do
         0 -> fail(job_id, task.id, kind, "the model did not estimate any of the tasks")
         _count -> succeed(job_id, task.id, kind)
       end
     else
-      {:error, :no_estimation_actor, _details} ->
-        fail(job_id, task.id, kind, "no actor holds the estimation role")
+      {:error, :no_estimation_ai, _details} ->
+        fail(job_id, task.id, kind, "the task estimation AI is not configured")
 
       {:error, reason} ->
         fail(job_id, task.id, kind, failure_reason(reason))
     end
   end
 
-  defp call_estimator(kind, %Task{} = task, targets, actor) do
+  defp call_estimator(kind, %Task{} = task, targets, role) do
     opts = [
-      provider: actor.provider,
-      model: actor.model,
-      thinking: actor.thinking_level
+      provider: role.provider,
+      model: role.model,
+      thinking: role.thinking_level,
+      system_prompt: role.system_prompt
     ]
 
     case kind do

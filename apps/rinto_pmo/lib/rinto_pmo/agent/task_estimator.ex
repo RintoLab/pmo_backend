@@ -3,10 +3,11 @@ defmodule RintoPMO.Agent.TaskEstimator do
   Rates a task's difficulty, or produces its three-point estimate, with one
   short-lived model call.
 
-  Built the same way as `RintoPMO.Agent.WbsGenerator` and for the same
-  reasons: its own `pi --print` process, asked once, read off stdout, let go.
-  Sending this down a topic's own session would put a question nobody asked
-  into the context a person is talking into.
+  Its own `pi --print` process, asked once, read off stdout, let go. Sending
+  this down a topic's own session would put a question nobody asked into the
+  context a person is talking into -- and there is no topic to send it down
+  anyway: estimation is asked for against a subtree of tasks, by somebody
+  looking at a backlog rather than talking to anything.
 
   ## There is no fallback
 
@@ -57,7 +58,13 @@ defmodule RintoPMO.Agent.TaskEstimator do
 
   @type item :: %{optional(String.t()) => term()}
 
-  @type opt :: Print.opt()
+  @typedoc """
+  `:system_prompt` is the standing instruction from the
+  `"task_estimation"` role, put in front of the built-in prompt rather than
+  in place of it -- the shape of the answer is not the role's to change. See
+  `RintoPMO.Agent.Print.system_prompt/2`.
+  """
+  @type opt :: Print.opt() | {:system_prompt, String.t() | nil}
 
   @type error :: Print.error() | :invalid_output
 
@@ -171,12 +178,14 @@ defmodule RintoPMO.Agent.TaskEstimator do
   defdelegate decode_items(text), to: Print, as: :decode_objects
 
   defp generate(prompt, input, opts) do
+    {standing, opts} = Keyword.pop(opts, :system_prompt)
+
     opts =
       opts
       |> Keyword.put_new(:name, "estimate")
       |> Keyword.put_new(:idle_timeout, idle_timeout())
 
-    case Print.run(prompt, JSON.encode!(input), opts) do
+    case Print.run(Print.system_prompt(prompt, standing), JSON.encode!(input), opts) do
       {:ok, text} -> decode_items(text)
       {:error, _reason} = error -> error
     end

@@ -1,7 +1,6 @@
 defmodule RintoPMOWeb.V1.AnnotationController do
   use RintoPMOWeb, :controller
 
-  alias RintoPMO.Jobs
   alias RintoPMO.Utils
   alias RintoPMOWeb.Plugs.ActorToken
 
@@ -91,28 +90,6 @@ defmodule RintoPMOWeb.V1.AnnotationController do
 
     with {:ok, annotation} <- context.unconfirm_annotation(annotation) do
       render(conn, :show, annotation: annotation)
-    end
-  end
-
-  @doc """
-  Asks the AI for one reply to this annotation.
-
-  Answers with the *job*, the way estimation does: the model call takes as long
-  as it takes, and what a client does next is watch `document:{id}`.
-  """
-  def reply(conn, %{"document_id" => document_id, "id" => id}) do
-    context = annotations_context()
-    document = get_document!(document_id)
-    annotation = context.get_annotation!(document, id)
-
-    with {:ok, job} <- context.request_reply(annotation) do
-      # Answered the same whether this call queued the job or was handed one
-      # already in flight, for the reason `TaskController` gives: a
-      # double-click is one reply, and the same id back twice needs no branch.
-      conn
-      |> put_status(:accepted)
-      |> put_view(json: RintoPMOWeb.V1.JobJSON)
-      |> render(:show, job: Jobs.describe(job))
     end
   end
 

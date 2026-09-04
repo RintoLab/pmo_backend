@@ -77,6 +77,24 @@ defmodule RintoPMO.Tasks.Breakdown do
     |> assemble([])
   end
 
+  @doc """
+  The blocks above the first heading -- what `parse/1` ignores.
+
+  Two readings of one document, and they are complementary rather than
+  overlapping: `parse/1` reads the work, this reads what was written *about*
+  the work before any of it started. The breakdown prompt opens with a line
+  naming the document this came out of, and `RintoPMO.Tasks.file_breakdown/1`
+  reads the source back off that line.
+
+  Both live here so that "where does the preamble stop" is answered once. Two
+  modules disagreeing about it would mean a heading that counts as work to one
+  and as provenance to the other.
+  """
+  @spec preamble([DocumentBlock.t()]) :: [DocumentBlock.t()]
+  def preamble(blocks) when is_list(blocks) do
+    Enum.take_while(blocks, &(read(&1) == :preamble))
+  end
+
   defp assemble([], []), do: {:error, :no_chunks, %{}}
   defp assemble([], chunks), do: {:ok, Enum.reverse(chunks)}
 

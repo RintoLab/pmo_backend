@@ -47,7 +47,7 @@ defmodule RintoPMO.PromptShortcuts do
   Every shortcut, oldest first.
 
   The whole set, always: a client replaces what it holds rather than merging,
-  the way `RintoPMO.Settings` is read.
+  the way `RintoPMO.AIRoles` is read.
   """
   @spec list_shortcuts() :: [PromptShortcut.t()]
   def list_shortcuts do

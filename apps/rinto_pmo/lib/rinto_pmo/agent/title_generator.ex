@@ -14,9 +14,9 @@ defmodule RintoPMO.Agent.TitleGenerator do
   So this opens its own `pi --print` process, asks once, reads the answer off
   stdout and lets it exit. Nothing is shared with the conversation at all --
   which model answers is decided by the caller, and
-  `RintoPMO.Conversations.Titles` decides it from whichever actor was put in
-  the naming role (`RintoPMO.Settings`), falling back to the topic's own
-  assistant.
+  `RintoPMO.Conversations.Titles` decides it from the `"topic_naming"` role
+  (`RintoPMO.AIRoles`), falling back to the topic's own configuration when
+  nobody has set that role up.
 
   ## What it is given
 
@@ -27,6 +27,7 @@ defmodule RintoPMO.Agent.TitleGenerator do
   """
 
   alias RintoPMO.Agent.PiInstallation
+  alias RintoPMO.Agent.Print
   alias RintoPMO.OSProcess
 
   require Logger
@@ -47,6 +48,7 @@ defmodule RintoPMO.Agent.TitleGenerator do
           {:provider, String.t() | nil}
           | {:model, String.t() | nil}
           | {:thinking, String.t() | nil}
+          | {:system_prompt, String.t() | nil}
           | {:timeout, timeout()}
 
   @type error ::
@@ -92,9 +94,14 @@ defmodule RintoPMO.Agent.TitleGenerator do
 
   Options:
 
-    * `:provider` / `:model` / `:thinking` -- the actor to answer as. Both a
+    * `:provider` / `:model` / `:thinking` -- which model answers. Both a
       provider and a model, or neither: with neither, pi picks. See
       `RintoPMO.Conversations.Titles` for where they come from.
+    * `:system_prompt` -- the standing instruction from the `"topic_naming"`
+      role, put in front of the rules below rather than in place of them. A
+      role saying "prefer the ticket number when there is one" is steering; one
+      that could drop "reply with the title alone" would return a paragraph to
+      a caller that is about to write it into a column
     * `:timeout` -- wall clock for the whole call, default from configuration
 
   Failure is ordinary here and is reported as `{:error, reason}` rather than
@@ -127,7 +134,7 @@ defmodule RintoPMO.Agent.TitleGenerator do
         "--session-dir",
         session_dir,
         "--system-prompt",
-        @system_prompt
+        Print.system_prompt(@system_prompt, Keyword.get(opts, :system_prompt))
       ] ++ model_args(opts) ++ [user_message(input)]
 
     [
@@ -161,8 +168,8 @@ defmodule RintoPMO.Agent.TitleGenerator do
   defp interpret({:error, reason}), do: {:error, {:spawn_failed, reason}}
 
   # Which model to use is not decided here and not in configuration: it is
-  # whichever actor was put in the naming role, and that is a choice somebody
-  # makes at runtime. See `RintoPMO.Settings`.
+  # whatever the naming role was configured with, and that is a choice somebody
+  # makes at runtime. See `RintoPMO.AIRoles`.
   defp model_args(opts) do
     provider = Keyword.get(opts, :provider)
     model = Keyword.get(opts, :model)
@@ -174,16 +181,16 @@ defmodule RintoPMO.Agent.TitleGenerator do
       is_binary(model) ->
         ["--model", model] ++ thinking_args(opts)
 
-      # No actor to inherit from at all: pi's own default is still a model, and
+      # Nothing to inherit from at all: pi's own default is still a model, and
       # a title from it beats no title.
       true ->
         []
     end
   end
 
-  # An actor's thinking level is passed on as it stands. A naming actor should
-  # be configured with it off -- but that is a choice made where the actor is,
-  # not one this module makes on somebody's behalf.
+  # The thinking level is passed on as it stands. Naming should be configured
+  # with it off -- but that is a choice made where the role is, not one this
+  # module makes on somebody's behalf.
   defp thinking_args(opts) do
     case Keyword.get(opts, :thinking) do
       level when is_binary(level) -> ["--thinking", level]

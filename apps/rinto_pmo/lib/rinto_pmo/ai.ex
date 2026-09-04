@@ -5,12 +5,13 @@ defmodule RintoPMO.AI do
 
   ## Why this is not `RintoPMO.Agent`
 
-  Everything under `RintoPMO.Agent` talks to pi, and pi holds a conversation on
-  behalf of an actor -- which is why those calls are routed by role
-  (`title_actor`, `decomposition_actor`) rather than by address. Neither of
-  these is a conversation and neither has anybody answering it: they are
-  single-shot transformations. So this is configured as a service, under
-  `config :rinto_pmo, :ai`, and takes no actor.
+  Everything under `RintoPMO.Agent` talks to pi, and which model pi calls is a
+  runtime choice somebody makes by reading what came back -- a topic's own
+  configuration, or a `RintoPMO.AIRoles` row. Neither of these calls is like
+  that: an embedding model cannot be swapped without re-embedding everything
+  stored under the old one, so it is a deployment fact rather than a
+  preference. So this is configured as a service, under
+  `config :rinto_pmo, :ai`, and takes no role.
 
   ## Queries and documents are embedded differently
 

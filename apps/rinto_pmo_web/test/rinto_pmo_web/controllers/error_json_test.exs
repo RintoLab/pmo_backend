@@ -59,11 +59,8 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {422, "The task is blocked by unfinished dependencies.", %{blocking_tasks: ["task-1"]}},
     review_round_open:
       {422, "The document already has an open review round.", %{open_round_id: "round-1"}},
-    no_documents: {422, "A review needs at least one document.", %{}},
     duplicate_document:
       {422, "A document appears more than once in this commit.", %{document_id: "doc-1"}},
-    too_many_documents:
-      {422, "Too many documents in one review. Ask for a smaller set.", %{limit: 8}},
     invalid_block_op:
       {422, "The block operation is invalid.", %{op_index: 0, reason: "duplicate block ID"}},
     default_project_missing:
@@ -99,23 +96,10 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {422, "A summary node cannot take part in a dependency.", %{kind: "summary"}},
     document_not_formal:
       {422, "The document has to be adopted, and not already used, for this.", %{status: "draft"}},
-    decomposition_exists:
-      {422, "The document already has a breakdown. Archive it to make another.",
-       %{document_id: "019f-breakdown"}},
-    no_decomposition_actor:
+    no_estimation_ai:
       {422,
-       "No actor holds the decomposition role. Set one with `PUT /settings/decomposition_actor`.",
+       "The task estimation AI is not configured. Set it with `PUT /ai_roles/task_estimation`.",
        %{}},
-    decomposition_in_flight:
-      {409, "The document is already being broken down.", %{document_id: "019f-source"}},
-    no_estimation_actor:
-      {422, "No actor holds the estimation role. Set one with `PUT /settings/estimation_actor`.",
-       %{}},
-    no_annotation_actor:
-      {422, "No actor holds the annotation role. Set one with `PUT /settings/annotation_actor`.",
-       %{}},
-    no_review_actor:
-      {422, "No actor holds the review role. Set one with `PUT /settings/review_actor`.", %{}},
     nothing_to_estimate:
       {422, "There is nothing left to estimate on this task.",
        %{kind: "difficulty", reason: "every work item already has a difficulty"}},

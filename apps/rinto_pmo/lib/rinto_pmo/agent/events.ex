@@ -4,8 +4,8 @@ defmodule RintoPMO.Agent.Events do
 
   pi speaks the same event vocabulary down both of its machine-readable
   channels -- `--mode rpc`, which `RintoPMO.Agent.PiSession` holds open for a
-  conversation, and `--mode json`, which `RintoPMO.Agent.WbsGenerator` reads
-  from a one-shot call. The transports have nothing in common and should not
+  conversation, and `--mode json`, which `RintoPMO.Agent.Print` reads from a
+  one-shot call. The transports have nothing in common and should not
   be made to; the words do, and were spelled out separately in both until this
   existed.
 

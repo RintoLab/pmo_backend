@@ -21,11 +21,17 @@ defmodule RintoPMOWeb.Router do
 
     resources "/actors", ActorController, only: [:index, :show, :create, :update]
 
-    # Which actor does a job that belongs to no single topic -- naming them, so
-    # far. A runtime choice rather than configuration: it is picked while
-    # looking at the actor list, and changed after seeing a few of the results.
-    get "/settings", SettingController, :index
-    put "/settings/:key", SettingController, :update
+    # How the two jobs that happen outside a conversation call a model. A
+    # runtime choice rather than deploy configuration: it is tuned by reading
+    # what came back, and a `config.exs` entry would make each adjustment a
+    # release.
+    #
+    # No `POST`: the keys are `RintoPMO.AIRoles.keys/0` and a row under any
+    # other one would configure work nothing runs. `DELETE` empties a role,
+    # which is a state both readers handle -- see the context.
+    get "/ai_roles", AIRoleController, :index
+    put "/ai_roles/:key", AIRoleController, :update
+    delete "/ai_roles/:key", AIRoleController, :delete
 
     # The quick prompts offered beside the composer. Rows rather than a table
     # baked into the client, so that rewording one is a request instead of a
@@ -126,13 +132,6 @@ defmodule RintoPMOWeb.Router do
     # nothing to say which half is the new answer.
     post "/commits", CommitController, :create
 
-    # Asking the AI to read documents end to end and leave what it finds, as
-    # ordinary annotations. Flat and not nested under a document, because it
-    # takes a *set*: the findings worth the most are the ones no single
-    # document contains, and a URL naming one of them would say that one was
-    # special when it is not. Answers with the job -- watch `document:{id}`.
-    post "/reviews", ReviewController, :create
-
     # Finding things by meaning: an embedded query against embedded content,
     # then a reranker. One kind of thing per request -- see `RintoPMO.Search`
     # on why nothing merges a ranking across types.
@@ -142,16 +141,11 @@ defmodule RintoPMOWeb.Router do
     # no counterpart in the agent CLI.
     post "/documents/:id/formalize", DocumentController, :formalize
 
-    # Turning a plan into the work it implies. Answers with the attempt rather
-    # than the breakdown -- the model call runs in a job, and what a client
-    # does next is watch `document:{id}` on the socket. The `GET` is for one
-    # that would rather ask than listen.
-    post "/documents/:id/decompose", DocumentController, :decompose
-    get "/documents/:id/decomposition", DocumentController, :decomposition
-
-    # And the other end of it: the breakdown somebody adopted becomes the work.
-    # An action on the document because that is what it consumes -- the
-    # document comes out `applied` and cannot be filed a second time.
+    # The breakdown somebody adopted becomes the work. A task document is
+    # written from a topic, with the breakdown prompt shortcut; filing it is a
+    # person's action, which is why it is here and not something the model did
+    # on its way past. An action on the document because that is what it
+    # consumes -- it comes out `applied` and cannot be filed a second time.
     post "/documents/:id/file_breakdown", DocumentController, :file_breakdown
 
     resources "/documents", DocumentController, only: [:index, :show, :create, :delete] do
@@ -196,12 +190,6 @@ defmodule RintoPMOWeb.Router do
       # the way it is for a day's leave.
       post "/annotations/:id/confirm", AnnotationController, :confirm
       delete "/annotations/:id/confirm", AnnotationController, :unconfirm
-
-      # The only thing that writes here that is not a person. One click, one
-      # reply: nothing works out on its own whether a discussion has concluded,
-      # because the asking is the boundary. Answers with the job -- watch
-      # `document:{id}` for the end of it.
-      post "/annotations/:id/reply", AnnotationController, :reply
 
       # The many-to-many between annotations and topics, derived from message
       # refs. No join table backs this.

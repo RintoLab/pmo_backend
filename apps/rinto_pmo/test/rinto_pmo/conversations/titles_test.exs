@@ -5,13 +5,13 @@ defmodule RintoPMO.Conversations.TitlesTest do
   alias RintoPMO.Actors
   alias RintoPMO.ActorsMock
   alias RintoPMO.Agent.TitleGeneratorMock
+  alias RintoPMO.AIRoles
   alias RintoPMO.Conversations
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Conversations.Notifier
   alias RintoPMO.Conversations.Titles
   alias RintoPMO.Conversations.TitleWorker
   alias RintoPMO.DocumentsMock
-  alias RintoPMO.Settings
 
   # A topic carries an assistant by default now, and naming falls back to it when
   # no naming actor is configured -- so the real context answers unless a test
@@ -221,11 +221,16 @@ defmodule RintoPMO.Conversations.TitlesTest do
       assert named.title == "上线流程遗漏检查"
     end
 
-    test "asks whichever actor was put in the naming role" do
-      namer = insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
+    test "asks however the naming role was configured, over the topic's own" do
       assistant = insert(:actor, kind: :ai, provider: "anthropic", model: "opus")
 
-      assert {:ok, _settings} = Settings.put_actor("title_actor", namer.id)
+      assert {:ok, _roles} =
+               AIRoles.put_role("topic_naming", %{
+                 "provider" => "google",
+                 "model" => "flash",
+                 "thinking_level" => "off",
+                 "system_prompt" => "Lead with the subsystem when there is one."
+               })
 
       conversation = unnamed(assistant_actor: assistant)
       append(conversation, "上线流程有没有遗漏")
@@ -234,20 +239,25 @@ defmodule RintoPMO.Conversations.TitlesTest do
         assert opts[:provider] == "google"
         assert opts[:model] == "flash"
         assert opts[:thinking] == "off"
+        assert opts[:system_prompt] == "Lead with the subsystem when there is one."
         {:ok, "上线流程遗漏检查"}
       end)
 
       assert {:ok, _named, :model} = Titles.name(conversation.id)
     end
 
-    test "falls back to the topic's assistant when the naming actor is turned off" do
-      namer =
-        insert(:actor, kind: :ai, provider: "google", model: "flash", thinking_level: "off")
-
-      assistant = insert(:actor, kind: :ai, provider: "anthropic", model: "opus")
-
-      assert {:ok, _settings} = Settings.put_actor("title_actor", namer.id)
-      assert {:ok, _disabled} = Actors.update_actor(namer, %{"enabled" => false})
+    # A fallback inherits the topic's *model*, not its persona: an assistant's
+    # system prompt is written for holding a discussion, and naming under it
+    # would title topics in the voice of somebody arguing about them.
+    test "carries no standing instruction when it falls back to the topic" do
+      assistant =
+        insert(:actor,
+          kind: :ai,
+          provider: "anthropic",
+          model: "opus",
+          thinking_level: "off",
+          system_prompt: "You are blunt and you argue."
+        )
 
       conversation = unnamed(assistant_actor: assistant)
       append(conversation, "上线流程有没有遗漏")
@@ -256,6 +266,7 @@ defmodule RintoPMO.Conversations.TitlesTest do
 
       expect(TitleGeneratorMock, :generate, fn _input, opts ->
         assert opts[:model] == "opus"
+        assert opts[:system_prompt] == nil
         {:ok, "上线流程遗漏检查"}
       end)
 
@@ -281,7 +292,7 @@ defmodule RintoPMO.Conversations.TitlesTest do
       assert {:ok, _named, :model} = Titles.name(conversation.id)
     end
 
-    test "uses a plain chat's selected model when no naming actor is configured" do
+    test "uses a plain chat's selected model when the naming role is empty" do
       conversation =
         unnamed(
           mode: :chat,

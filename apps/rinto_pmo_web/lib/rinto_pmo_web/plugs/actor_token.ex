@@ -15,8 +15,8 @@ defmodule RintoPMOWeb.Plugs.ActorToken do
 
   The token replaces the client-supplied `actor_id` for anything a person does.
   It cannot replace all of them: `POST /tasks/{id}/assign` names who is being
-  handed the work, `PUT /settings/{key}` names an AI persona, and those stay in
-  the body because they are about somebody other than the caller.
+  handed the work, and that stays in the body because it is about somebody
+  other than the caller.
 
   ## Why a plug and not the injection seam
 

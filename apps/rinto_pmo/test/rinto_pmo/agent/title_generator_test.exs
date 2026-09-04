@@ -60,7 +60,7 @@ defmodule RintoPMO.Agent.TitleGeneratorTest do
       assert "gemini-flash" in recorded
     end
 
-    test "passes the naming actor's thinking level", %{tmp_dir: tmp_dir} do
+    test "passes the naming role's thinking level", %{tmp_dir: tmp_dir} do
       argv = fake_pi(tmp_dir, stdout: "A title")
 
       assert {:ok, _title} =
@@ -74,7 +74,7 @@ defmodule RintoPMO.Agent.TitleGeneratorTest do
                argv.() |> Enum.drop_while(&(&1 != "--thinking")) |> Enum.take(2)
     end
 
-    test "asks pi to pick when there is no actor to inherit from", %{tmp_dir: tmp_dir} do
+    test "asks pi to pick when there is nothing to inherit from", %{tmp_dir: tmp_dir} do
       argv = fake_pi(tmp_dir, stdout: "A title")
 
       assert {:ok, _title} = TitleGenerator.generate(@input)
@@ -83,6 +83,37 @@ defmodule RintoPMO.Agent.TitleGeneratorTest do
       refute "--provider" in recorded
       refute "--model" in recorded
       refute "--thinking" in recorded
+    end
+
+    # The role steers what a title pays attention to; the built-in rules decide
+    # what a title *is*. Second, so they have the last word: a standing
+    # instruction that could drop "reply with the title alone" would hand a
+    # paragraph to a caller about to write it into a column.
+    test "puts the role's standing instruction in front of the built-in rules",
+         %{tmp_dir: tmp_dir} do
+      argv = fake_pi(tmp_dir, stdout: "A title")
+
+      assert {:ok, _title} =
+               TitleGenerator.generate(@input, system_prompt: "Lead with the subsystem.")
+
+      # Recorded a line at a time, so the prompt arrives as its lines: the
+      # instruction is the first of them and the built-in rules follow.
+      assert ["Lead with the subsystem." | rules] =
+               argv.() |> Enum.drop_while(&(&1 != "--system-prompt")) |> Enum.drop(1)
+
+      assert Enum.any?(rules, &String.starts_with?(&1, "You name conversations."))
+    end
+
+    test "runs on the built-in rules alone when the role has no instruction",
+         %{tmp_dir: tmp_dir} do
+      argv = fake_pi(tmp_dir, stdout: "A title")
+
+      assert {:ok, _title} = TitleGenerator.generate(@input, system_prompt: "   ")
+
+      assert [first | _rest] =
+               argv.() |> Enum.drop_while(&(&1 != "--system-prompt")) |> Enum.drop(1)
+
+      assert String.starts_with?(first, "You name conversations.")
     end
 
     test "reports a provider that refused", %{tmp_dir: tmp_dir} do

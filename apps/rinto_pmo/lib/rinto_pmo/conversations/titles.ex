@@ -42,13 +42,14 @@ defmodule RintoPMO.Conversations.Titles do
 
   alias RintoPMO.Actors.Actor
   alias RintoPMO.Agent.TitleGenerator
+  alias RintoPMO.AIRoles
+  alias RintoPMO.AIRoles.AIRole
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Conversations.Message
   alias RintoPMO.Conversations.Notifier
   alias RintoPMO.Conversations.TitleWorker
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
-  alias RintoPMO.Settings
   alias RintoPMO.Utils
 
   require Logger
@@ -327,15 +328,28 @@ defmodule RintoPMO.Conversations.Titles do
     end
   end
 
-  # Whoever was chosen to name topics, and the topic's own assistant when
-  # nobody was. The chosen one wins because naming is a fixed, tiny job that
-  # somebody picked a cheap model for; the conversation's own configuration is
-  # the fallback because its credentials work and it is what the person is
-  # already talking to.
+  # However naming was configured, and the topic's own configuration when it
+  # was not. The role wins because naming is a fixed, tiny job that somebody
+  # picked a cheap model for; the conversation is the fallback because its
+  # credentials work and it is what the person is already talking to.
+  #
+  # Only the role carries a standing instruction. A fallback inherits the
+  # conversation's *model*, not its persona: an assistant's system prompt is
+  # written for holding a discussion, and putting it in front of "reply with
+  # the title alone" would name topics in the voice of somebody arguing about
+  # them.
   defp generator_opts(conversation) do
-    case Settings.get_actor("title_actor") do
-      %Actor{} = actor -> actor_opts(actor)
-      nil -> conversation_opts(conversation)
+    case AIRoles.get_role("topic_naming") do
+      %AIRole{} = role ->
+        [
+          provider: role.provider,
+          model: role.model,
+          thinking: role.thinking_level,
+          system_prompt: role.system_prompt
+        ]
+
+      nil ->
+        conversation_opts(conversation)
     end
   end
 

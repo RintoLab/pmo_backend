@@ -2,12 +2,21 @@ defmodule RintoPMO.Agent.Print do
   @moduledoc false
 
   # One short-lived `pi --print --mode json` process. Shared by the one-shot
-  # estimators so the event-stream loop is not copied per prompt.
+  # callers so the event-stream loop is not copied per prompt.
   #
-  # Why this shape -- json mode, idle clock rather than a wall-clock budget,
-  # failure carried back rather than logged -- is written down on
-  # `RintoPMO.Agent.WbsGenerator`. This module does the same thing for a
-  # different question, and does not re-argue it.
+  # Three choices worth stating, because each is the opposite of the obvious
+  # one:
+  #
+  #   * **json mode, not rpc.** There is no conversation here -- one question,
+  #     one answer, and the process is let go. An rpc session would be a thing
+  #     to keep alive for no reader.
+  #   * **an idle clock rather than a wall-clock budget.** A model still
+  #     producing output is still working, and how long an answer takes is a
+  #     property of the question. Cutting one off mid-answer throws away
+  #     everything it has done; cutting off silence loses nothing.
+  #   * **failure carried back rather than logged.** Every caller has somebody
+  #     waiting on the other end who has to be told what happened, and a
+  #     provider's complaint is the only thing worth telling them.
 
   alias RintoPMO.Agent.Events
   alias RintoPMO.Agent.PiInstallation
@@ -48,6 +57,35 @@ defmodule RintoPMO.Agent.Print do
       call(system_prompt, user_message, session_dir, opts, name)
     after
       File.rm_rf(session_dir)
+    end
+  end
+
+  @doc """
+  The prompt a one-shot call runs under: the job's own contract, with whatever
+  standing instruction its `RintoPMO.AIRoles` row carries in front of it.
+
+  The order is the whole of the design. What somebody writes in the role is
+  about *what to pay attention to* -- which is exactly what a built-in prompt
+  cannot know -- and it comes first, where a model reads it as the brief. The
+  contract comes second and therefore has the last word on shape: what to
+  answer in, what never to invent, what not to wrap the answer in. A role that
+  could replace the contract could break the caller that parses the answer,
+  and the person editing a textarea would have no way to know they had.
+
+  `nil` and `""` both mean nothing was written, and both give back the
+  contract exactly as it stands -- no blank lines, no empty heading.
+  """
+  @spec system_prompt(String.t(), String.t() | nil) :: String.t()
+  def system_prompt(prompt, standing) when is_binary(prompt) do
+    case standing do
+      instruction when is_binary(instruction) ->
+        case String.trim(instruction) do
+          "" -> prompt
+          trimmed -> trimmed <> "\n\n" <> prompt
+        end
+
+      _absent ->
+        prompt
     end
   end
 

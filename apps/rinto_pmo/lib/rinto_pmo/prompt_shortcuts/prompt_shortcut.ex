@@ -6,8 +6,8 @@ defmodule RintoPMO.PromptShortcuts.PromptShortcut do
 
   The set grows, and the wording of a prompt is tuned by reading what came
   back. Both of those are edits somebody makes while looking at the result,
-  which is the same argument `RintoPMO.Settings` makes for roles: put it in
-  the source and every adjustment is a deploy.
+  which is the same argument `RintoPMO.AIRoles` makes for the two automatic
+  jobs: put it in the source and every adjustment is a deploy.
 
   ## `key` is not `id`
 
