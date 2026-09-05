@@ -3,7 +3,7 @@
 //! Only useful to something running on the server: the path that comes back is
 //! the server's own, and there is nothing at that path anywhere else. A
 //! developer's checkout is their own, made with their own credentials -- see
-//! `skills/rinto-docs-reference`, which is about being in the right one rather
+//! `skills/development/rinto-docs-reference`, which is about being in the right one rather
 //! than about being given one.
 
 use clap::{Args, Subcommand};

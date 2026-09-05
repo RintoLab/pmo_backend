@@ -17,6 +17,9 @@ config :rinto_pmo,
   # Pi itself reads this environment variable. `nil` means use its native
   # resolution: PI_CODING_AGENT_DIR, then $HOME/.pi/agent.
   pi_agent_dir: nil,
+  # nil keeps Pi's normal skill discovery. A directory supplied at runtime
+  # selects the server skills explicitly for conversation sessions.
+  pi_skills_dir: nil,
   injectors: [
     actors: RintoPMO.Actors,
     annotations: RintoPMO.Annotations,

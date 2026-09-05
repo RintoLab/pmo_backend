@@ -84,7 +84,14 @@ defmodule RintoPMO.Agent.PiSessionTest do
 
       # pi then picks its own default, which is what a topic with no assistant
       # actor configured gets.
-      for absent <- ["--provider", "--model", "--thinking", "--system-prompt"] do
+      for absent <- [
+            "--provider",
+            "--model",
+            "--thinking",
+            "--system-prompt",
+            "--no-skills",
+            "--skill"
+          ] do
         refute absent in argv
       end
 
@@ -112,6 +119,34 @@ defmodule RintoPMO.Agent.PiSessionTest do
 
       PiSession.close(session)
     end
+  end
+
+  test "loads only the server skills from the configured directory", %{tmp_dir: tmp_dir} do
+    capture = Path.join(tmp_dir, "skill-argv")
+    skills_dir = Path.join(tmp_dir, "development skills")
+
+    options =
+      fake_pi(tmp_dir, """
+      printf '%s\\n' "$@" > "#{capture}"
+      while IFS= read -r line; do
+        printf '%s\\n' '{"type":"response","id":"ready","success":true}'
+      done
+      """)
+
+    session = start_supervised!({PiSession, options ++ [skills_dir: skills_dir]})
+
+    # The response is sent after argv has been captured; no polling is needed.
+    assert {:ok, %{"success" => true}} =
+             PiSession.command(session, %{"type" => "get_state", "id" => "ready"})
+
+    arguments = argv(capture)
+    assert "--no-skills" in arguments
+
+    assert Enum.chunk_every(arguments, 2, 1, :discard)
+           |> Enum.filter(fn [flag, _path] -> flag == "--skill" end) ==
+             [["--skill", skills_dir]]
+
+    assert List.last(arguments) == List.last(options[:extra_args])
   end
 
   defp argv(capture), do: capture |> File.read!() |> String.split("\n", trim: true)

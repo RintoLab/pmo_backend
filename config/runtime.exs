@@ -36,6 +36,15 @@ if pi_auth_helper_runtime != "" do
   config :rinto_pmo, pi_auth_helper_runtime: pi_auth_helper_runtime
 end
 
+# A development server reads skills directly from the checkout. Its topic
+# processes must not also discover the user's installed production copies.
+# Tests supply their own paths rather than inheriting a developer's selection.
+pi_skills_dir = System.get_env("RINTO_PI_SKILLS_DIR", "") |> String.trim()
+
+if config_env() != :test and pi_skills_dir != "" do
+  config :rinto_pmo, pi_skills_dir: Path.expand(pi_skills_dir)
+end
+
 # The token every request carries. It is agreed in advance rather than issued:
 # the same value goes here and into the configuration of each thing that calls
 # this API, because there is no way to distribute it from here -- every client

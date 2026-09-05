@@ -6,6 +6,51 @@ This is a web application written using the Phoenix web framework.
 - Keep `openapi.yaml` synchronized with every REST API or response-format change
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 
+### Local development and the CLI
+
+- The production Rinto system manages this project's real tasks and documents.
+  Use the installed `rinto-pmo` for that work, including while editing this repository.
+- Run `mise run cli:build` before first using the development CLI and after changing
+  `cli/` sources. Also rebuild after changing `skills/` when testing the CLI's embedded
+  skills or its `skill install` / `skill sync` commands. The binary is
+  `cli/target/debug/rinto-pmo`; this task does not install it globally.
+- Run `mise run dev` to start Phoenix. It only runs `mix phx.server` with task-scoped
+  environment variables; it never builds the CLI or installs skills. Building the
+  CLI is a separate, explicit step, so ensure the local binary exists before testing
+  a topic that invokes it.
+- The development service and its Pi children resolve `rinto-pmo` through a PATH
+  prefixed with `cli/target/debug`, and use
+  `RINTO_CONFIG=<repository>/config/cli.json`. Keep development variables in
+  task-level configuration; do not put them in mise's top-level `[env]` or change
+  the terminal's global PATH.
+- `RINTO_PI_SKILLS_DIR` points at this repository's `skills/server/` bundle. The
+  service starts topic Pi processes with `--no-skills --skill <bundle-directory>`;
+  Pi discovers the bundle's `SKILL.md` files recursively. Edit these source files
+  directly, then start a new topic process to load their changes.
+- Run `mise run pi:dev` for an interactive development Pi outside the server.
+  It uses the local CLI, `config/cli.json`, and all source skills under `skills/`
+  via `--no-skills --skill`. It does not build the CLI or start Phoenix. It fails
+  when the local CLI has not been built, instead of falling through PATH to the
+  production CLI. It clears
+  inherited `RINTO_API`, `RINTO_TOKEN` and `RINTO_CONVERSATION_ID` so this session
+  uses the selected config file and works outside a topic. Additional Pi arguments
+  can be passed after `--`, for example `mise run pi:dev -- --help`.
+- `skills/<bundle>/<skill>/SKILL.md` is the only source registry. The CLI build
+  discovers and embeds every bundle automatically. The release workflow derives
+  the production installation list from the `server` directory; do not duplicate
+  individual skill names in application or deployment code.
+- Run development CLI commands outside Pi with `mise run rinto-pmo:dev -- <args>`.
+  This task selects `cli/target/debug/rinto-pmo` and `config/cli.json`, clears the
+  same inherited connection and topic variables, and fails when the local CLI has
+  not been built. For example: `mise run rinto-pmo:dev -- task list`.
+- Initialize the development CLI configuration against the running local API with
+  `RINTO_CONFIG="$PWD/config/cli.json" cli/target/debug/rinto-pmo config init --api http://localhost:4000/api/v1`.
+  Supply the development server's token when prompted. For manual development CLI
+  calls, prefix the local binary with the same `RINTO_CONFIG` variable.
+- Run `mise run check` to execute the required `mix check` alias with `.env` loaded
+  only for that task. Other direct Mix commands that need database credentials must
+  likewise receive their environment explicitly.
+
 ### Phoenix v1.8 guidelines
 
 - **Always** begin your LiveView templates with `<Layouts.app flash={@flash} ...>` which wraps all inner content

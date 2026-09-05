@@ -46,6 +46,67 @@ for scripts.
 Configuration is stored at `~/.config/rinto-pmo/config.json`. Set
 `RINTO_CONFIG` to use a different path.
 
+## Local development
+
+Run `mise run cli:build` from the repository to compile the current sources to
+`cli/target/debug/rinto-pmo`. Run it again after CLI changes, or when checking
+the embedded copy of edited skills.
+
+`mise run dev` starts Phoenix with that directory first on its PATH,
+`RINTO_CONFIG` pointing at the repository's `config/cli.json`, and
+`RINTO_PI_SKILLS_DIR` pointing at the repository's `skills/server/` bundle. It only starts
+the server: it does not build the CLI. These variables apply to the server and
+its children, leaving the normal terminal on the installed production CLI.
+
+With the local server running, initialize its CLI configuration once:
+
+```sh
+RINTO_CONFIG="$PWD/config/cli.json" \
+  cli/target/debug/rinto-pmo config init --api http://localhost:4000/api/v1
+```
+
+Enter the development server's token. To run a development command manually:
+
+```sh
+PATH="$PWD/cli/target/debug:$PATH" \
+RINTO_CONFIG="$PWD/config/cli.json" \
+  rinto-pmo task list
+```
+
+To open an interactive Pi outside the server with the development CLI and all
+source skills:
+
+```sh
+mise run pi:dev
+```
+
+This task uses `config/cli.json` and `--no-skills --skill <repository>/skills`,
+with terminal input and output connected directly to Pi. It does not build the
+CLI or start Phoenix. It fails with an instruction to run `mise run cli:build`
+when the local binary is absent, instead of finding the production CLI later on
+PATH. It clears inherited
+`RINTO_API`, `RINTO_TOKEN` and `RINTO_CONVERSATION_ID` to use the selected config
+file outside a topic. Pass additional Pi arguments after `--`, for example
+`mise run pi:dev -- --help`.
+
+Run the same development CLI directly with:
+
+```sh
+mise run rinto-pmo:dev -- task list
+```
+
+`rinto-pmo:dev` selects the local binary and `config/cli.json`, clears inherited
+API, token and topic overrides, and forwards everything after `--` to the CLI.
+Like `pi:dev`, it asks you to run `mise run cli:build` when the local binary is
+missing.
+
+Skill sources live only under `skills/<bundle>/<skill>/SKILL.md`. Pi scans these
+directories recursively, and the CLI build generates its embedded registry from
+the same tree. Development topic sessions load the `server` bundle directly
+using `--no-skills --skill <repository>/skills/server`. Start a new topic process after editing it;
+there is no need to overwrite the installed production skills. Run
+`mise run check` for the backend's `mix check` with task-scoped `.env` values.
+
 ## What it can do
 
 `rinto-pmo <group> --help` lists a group's commands and every flag; this is the
@@ -55,7 +116,7 @@ different things:
 * **Outside a topic** -- a coding agent on a developer's machine, configured by
   `config init`. Writes are credited to the configured human.
 * **Inside a topic** -- spawned by the server with `RINTO_CONVERSATION_ID` in the
-  environment and no config file. Writes are credited to that topic's assistant,
+  environment. Writes are credited to that topic's assistant,
   and changes to documents can only be *proposed*, never committed.
 
 `repo checkout` belongs to the second one only. The path it prints is the
@@ -143,6 +204,11 @@ select one; the option can be repeated or comma-separated. `--dir` installs one
 custom copy and cannot be combined with `--agent`. `skill sync` updates every
 recorded copy, including multiple copies of the same skill, but never adds an
 agent destination that was not installed.
+
+The release workflow derives the production installation list directly from
+`skills/server/`, then calls this existing command for each entry. Adding a
+skill to that bundle does not require another list in application or deployment
+code.
 
 `skill list` says which version the binary carries, and for every installed
 copy, which version wrote it and whether it is still current -- without writing

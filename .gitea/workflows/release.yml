@@ -214,9 +214,6 @@ jobs:
         run: |
           set -euo pipefail
           cli/install_test.sh
-          # The repository config imports a local .env for development. CI has
-          # no such file and no secrets belong there, so provide an empty one.
-          : > .env
           mise trust mise.toml
           mise install rust@1.97.1
           mise exec rust@1.97.1 -- cargo test --locked --manifest-path cli/Cargo.toml
@@ -285,7 +282,7 @@ jobs:
           linux_size="$(stat -c %s dist/rinto-pmo-linux-amd64)"
           darwin_size="$(stat -c %s dist/rinto-pmo-darwin-arm64)"
           source_sha="$(
-            git ls-files -z cli/src cli/Cargo.toml cli/Cargo.lock cli/VERSION cli/install.sh skills \
+            git ls-files -z cli/src cli/build.rs cli/Cargo.toml cli/Cargo.lock cli/VERSION cli/install.sh skills \
               | LC_ALL=C sort -z \
               | xargs -0 sha256sum \
               | sha256sum \
@@ -684,6 +681,26 @@ jobs:
           curl -fsS "${base}/${cli_version}/${asset}" -o rinto-pmo-linux-amd64
           printf '%s  rinto-pmo-linux-amd64\n' "${sha}" > rinto-pmo-linux-amd64.sha256
           sha256sum -c rinto-pmo-linux-amd64.sha256
+
+          : > server-skills
+          while IFS= read -r directory; do
+            name="${directory##*/}"
+            case "${name}" in
+              ''|*[!a-z0-9-]*|-*|*-|*--*)
+                echo "invalid skill directory name: ${name}" >&2
+                exit 1
+                ;;
+            esac
+            test -s "${directory}/SKILL.md" || {
+              echo "${directory} has no non-empty SKILL.md" >&2
+              exit 1
+            }
+            printf '%s\n' "${name}" >> server-skills
+          done < <(find skills/server -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort)
+          test -s server-skills || {
+            echo "skills/server contains no skills" >&2
+            exit 1
+          }
           echo "AGENT_CLI_VERSION=${cli_version}" >> "${GITEA_ENV}"
           echo "the server's agent will get rinto-pmo ${cli_version}"
 
@@ -774,7 +791,8 @@ jobs:
           # The agent's inputs go up either way. The release tarball only when
           # there is one -- a CLI-only run never built it.
           scp "${ssh_opts[@]}" \
-            deploy/provision_agent.sh rinto-pmo-linux-amd64 rinto-pmo-linux-amd64.sha256 \
+            deploy/provision_agent.sh server-skills \
+            rinto-pmo-linux-amd64 rinto-pmo-linux-amd64.sha256 \
             "${DEPLOY_USER}@${HOST}:${deploy_staging}/"
           scp "${ssh_opts[@]}" -r \
             deploy/agent "${DEPLOY_USER}@${HOST}:${deploy_staging}/"

@@ -79,30 +79,11 @@ pub struct Skill {
     pub body: &'static str,
 }
 
-/// Every skill this binary can install.
-///
-/// Deliberately not installed as a set: each is written for a different job,
-/// and an agent carrying a workflow it will never run is the noise the split
-/// exists to avoid. A server-side agent writing documents has no use for the
-/// claim-implement-report loop, and neither of them retires work.
-pub const SKILLS: &[Skill] = &[
-    Skill {
-        name: "rinto-document-authoring",
-        body: include_str!("../../skills/rinto-document-authoring/SKILL.md"),
-    },
-    Skill {
-        name: "rinto-docs-reference",
-        body: include_str!("../../skills/rinto-docs-reference/SKILL.md"),
-    },
-    Skill {
-        name: "rinto-project-code",
-        body: include_str!("../../skills/rinto-project-code/SKILL.md"),
-    },
-    Skill {
-        name: "rinto-backlog-cleanup",
-        body: include_str!("../../skills/rinto-backlog-cleanup/SKILL.md"),
-    },
-];
+// `build.rs` discovers every skills/<bundle>/<skill>/SKILL.md. Adding a skill
+// therefore changes the source tree only; Rust has no second registry to keep
+// synchronized. The generated bodies still use include_str!, so a release
+// keeps its skills inseparable from the CLI version that describes them.
+include!(concat!(env!("OUT_DIR"), "/skills_registry.rs"));
 
 #[derive(Subcommand)]
 pub enum SkillCommand {

@@ -2,8 +2,13 @@
 
 To start your Phoenix server: 
 
-* Run `mix setup` to install and setup dependencies
-* Start Phoenix endpoint with `mix phx.server` or inside IEx with `iex -S mix phx.server` 
+* Run `mix setup` with your database environment variables supplied to install and setup dependencies
+* Compile the development CLI separately with `mise run cli:build`
+* Start Phoenix with `mise run dev`; this only starts the server with its development environment
+
+The development CLI configuration and source skills are described in
+[`cli/README.md`](cli/README.md#local-development). The ordinary terminal keeps
+using the installed production CLI. Run `mise run check` for the backend checks.
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 

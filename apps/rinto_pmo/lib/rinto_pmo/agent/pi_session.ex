@@ -99,6 +99,7 @@ defmodule RintoPMO.Agent.PiSession do
           | {:executable, String.t()}
           | {:session_dir, Path.t()}
           | {:offline, boolean()}
+          | {:skills_dir, Path.t() | nil}
           | {:extra_args, [String.t()]}
           | {:pubsub, atom()}
           | {:provider, String.t() | nil}
@@ -435,7 +436,19 @@ defmodule RintoPMO.Agent.PiSession do
 
     # Ahead of `extra_args`, which has to stay last: it is how a test hands the
     # fake pi its behaviour file, and the fake reads its *last* argument.
-    base ++ persona_args(opts) ++ Keyword.get(opts, :extra_args, [])
+    base ++ persona_args(opts) ++ skill_args(opts) ++ Keyword.get(opts, :extra_args, [])
+  end
+
+  # The directory is one bundle under skills/. Pi discovers every SKILL.md
+  # below it recursively, so the directory tree remains the only registry.
+  defp skill_args(opts) do
+    case Keyword.get(opts, :skills_dir, Application.get_env(:rinto_pmo, :pi_skills_dir)) do
+      nil ->
+        []
+
+      directory ->
+        ["--no-skills", "--skill", directory]
+    end
   end
 
   # Which model answers, and as whom. Absent options are simply not passed, and

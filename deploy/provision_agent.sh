@@ -34,6 +34,7 @@
 #
 #   rinto-pmo-linux-amd64          resolved and verified on the runner
 #   rinto-pmo-linux-amd64.sha256
+#   server-skills                  generated from skills/server in the checkout
 #   agent/AGENTS.md
 #
 # Leaves behind:
@@ -52,20 +53,6 @@ cli="${bin_dir}/rinto-pmo"
 agent_dir="${HOME}/.pi/agent"
 context_file="${agent_dir}/AGENTS.md"
 
-# These two, and not the others. `rinto-docs-reference` is the development-side
-# loop -- claim a task, change code, report back -- and `rinto-backlog-cleanup`
-# opens by requiring that a human confirm every cancellation one at a time,
-# which is not a person this process has in front of it. `skill install`
-# deliberately refuses to install everything by default for exactly this reason;
-# installing the wrong ones here would work around that on the one machine it
-# matters most.
-#
-# `rinto-project-code` is separate from `rinto-document-authoring` rather than a
-# section inside it: that one's description triggers on "write this up", and
-# reading a project's code usually happens *before* anybody has decided there is
-# a document to write. Folded in, it would be discovered too late to be used.
-skills="rinto-document-authoring rinto-project-code"
-
 say() { printf '\n=== %s\n' "$1"; }
 
 cd "${staging}"
@@ -75,6 +62,10 @@ test -s rinto-pmo-linux-amd64 || {
 }
 test -s agent/AGENTS.md || {
   echo "the agent context file did not arrive in ${staging}" >&2
+  exit 1
+}
+test -s server-skills || {
+  echo "the server skill bundle did not arrive in ${staging}" >&2
   exit 1
 }
 
@@ -119,9 +110,10 @@ test "${installed}" = "rinto-pmo ${cli_version}" || {
 # the CLI no longer has -- the drift `include_str!` exists to prevent, arriving
 # late.
 say "installing the Pi skills"
-for skill in ${skills}; do
+while IFS= read -r skill || [ -n "${skill}" ]; do
+  [ -n "${skill}" ] || continue
   "${cli}" skill install "${skill}" --agent pi --force
-done
+done < server-skills
 
 # Global context, loaded by pi for every process on this machine regardless of
 # cwd, of `--system-prompt`, and of whether any skill is triggered
