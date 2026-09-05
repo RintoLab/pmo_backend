@@ -34,18 +34,21 @@ defmodule RintoPMO.Documents.BlockDiff do
 
   The longest common subsequence of the two content lists gives the anchors --
   the blocks that are unarguably the same block, in an order both versions agree
-  on. Everything between two anchors is then a gap holding some old blocks and
-  some new contents, and those are paired off positionally: the first old block
-  in the gap becomes the first new content, and so on. Pairs are `update`s;
-  whichever list runs out first leaves `insert_after`s or `delete`s behind.
+  on. Within each gap, normalized 3-gram similarity finds edited blocks with
+  enough textual evidence to keep their ids. A maximum-weight ordered matching
+  prevents those identities from crossing when content is reordered.
 
-  Positional pairing inside a gap is a guess, but a contained one -- it can only
-  ever mismatch blocks that are already adjacent and already changed, and the
-  cost of being wrong is a `block_id` on the wrong paragraph rather than lost
-  text.
+  Similar matches divide a gap into smaller runs. Each unmatched run falls back
+  to positional pairing, preserving the conservative behaviour for wholesale
+  rewrites where similarity offers no evidence. Inserts and deletes are only
+  introduced when a similarity match demonstrates the positional pairing would
+  attach an existing id to the wrong content.
   """
 
   alias RintoPMO.Documents.DocumentBlock
+
+  @similarity_threshold 0.5
+  @weight_epsilon 1.0e-12
 
   @type operation :: %{required(:op) => atom(), optional(atom()) => term()}
 
@@ -99,39 +102,75 @@ defmodule RintoPMO.Documents.BlockDiff do
     Enum.reverse([{old_rest, new_rest, preceding} | segments])
   end
 
-  # A segment's old and new gaps are paired off positionally; the leftovers on
-  # whichever side is longer become deletes or inserts.
+  # Similar matches establish identities within a gap. The runs between them
+  # retain positional pairing, which is the safest fallback when the text gives
+  # no evidence that one changed block corresponds to another.
   defp reconcile({old_gap, new_gap, preceding}, actor_id) do
-    pairs = Enum.zip(old_gap, new_gap)
-    paired = length(pairs)
+    pairs = gap_pairs(old_gap, new_gap)
+    paired_old = MapSet.new(pairs, &elem(&1, 0))
+    paired_new = Map.new(pairs, fn {old_index, new_index} -> {new_index, old_index} end)
 
     updates =
-      for {{block_id, content}, new_content} <- pairs, content != new_content do
+      for {old_index, new_index} <- pairs,
+          {block_id, content} = Enum.at(old_gap, old_index),
+          new_content = Enum.at(new_gap, new_index),
+          content != new_content do
         %{op: :update, block_id: block_id, actor_id: actor_id, content: new_content}
       end
 
     deletes =
-      for {block_id, _content} <- Enum.drop(old_gap, paired) do
+      for {{block_id, _content}, index} <- Enum.with_index(old_gap),
+          not MapSet.member?(paired_old, index) do
         %{op: :delete, block_id: block_id}
       end
 
     inserts =
       new_gap
-      |> Enum.drop(paired)
-      |> inserts(insertion_anchor(old_gap, paired, preceding), actor_id)
+      |> Enum.with_index()
+      |> Enum.reject(fn {_content, index} -> Map.has_key?(paired_new, index) end)
+      |> Enum.chunk_by(fn {_content, index} ->
+        insertion_anchor(old_gap, pairs, index, preceding)
+      end)
+      |> Enum.flat_map(fn [{_content, index} | _] = run ->
+        contents = Enum.map(run, &elem(&1, 0))
+        inserts(contents, insertion_anchor(old_gap, pairs, index, preceding), actor_id)
+      end)
 
     updates ++ deletes ++ inserts
   end
 
-  # Additions hang off the last block that both survives and sits ahead of them:
-  # the final paired block of the gap, since pairing yields an `update` and an
-  # update keeps its id and its place. With nothing paired, that is the block
-  # before the gap -- nothing at all for the leading one, which `BlockOps` reads
-  # as the head of the document.
-  defp insertion_anchor(_old_gap, 0, preceding), do: preceding
+  defp gap_pairs(old_gap, new_gap) do
+    old_contents = Enum.map(old_gap, &elem(&1, 1))
+    matches = similarity_matches(old_contents, new_gap)
 
-  defp insertion_anchor(old_gap, paired, _preceding) do
-    old_gap |> Enum.take(paired) |> List.last() |> elem(0)
+    {pairs, old_start, new_start} =
+      Enum.reduce(matches, {[], 0, 0}, fn {old_index, new_index}, {pairs, old_start, new_start} ->
+        fallback = positional_pairs(old_start, old_index, new_start, new_index)
+        {pairs ++ fallback ++ [{old_index, new_index}], old_index + 1, new_index + 1}
+      end)
+
+    pairs ++ positional_pairs(old_start, length(old_gap), new_start, length(new_gap))
+  end
+
+  defp positional_pairs(old_start, old_end, new_start, new_end) do
+    count = min(old_end - old_start, new_end - new_start)
+
+    for offset <- indexes(count) do
+      {old_start + offset, new_start + offset}
+    end
+  end
+
+  defp indexes(0), do: []
+  defp indexes(count), do: 0..(count - 1)
+
+  # An insertion follows the nearest target block before it that keeps an old
+  # id. If there is no such block in this gap, it follows the exact LCS anchor
+  # before the gap (or nil at the head of the document).
+  defp insertion_anchor(old_gap, pairs, new_index, preceding) do
+    case pairs |> Enum.take_while(fn {_old, new} -> new < new_index end) |> List.last() do
+      {old_index, _new_index} -> old_gap |> Enum.at(old_index) |> elem(0)
+      nil -> preceding
+    end
   end
 
   # Emitted in reverse because `insert_after` puts its block immediately after
@@ -148,6 +187,92 @@ defmodule RintoPMO.Documents.BlockDiff do
       }
     end
   end
+
+  # Maximum-weight ordered matching, with the pair sequence as a total tie
+  # breaker. Keeping the lexicographically earliest sequence makes repeated or
+  # equally similar text deterministic.
+  defp similarity_matches([], _new), do: []
+  defp similarity_matches(_old, []), do: []
+
+  defp similarity_matches(old, new) do
+    old = List.to_tuple(old)
+    new = List.to_tuple(new)
+    old_size = tuple_size(old)
+    new_size = tuple_size(new)
+    empty = %{weight: 0.0, pairs: []}
+
+    table =
+      Enum.reduce(0..old_size, %{}, fn index, table ->
+        Map.put(table, {index, new_size}, empty)
+      end)
+
+    table =
+      Enum.reduce(0..new_size, table, fn index, table ->
+        Map.put(table, {old_size, index}, empty)
+      end)
+
+    table =
+      for i <- (old_size - 1)..0//-1, j <- (new_size - 1)..0//-1, reduce: table do
+        table ->
+          score = similarity(elem(old, i), elem(new, j))
+
+          candidates = [Map.fetch!(table, {i + 1, j}), Map.fetch!(table, {i, j + 1})]
+
+          candidates =
+            if score >= @similarity_threshold do
+              tail = Map.fetch!(table, {i + 1, j + 1})
+              [%{weight: score + tail.weight, pairs: [{i, j} | tail.pairs]} | candidates]
+            else
+              candidates
+            end
+
+          Map.put(table, {i, j}, Enum.reduce(candidates, &better_solution/2))
+      end
+
+    table |> Map.fetch!({0, 0}) |> Map.fetch!(:pairs)
+  end
+
+  defp better_solution(candidate, best) do
+    cond do
+      candidate.weight > best.weight + @weight_epsilon -> candidate
+      best.weight > candidate.weight + @weight_epsilon -> best
+      candidate.pairs < best.pairs -> candidate
+      true -> best
+    end
+  end
+
+  defp similarity(left, right) do
+    left = trigrams(left)
+    right = trigrams(right)
+
+    overlap =
+      Enum.reduce(left, 0, fn {gram, count}, total ->
+        total + min(count, Map.get(right, gram, 0))
+      end)
+
+    2 * overlap / (gram_count(left) + gram_count(right))
+  end
+
+  defp trigrams(content) do
+    graphemes =
+      content
+      |> String.trim()
+      |> String.downcase()
+      |> String.replace(~r/\s+/u, " ")
+      |> String.graphemes()
+
+    grams =
+      case graphemes do
+        [] -> [""]
+        [_] -> [Enum.join(graphemes)]
+        [_, _] -> [Enum.join(graphemes)]
+        _ -> graphemes |> Enum.chunk_every(3, 1, :discard) |> Enum.map(&Enum.join/1)
+      end
+
+    Enum.frequencies(grams)
+  end
+
+  defp gram_count(grams), do: grams |> Map.values() |> Enum.sum()
 
   # Content changes before removals before additions. Updates and deletes name
   # blocks that exist in the parent, so they are safe in any order; an insert's

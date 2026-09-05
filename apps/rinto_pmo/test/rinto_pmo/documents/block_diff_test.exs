@@ -132,6 +132,111 @@ defmodule RintoPMO.Documents.BlockDiffTest do
       parent = blocks(["One", "Two"])
       assert {:ok, []} = BlockOps.apply(parent, BlockDiff.compile(parent, [], "a"))
     end
+
+    test "an insertion before an edited block does not steal that block's id" do
+      deployment = "## Deployment\n\nDeploy the service after tests pass."
+      parent = blocks(["## Intro\n\nWelcome.", deployment])
+
+      target = [
+        "## Intro\n\nWelcome.",
+        "## Monitoring\n\nTrack request latency and error rates.",
+        "## Deployment\n\nDeploy the service after all tests pass."
+      ]
+
+      operations = BlockDiff.compile(parent, target, "actor")
+      assert {:ok, entries} = BlockOps.apply(parent, operations)
+
+      assert Enum.map(entries, & &1.content) == target
+      assert Enum.at(entries, 2).block_id == "b1"
+      assert Enum.at(entries, 1).block_id not in ["b0", "b1"]
+    end
+
+    test "a removal before an edited block preserves the edited block's id" do
+      parent =
+        blocks([
+          "## Intro\n\nWelcome.",
+          "## Retired\n\nThis obsolete workflow is no longer used.",
+          "## Deployment\n\nDeploy the service after tests pass."
+        ])
+
+      target = [
+        "## Intro\n\nWelcome.",
+        "## Deployment\n\nDeploy the service after all tests pass."
+      ]
+
+      operations = BlockDiff.compile(parent, target, "actor")
+      assert {:ok, entries} = BlockOps.apply(parent, operations)
+
+      assert Enum.map(entries, & &1.content) == target
+      assert Enum.map(entries, & &1.block_id) == ["b0", "b2"]
+    end
+
+    test "similarity matches stay ordered when two edited blocks swap places" do
+      alpha = "## Alpha\n\nCopper falcons collect amber metrics across regional gateways."
+      beta = "## Beta\n\nSilver otters reconcile violet invoices inside nightly ledgers."
+
+      alpha_edited =
+        "## Alpha\n\nCopper falcons collect amber signals across regional gateways."
+
+      beta_edited =
+        "## Beta\n\nSilver otters reconcile violet receipts inside nightly ledgers."
+
+      parent = blocks([alpha, beta])
+
+      operations = BlockDiff.compile(parent, [beta_edited, alpha_edited], "actor")
+      assert {:ok, entries} = BlockOps.apply(parent, operations)
+
+      assert Enum.map(entries, & &1.content) == [beta_edited, alpha_edited]
+
+      kept = Enum.filter(entries, &(&1.block_id in ["b0", "b1"]))
+      assert length(kept) == 1
+
+      assert Enum.all?(kept, fn
+               %{block_id: "b0", content: ^alpha_edited} -> true
+               %{block_id: "b1", content: ^beta_edited} -> true
+               _entry -> false
+             end)
+    end
+
+    test "a low-similarity run keeps positional identities" do
+      parent = blocks(["Old red section", "Old blue section"])
+      target = ["Fresh cats chapter", "New orbital appendix"]
+
+      operations = BlockDiff.compile(parent, target, "actor")
+      assert {:ok, entries} = BlockOps.apply(parent, operations)
+
+      assert Enum.map(entries, & &1.content) == target
+      assert Enum.map(entries, & &1.block_id) == ["b0", "b1"]
+      assert Enum.map(operations, & &1.op) == [:update, :update]
+    end
+
+    test "an insertion between two similarity matches anchors on the first match" do
+      alpha = "## Alpha\n\nThe alpha service stores durable records."
+      beta = "## Beta\n\nThe beta service validates signed requests."
+      alpha_edited = "## Alpha\n\nThe alpha service stores durable audit records."
+      beta_edited = "## Beta\n\nThe beta service validates all signed requests."
+      inserted = "## Bridge\n\nThe services exchange a compact event."
+      parent = blocks([alpha, beta])
+
+      operations = BlockDiff.compile(parent, [alpha_edited, inserted, beta_edited], "actor")
+      assert insert = Enum.find(operations, &(&1.op == :insert_after))
+      assert insert.after_block_id == "b0"
+
+      assert {:ok, entries} = BlockOps.apply(parent, operations)
+      assert Enum.map(entries, & &1.content) == [alpha_edited, inserted, beta_edited]
+      assert ["b0", _inserted_id, "b1"] = Enum.map(entries, & &1.block_id)
+    end
+
+    test "equal-weight matches choose the lexicographically first pair" do
+      parent = blocks(["abcXdef", "abcYdef"])
+
+      operations = BlockDiff.compile(parent, ["abcZdef"], "actor")
+
+      assert [
+               %{op: :update, block_id: "b0", content: "abcZdef"},
+               %{op: :delete, block_id: "b1"}
+             ] = operations
+    end
   end
 
   # The operations are only correct if applying them produces the sequence that
@@ -157,6 +262,12 @@ defmodule RintoPMO.Documents.BlockDiffTest do
         # id would corrupt every later operation naming it.
         ids = Enum.map(entries, & &1.block_id)
         assert Enum.uniq(ids) == ids
+
+        for entry <- entries, original = Enum.find(parent, &(&1.block_id == entry.block_id)) do
+          assert is_nil(original) or entry.content in target,
+                 "#{inspect(source)} -> #{inspect(target)} attached #{entry.block_id} " <>
+                   "to #{inspect(entry.content)}"
+        end
       end
     end
 
