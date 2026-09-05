@@ -19,6 +19,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
   alias RintoPMO.Conversations
   alias RintoPMO.ConversationsMock
   alias RintoPMO.Documents
+  alias RintoPMO.Documents.BlockDiff
   alias RintoPMO.Documents.BlockOps
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Projects
@@ -284,7 +285,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       {:ok, _} =
         Documents.propose_document(document, %{
           conversation_id: conversation.id,
-          content: "## Rewritten"
+          content: "## One\n\n## Added"
         })
 
       {:ok, _} =
@@ -299,11 +300,29 @@ defmodule RintoPMO.Documents.ProposalsTest do
       {:ok, _} =
         Documents.propose_document(document, %{
           conversation_id: theirs.id,
-          content: "## Rewritten differently"
+          content: "## One\n\n## Added differently"
         })
 
       assert [%{proposals: [%{contended: true}]}] =
                Documents.conversation_working_set(conversation.id)
+    end
+
+    test "marks both sides of a legacy document-to-block overlap" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      legacy_topic = insert(:conversation)
+      block_topic = insert(:conversation)
+
+      assert {:ok, _legacy} =
+               insert_legacy_document_proposal(document, legacy_topic, "## One, legacy")
+
+      assert {:ok, _block} =
+               propose(document, block.block_id, block_topic, "## One, block")
+
+      assert [%{proposals: [%{proposal: %{scope: :document}, contended: true}]}] =
+               Documents.conversation_working_set(legacy_topic.id)
+
+      assert [%{proposals: [%{proposal: %{scope: :block}, contended: true}]}] =
+               Documents.conversation_working_set(block_topic.id)
     end
 
     # Not the same answer as a topic that does not exist, which is why the
@@ -511,6 +530,87 @@ defmodule RintoPMO.Documents.ProposalsTest do
       accepted = Repo.get!(BlockProposal, proposal.id)
       assert accepted.status == :accepted
       assert accepted.decided_by_actor_id == committer.id
+    end
+
+    test "uses the adopted proposals' one unambiguous summary" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["Original"])
+      actor = insert(:actor)
+
+      assert {:ok, _result} =
+               Documents.propose_block(document, %{
+                 block_id: block.block_id,
+                 conversation_id: insert(:conversation).id,
+                 content: "Rewritten",
+                 change_summary: "Tightened the opening"
+               })
+
+      assert {:ok, revision} = commit(document, actor)
+      assert revision.change_summary == "Tightened the opening"
+    end
+
+    test "leaves the revision summary empty when adopted proposal summaries disagree" do
+      %{document: document, blocks: [first, second]} = document_with_blocks(["One", "Two"])
+
+      for {block, summary} <- [{first, "First idea"}, {second, "Second idea"}] do
+        assert {:ok, _result} =
+                 Documents.propose_block(document, %{
+                   block_id: block.block_id,
+                   conversation_id: insert(:conversation).id,
+                   content: "Changed #{summary}",
+                   change_summary: summary
+                 })
+      end
+
+      assert {:ok, revision} = commit(document, insert(:actor))
+      assert revision.change_summary == nil
+    end
+
+    test "refuses only block proposals whose base text changed" do
+      %{document: document, blocks: [first, second]} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+      conversation = insert(:conversation)
+
+      assert {:ok, %{proposals: proposals}} =
+               propose_document(
+                 document,
+                 conversation,
+                 "## One, proposed\n\n## Two, proposed"
+               )
+
+      assert length(proposals) == 2
+
+      assert {:ok, landed} =
+               Documents.create_revision(document, %{
+                 actor_id: actor.id,
+                 base_revision_id: latest_revision_id(document),
+                 block_ops: [
+                   %{
+                     op: :update,
+                     block_id: first.block_id,
+                     actor_id: actor.id,
+                     content: "## One, landed directly"
+                   }
+                 ]
+               })
+
+      assert {:error, :stale_block_proposal, %{block_ids: [stale_id]}} =
+               Documents.commit_proposals(document, %{
+                 actor_id: actor.id,
+                 base_revision_id: landed.id,
+                 block_ids: [first.block_id, second.block_id]
+               })
+
+      assert stale_id == first.block_id
+
+      assert {:ok, revision} =
+               Documents.commit_proposals(document, %{
+                 actor_id: actor.id,
+                 base_revision_id: landed.id,
+                 block_ids: [second.block_id]
+               })
+
+      assert Enum.map(revision.blocks, & &1.content) ==
+               ["## One, landed directly", "## Two, proposed"]
     end
 
     test "resolves the named annotations against the new revision" do
@@ -901,7 +1001,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       conversation = insert(:conversation)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, conversation, "## One\n\n## Two, mine")
+               propose_document(document, conversation, "## One\n\n## Middle\n\n## Two")
 
       original = proposal.actor_id
 
@@ -969,90 +1069,104 @@ defmodule RintoPMO.Documents.ProposalsTest do
   end
 
   describe "propose_document/2" do
-    test "compiles the body into the operations that would produce it" do
+    test "decomposes content updates into block proposals" do
       %{document: document, blocks: [first, second]} = document_with_blocks(["One", "Two"])
       conversation = insert(:conversation)
 
-      assert {:ok, %{proposal: proposal, live_proposals: 1}} =
+      assert {:ok, result} =
                propose_document(document, conversation, "## One\n\n## Two, tighter")
 
-      assert proposal.scope == :document
-      assert proposal.block_id == nil
-      assert proposal.content == "## One\n\n## Two, tighter"
+      assert [proposal] = result.proposals
+      assert proposal.scope == :block
+      assert proposal.block_id == second.block_id
+      assert proposal.content == "## Two, tighter"
       assert proposal.base_revision_id == latest_revision_id(document)
-
-      # The untouched block is absent from the operations entirely; the edited
-      # one keeps its id.
-      assert [%{"op" => "update", "block_id" => block_id, "content" => "## Two, tighter"}] =
-               proposal.block_ops
-
-      assert block_id == second.block_id
-      refute block_id == first.block_id
+      assert result.summary == %{changed: 1, added: 0, removed: 0}
+      assert result.superseded == []
+      assert result.contended == []
+      refute proposal.block_id == first.block_id
+      refute Documents.document_proposal_for_conversation(document, conversation.id)
     end
 
-    # The thing a block proposal could never say.
-    test "expresses a split, which no block proposal can" do
-      %{document: document} = document_with_blocks(["One"])
-
-      assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), "## One\n\n## Two")
-
-      assert [%{"op" => "insert_after"}] = proposal.block_ops
-    end
-
-    # Everything downstream reads these back out of jsonb, so the shape that
-    # survives the round trip is the shape that matters -- string keys and string
-    # op names, which BlockOps accepts alongside atoms.
-    test "the stored operations still apply after a round trip through the database" do
-      %{document: document} = document_with_blocks(["One", "Two", "Three"])
-
-      assert {:ok, %{proposal: proposal}} =
-               propose_document(
-                 document,
-                 insert(:conversation),
-                 "## Zero\n\n## One\n\n## Two, tighter"
-               )
-
-      stored = Repo.reload!(proposal)
-      blocks = document_blocks(document)
-
-      assert {:ok, entries} = BlockOps.apply(blocks, stored.block_ops)
-
-      assert Enum.map(entries, & &1.content) == ["## Zero", "## One", "## Two, tighter"]
-    end
-
-    test "a topic revising its rewrite recompiles against what is current now" do
-      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One", "Two"])
+    test "keeps only structural operations on a document proposal" do
+      %{document: document, blocks: [_first, second]} = document_with_blocks(["One", "Two"])
       conversation = insert(:conversation)
-      actor = insert(:actor)
+      markdown = "## Zero\n\n## One\n\n## Two, tighter"
 
-      assert {:ok, %{proposal: first}} =
-               propose_document(document, conversation, "## One, tighter\n\n## Two")
+      assert {:ok, result} = propose_document(document, conversation, markdown)
+      assert [block_proposal, structural] = result.proposals
 
-      # Something else lands underneath it.
-      assert {:ok, _proposed} =
-               propose(document, block.block_id, insert(:conversation), "## One, theirs")
+      assert block_proposal.scope == :block
+      assert block_proposal.block_id == second.block_id
+      assert block_proposal.content == "## Two, tighter"
+      assert structural.scope == :document
+      assert structural.content == markdown
+      assert [%{"op" => "insert_after", "content" => "## Zero"}] = structural.block_ops
+      assert result.summary == %{changed: 1, added: 1, removed: 0}
+    end
 
-      assert {:ok, revision} = commit(document, actor)
+    test "re-proposing atomically replaces the topic's live body set" do
+      %{document: document, blocks: [first, second]} = document_with_blocks(["One", "Two"])
+      conversation = insert(:conversation)
 
-      assert {:ok, %{proposal: second, live_proposals: 1}} =
+      assert {:ok, first_round} =
                propose_document(
                  document,
                  conversation,
-                 "## One, theirs\n\n## Two, tighter"
+                 "## One, first\n\n## Two, first\n\n## Three"
                )
 
-      # One row, iterating -- and now based on the revision that just landed.
-      assert second.id == first.id
-      assert second.base_revision_id == revision.id
-      assert [%{"content" => "## Two, tighter"}] = second.block_ops
+      assert length(first_round.proposals) == 3
+      [first_update, second_update, structural] = first_round.proposals
+
+      assert {:ok, second_round} =
+               propose_document(document, conversation, "## One\n\n## Two, second")
+
+      assert [kept] = second_round.proposals
+      assert kept.id == second_update.id
+      assert kept.block_id == second.block_id
+      assert kept.content == "## Two, second"
+      assert Enum.sort(second_round.superseded) == Enum.sort([first_update.id, structural.id])
+      assert Repo.reload!(first_update).status == :superseded
+      assert Repo.reload!(structural).status == :superseded
+      assert Repo.reload!(first_update).decided_at == Repo.reload!(structural).decided_at
+      assert Repo.reload!(first_update).decided_by_actor_id == default_assistant().id
+
+      refute Enum.any?(Documents.list_proposals(document, %{status: :live}), fn proposal ->
+               proposal.scope == :block and proposal.block_id == first.block_id
+             end)
     end
 
-    test "refuses a body that changes nothing" do
-      %{document: document} = document_with_blocks(["One", "Two"])
+    test "a no-change proposal leaves the previous live set untouched" do
+      %{document: document, blocks: [_first, second]} = document_with_blocks(["One", "Two"])
+      conversation = insert(:conversation)
+
+      assert {:ok, first_round} =
+               propose_document(document, conversation, "## One\n\n## Two, tighter")
+
+      [proposal] = first_round.proposals
 
       assert {:error, :no_change_proposed, _details} =
-               propose_document(document, insert(:conversation), "## One\n\n## Two")
+               propose_document(document, conversation, "## One\n\n## Two")
+
+      assert Repo.reload!(proposal).status == :live
+      assert proposal.block_id == second.block_id
+    end
+
+    test "deleting a block supersedes this topic's older update for that block" do
+      %{document: document, blocks: [_first, second]} = document_with_blocks(["One", "Two"])
+      conversation = insert(:conversation)
+
+      assert {:ok, %{proposals: [old_update]}} =
+               propose_document(document, conversation, "## One\n\n## Two, tighter")
+
+      assert {:ok, second_round} = propose_document(document, conversation, "## One")
+      assert [structural] = second_round.proposals
+      assert structural.scope == :document
+      assert [%{"op" => "delete", "block_id" => block_id}] = structural.block_ops
+      assert block_id == second.block_id
+      assert second_round.superseded == [old_update.id]
+      assert Repo.reload!(old_update).status == :superseded
     end
 
     # A body that is not a string at all -- the same thing `create_document/1`
@@ -1064,14 +1178,23 @@ defmodule RintoPMO.Documents.ProposalsTest do
                propose_document(document, insert(:conversation), %{"nope" => true})
     end
 
-    test "two topics rewriting one document is a contention" do
-      %{document: document} = document_with_blocks(["One"])
+    test "reports every block contention created by one rewrite" do
+      %{document: document, blocks: [first, second]} = document_with_blocks(["One", "Two"])
 
-      assert {:ok, %{live_proposals: 1}} =
-               propose_document(document, insert(:conversation), "## Mine")
+      assert {:ok, _first} =
+               propose_document(document, insert(:conversation), "## One, mine\n\n## Two, mine")
 
-      assert {:ok, %{live_proposals: 2}} =
-               propose_document(document, insert(:conversation), "## Theirs")
+      assert {:ok, result} =
+               propose_document(
+                 document,
+                 insert(:conversation),
+                 "## One, theirs\n\n## Two, theirs"
+               )
+
+      assert Enum.map(result.contended, & &1.block_id) |> Enum.sort() ==
+               Enum.sort([first.block_id, second.block_id])
+
+      assert Enum.all?(result.contended, &(&1.scope == :block and &1.live_proposals == 2))
     end
 
     # Different things, so one topic may hold both -- the index has `scope` in it
@@ -1080,12 +1203,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document} = document_with_blocks(["One"])
       conversation = insert(:conversation)
 
-      assert {:ok, %{proposal: body}} =
+      assert {:ok, %{proposals: [body]}} =
                propose_document(document, conversation, "## Rewritten")
 
       assert {:ok, %{proposal: title}} = propose_title(document, conversation, "Renamed")
 
-      assert body.scope == :document
+      assert body.scope == :block
       assert title.scope == :title
       refute body.id == title.id
     end
@@ -1137,10 +1260,10 @@ defmodule RintoPMO.Documents.ProposalsTest do
       decider = insert(:actor)
 
       assert {:ok, %{proposal: mine}} =
-               propose_document(document, insert(:conversation), "## Mine")
+               propose_document(document, insert(:conversation), "## One\n\n## Mine")
 
       assert {:ok, %{proposal: theirs}} =
-               propose_document(document, insert(:conversation), "## Theirs")
+               propose_document(document, insert(:conversation), "## One\n\n## Theirs")
 
       assert {:ok, adopted} = Documents.decide_document(document, theirs.id, decider.id)
 
@@ -1151,7 +1274,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
       # And the winner still has to be committed like anything else.
       assert {:ok, revision} = commit_document(document, actor, adopted)
-      assert Enum.map(revision.blocks, & &1.content) == ["## Theirs"]
+      assert Enum.map(revision.blocks, & &1.content) == ["## One", "## Theirs"]
     end
 
     # A rewrite competes with another rewrite. Against a block proposal there is
@@ -1270,8 +1393,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
       conversation = insert(:conversation)
       actor = insert(:actor)
 
-      assert {:ok, %{proposal: proposal}} =
-               propose_document(document, conversation, "## One\n\n## Two, mine")
+      assert {:ok, proposal} =
+               insert_legacy_document_proposal(
+                 document,
+                 conversation,
+                 "## One\n\n## Two, mine"
+               )
 
       assert {:ok, _proposed} =
                propose(document, first.block_id, insert(:conversation), "## One, theirs")
@@ -1316,8 +1443,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
       actor = insert(:actor)
 
-      assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), "## One, mine\n\n## Two")
+      assert {:ok, proposal} =
+               insert_legacy_document_proposal(
+                 document,
+                 insert(:conversation),
+                 "## One, mine\n\n## Two"
+               )
 
       assert {:ok, _proposed} =
                propose(document, first.block_id, insert(:conversation), "## One, theirs")
@@ -1338,7 +1469,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document} = document_with_blocks(["One"])
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), "## Rewritten")
+               propose_document(document, insert(:conversation), "## One\n\n## Added")
 
       assert {:ok, same} = Documents.rebase_document_proposal(document, proposal.id)
       assert same.base_revision_id == proposal.base_revision_id
@@ -1350,8 +1481,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
       actor = insert(:actor)
 
-      assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), "## One, same\n\n## Two")
+      assert {:ok, proposal} =
+               insert_legacy_document_proposal(
+                 document,
+                 insert(:conversation),
+                 "## One, same\n\n## Two"
+               )
 
       assert {:ok, _proposed} =
                propose(document, first.block_id, insert(:conversation), "## One, same")
@@ -1378,8 +1513,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
       actor = insert(:actor)
 
-      assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), "## One\n\n## Two, mine")
+      assert {:ok, proposal} =
+               insert_legacy_document_proposal(
+                 document,
+                 insert(:conversation),
+                 "## One\n\n## Two, mine"
+               )
 
       assert {:ok, _proposed} =
                propose(document, first.block_id, insert(:conversation), "## One, theirs")
@@ -1394,6 +1533,63 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
       assert Enum.map(from_operations, & &1.content) == from_body
     end
+
+    test "refuses to rebase a deletion over content changed since its base" do
+      %{document: document, blocks: [_first, second]} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, insert(:conversation), "## One")
+
+      assert {:ok, _revision} =
+               Documents.create_revision(document, %{
+                 actor_id: actor.id,
+                 base_revision_id: latest_revision_id(document),
+                 block_ops: [
+                   %{
+                     op: :update,
+                     block_id: second.block_id,
+                     actor_id: actor.id,
+                     content: "## Two, changed"
+                   }
+                 ]
+               })
+
+      assert {:error, :rebase_conflict, details} =
+               Documents.rebase_document_proposal(document, proposal.id)
+
+      assert details.reason == :diverged
+      assert details.block_ids == [second.block_id]
+      assert Repo.reload!(proposal).base_revision_id == proposal.base_revision_id
+    end
+
+    test "advances a structural base without rewriting its input snapshot" do
+      %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
+      actor = insert(:actor)
+      markdown = "## One\n\n## Middle\n\n## Two"
+
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, insert(:conversation), markdown)
+
+      assert {:ok, _revision} =
+               Documents.create_revision(document, %{
+                 actor_id: actor.id,
+                 base_revision_id: latest_revision_id(document),
+                 block_ops: [
+                   %{
+                     op: :update,
+                     block_id: first.block_id,
+                     actor_id: actor.id,
+                     content: "## One, current"
+                   }
+                 ]
+               })
+
+      assert {:ok, rebased} = Documents.rebase_document_proposal(document, proposal.id)
+      assert rebased.content == markdown
+      assert rebased.block_ops == proposal.block_ops
+      assert rebased.base_revision_id == latest_revision_id(document)
+    end
   end
 
   describe "scope_contentions/1" do
@@ -1404,14 +1600,14 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert {:ok, _proposed} = propose_title(document, insert(:conversation), "Theirs")
 
       assert {:ok, _proposed} =
-               propose_document(document, insert(:conversation), "## Mine")
+               propose_document(document, insert(:conversation), "## One\n\n## Mine")
 
       assert [%{scope: :title, proposals: proposals}] = Documents.scope_contentions(document)
       assert length(proposals) == 2
 
       # One rewrite is not an argument.
       assert {:ok, _proposed} =
-               propose_document(document, insert(:conversation), "## Theirs")
+               propose_document(document, insert(:conversation), "## One\n\n## Theirs")
 
       assert Enum.map(Documents.scope_contentions(document), & &1.scope) == [:document, :title]
     end
@@ -1426,6 +1622,34 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
       assert Documents.contentions(document) == []
     end
+
+    test "reports a legacy document update overlapping a new block proposal" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      legacy_conversation = insert(:conversation)
+
+      assert {:ok, legacy} =
+               insert_legacy_document_proposal(
+                 document,
+                 legacy_conversation,
+                 "## One, legacy"
+               )
+
+      assert {:ok, result} =
+               propose(document, block.block_id, insert(:conversation), "## One, block")
+
+      assert [overlap] = result.contended
+      assert overlap.scope == :document
+      assert overlap.proposal_id == legacy.id
+      assert overlap.overlaps_block_ids == [block.block_id]
+      refute overlap.decidable
+
+      assert [%{scope: :document} = scope] = Documents.scope_contentions(document)
+      assert scope.overlaps_block_ids == [block.block_id]
+      assert Enum.map(scope.proposals, & &1.id) == [legacy.id]
+
+      assert {:error, :proposal_not_found, _details} =
+               Documents.decide_block(document, block.block_id, legacy.id, insert(:actor).id)
+    end
   end
 
   describe "document_proposal_for_conversation/2" do
@@ -1434,8 +1658,11 @@ defmodule RintoPMO.Documents.ProposalsTest do
       mine = insert(:conversation)
       theirs = insert(:conversation)
 
-      assert {:ok, %{proposal: proposal}} = propose_document(document, mine, "## Mine")
-      assert {:ok, _proposed} = propose_document(document, theirs, "## Theirs")
+      assert {:ok, %{proposal: proposal}} =
+               propose_document(document, mine, "## One\n\n## Mine")
+
+      assert {:ok, _proposed} =
+               propose_document(document, theirs, "## One\n\n## Theirs")
 
       assert Documents.document_proposal_for_conversation(document, mine.id).id == proposal.id
       refute Documents.document_proposal_for_conversation(document, insert(:conversation).id)
@@ -1447,7 +1674,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, conversation, "## Rewritten")
+               propose_document(document, conversation, "## One\n\n## Added")
 
       assert {:ok, _revision} = commit_document(document, actor, proposal)
       refute Documents.document_proposal_for_conversation(document, conversation.id)
@@ -1459,44 +1686,48 @@ defmodule RintoPMO.Documents.ProposalsTest do
       %{document: document} = document_with_blocks(["One", "Two"])
       actor = insert(:actor)
 
-      assert {:ok, %{proposal: proposal}} =
+      assert {:ok, result} =
                propose_document(
                  document,
                  insert(:conversation),
                  "## Zero\n\n## One\n\n## Two, tighter"
                )
 
-      assert {:ok, revision} = commit_document(document, actor, proposal)
+      proposal = Enum.find(result.proposals, &(&1.scope == :document))
+      [updated] = Enum.filter(result.proposals, &(&1.scope == :block))
+
+      assert {:ok, revision} =
+               commit_document(document, actor, proposal, [updated.block_id])
 
       assert Enum.map(revision.blocks, & &1.content) == ["## Zero", "## One", "## Two, tighter"]
       assert Repo.reload!(proposal).status == :accepted
+      assert Repo.reload!(updated).status == :accepted
     end
 
     test "keeps the id of a block the rewrite left alone" do
       %{document: document, blocks: [first, _second]} = document_with_blocks(["One", "Two"])
       actor = insert(:actor)
 
-      assert {:ok, %{proposal: proposal}} =
+      assert {:ok, %{proposals: [_proposal]}} =
                propose_document(
                  document,
                  insert(:conversation),
                  "## One\n\n## Two, tighter"
                )
 
-      assert {:ok, revision} = commit_document(document, actor, proposal)
+      assert {:ok, revision} = commit(document, actor)
 
       kept = Enum.find(revision.blocks, &(&1.content == "## One"))
       assert kept.block_id == first.block_id
     end
 
-    # Named rather than adopted by default: it settles every block, so letting
-    # one land implicitly would discard other topics' work with nobody choosing.
-    test "is never adopted by a commit that did not name it" do
+    # Structural intent is named rather than adopted by default.
+    test "a structural proposal is never adopted by a commit that did not name it" do
       %{document: document} = document_with_blocks(["One"])
       actor = insert(:actor)
 
       assert {:ok, _proposed} =
-               propose_document(document, insert(:conversation), "## Rewritten")
+               propose_document(document, insert(:conversation), "## One\n\n## Added")
 
       assert {:error, :nothing_to_commit, _details} = commit(document, actor)
     end
@@ -1510,11 +1741,19 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert {:ok, %{proposal: theirs}} =
                propose(document, block.block_id, insert(:conversation), "Their block")
 
-      assert {:ok, %{proposal: rival}} =
-               propose_document(document, insert(:conversation), "## Rival rewrite")
+      assert {:ok, rival} =
+               insert_legacy_document_proposal(
+                 document,
+                 insert(:conversation),
+                 "## Rival rewrite\n\n## Two"
+               )
 
-      assert {:ok, %{proposal: mine}} =
-               propose_document(document, insert(:conversation), "## My rewrite")
+      assert {:ok, mine} =
+               insert_legacy_document_proposal(
+                 document,
+                 insert(:conversation),
+                 "## My rewrite\n\n## Two"
+               )
 
       assert {:ok, _revision} = commit_document(document, actor, mine)
 
@@ -1531,7 +1770,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       conversation = insert(:conversation)
 
       assert {:ok, %{proposal: body}} =
-               propose_document(document, conversation, "## Rewritten")
+               propose_document(document, conversation, "## One\n\n## Added")
 
       assert {:ok, %{proposal: title}} = propose_title(document, conversation, "Renamed")
 
@@ -1546,7 +1785,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: body}} =
-               propose_document(document, insert(:conversation), "## Rewritten")
+               propose_document(document, insert(:conversation), "## One\n\n## Added")
 
       assert {:ok, %{proposal: mine}} =
                propose_title(document, insert(:conversation), "Mine")
@@ -1569,7 +1808,11 @@ defmodule RintoPMO.Documents.ProposalsTest do
       actor = insert(:actor)
 
       assert {:ok, %{proposal: proposal}} =
-               propose_document(document, insert(:conversation), "## One\n\n## Two, mine")
+               propose_document(
+                 document,
+                 insert(:conversation),
+                 "## One\n\n## Two\n\n## Three"
+               )
 
       # Something else lands underneath it.
       assert {:ok, _proposed} =
@@ -1592,7 +1835,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
       conversation = insert(:conversation)
 
       assert {:ok, _proposed} =
-               propose_document(document, conversation, "## One\n\n## Two, mine")
+               propose_document(document, conversation, "## One\n\n## Two\n\n## Three")
 
       assert {:ok, _proposed} =
                propose(document, block.block_id, insert(:conversation), "## One, theirs")
@@ -1600,10 +1843,14 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert {:ok, _landed} = commit(document, actor)
 
       assert {:ok, %{proposal: refreshed}} =
-               propose_document(document, conversation, "## One, theirs\n\n## Two, mine")
+               propose_document(
+                 document,
+                 conversation,
+                 "## One, theirs\n\n## Two\n\n## Three"
+               )
 
       assert {:ok, revision} = commit_document(document, actor, refreshed)
-      assert Enum.map(revision.blocks, & &1.content) == ["## One, theirs", "## Two, mine"]
+      assert Enum.map(revision.blocks, & &1.content) == ["## One, theirs", "## Two", "## Three"]
     end
 
     # An absent selection means "everything uncontested" in an ordinary commit.
@@ -1646,7 +1893,7 @@ defmodule RintoPMO.Documents.ProposalsTest do
                Documents.propose_document(document, %{
                  conversation_id: insert(:conversation).id,
                  actor_id: actor.id,
-                 content: "## Rewritten",
+                 content: "## One\n\n## Added",
                  change_summary: "Split the intro out"
                })
 
@@ -1736,8 +1983,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
       {:ok, %{proposal: block_proposal}} =
         propose(document, second.block_id, insert(:conversation), "## Two, mine")
 
-      {:ok, %{proposal: document_proposal}} =
-        propose_document(document, insert(:conversation), "## One\n\n## Two, theirs\n\n## Three")
+      {:ok, document_proposal} =
+        insert_legacy_document_proposal(
+          document,
+          insert(:conversation),
+          "## One\n\n## Two, theirs\n\n## Three"
+        )
 
       assert {:error, :conflicting_commit, details} =
                commit_document(document, actor, document_proposal, [second.block_id])
@@ -1883,8 +2134,12 @@ defmodule RintoPMO.Documents.ProposalsTest do
 
       {:ok, _proposed} = propose(document, second.block_id, insert(:conversation), "## Two, mine")
 
-      {:ok, %{proposal: rival}} =
-        propose_document(document, insert(:conversation), "## Rival rewrite")
+      {:ok, rival} =
+        insert_legacy_document_proposal(
+          document,
+          insert(:conversation),
+          "## Rival rewrite\n\n## Two\n\n## Three"
+        )
 
       {:ok, %{proposal: document_proposal}} = propose_appended_section(document)
 
@@ -1952,6 +2207,23 @@ defmodule RintoPMO.Documents.ProposalsTest do
       conversation_id: conversation.id,
       content: markdown
     })
+  end
+
+  defp insert_legacy_document_proposal(document, conversation, markdown) do
+    {:ok, contents} = Documents.preview_blocks(markdown)
+
+    operations =
+      BlockDiff.compile(document_blocks(document), contents, default_assistant().id)
+
+    insert_proposal(
+      document_id: document.id,
+      scope: :document,
+      conversation_id: conversation.id,
+      actor_id: default_assistant().id,
+      content: markdown,
+      block_ops: operations,
+      base_revision_id: latest_revision_id(document)
+    )
   end
 
   defp propose_title(document, conversation, content) do

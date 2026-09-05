@@ -59,7 +59,7 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
 
     expect(DocumentsMock, :propose_block, fn ^document, attrs ->
       assert attrs["content"] == "Rewritten"
-      {:ok, %{proposal: proposal, live_proposals: 1}}
+      {:ok, proposed([proposal])}
     end)
 
     conn =
@@ -70,7 +70,12 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
         "content" => "Rewritten"
       })
 
-    assert %{"live_proposals" => 1, "contended" => false} = json_response(conn, 201)
+    response = json_response(conn, 201)
+    assert [%{"id" => id}] = response["data"]
+    assert id == proposal.id
+    assert response["summary"] == %{"changed" => 1, "added" => 0, "removed" => 0}
+    assert response["superseded"] == []
+    assert response["contended"] == []
   end
 
   test "POST proposals says when it has walked into a contention", %{
@@ -80,7 +85,11 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
     proposal = insert(:block_proposal, document: document)
 
     expect(DocumentsMock, :propose_block, fn ^document, _attrs ->
-      {:ok, %{proposal: proposal, live_proposals: 2}}
+      {:ok,
+       proposed(
+         [proposal],
+         [%{scope: :block, block_id: proposal.block_id, live_proposals: 2}]
+       )}
     end)
 
     conn =
@@ -91,7 +100,15 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
         "content" => "Mine"
       })
 
-    assert %{"live_proposals" => 2, "contended" => true} = json_response(conn, 201)
+    assert [
+             %{
+               "scope" => "block",
+               "block_id" => block_id,
+               "live_proposals" => 2
+             }
+           ] = json_response(conn, 201)["contended"]
+
+    assert block_id == proposal.block_id
   end
 
   test "POST proposals cannot set status or a decision", %{conn: conn, document: document} do
@@ -102,7 +119,7 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
       # payload is stripped before it reaches the context.
       refute Map.has_key?(attrs, "status")
       refute Map.has_key?(attrs, "decided_by_actor_id")
-      {:ok, %{proposal: proposal, live_proposals: 1}}
+      {:ok, proposed([proposal])}
     end)
 
     conn =
@@ -245,6 +262,25 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
              json_response(conn, 200)["document_scopes"]
   end
 
+  test "GET contentions locates a legacy document overlap on its blocks", %{
+    conn: conn,
+    document: document
+  } do
+    proposal = insert(:block_proposal, document: document, scope: :document, block_id: nil)
+    block_id = UUIDv7.generate()
+
+    expect(DocumentsMock, :contentions, fn ^document -> [] end)
+
+    expect(DocumentsMock, :scope_contentions, fn ^document ->
+      [%{scope: :document, proposals: [proposal], overlaps_block_ids: [block_id]}]
+    end)
+
+    conn = get(conn, ~p"/api/v1/documents/#{document.id}/contentions")
+
+    assert [%{"scope" => "document", "overlaps_block_ids" => [^block_id]}] =
+             json_response(conn, 200)["document_scopes"]
+  end
+
   # Deciding is the one thing only a person does, so who decided is the token
   # holder and an `actor_id` in the body is ignored rather than believed.
   test "POST decide adopts a proposal, stamped by the token holder", %{
@@ -282,7 +318,7 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
       # A block cannot be named here, so one sent anyway is dropped rather than
       # passed on to be rejected.
       refute Map.has_key?(attrs, "block_id")
-      {:ok, %{proposal: proposal, live_proposals: 1}}
+      {:ok, proposed([proposal])}
     end)
 
     conn =
@@ -294,7 +330,7 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
         "content" => "上线流程"
       })
 
-    assert %{"scope" => "title", "block_id" => nil} = json_response(conn, 201)["data"]
+    assert [%{"scope" => "title", "block_id" => nil}] = json_response(conn, 201)["data"]
   end
 
   # An operation list is compiled from Markdown, never sent in. A caller able to
@@ -307,7 +343,7 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
 
     expect(DocumentsMock, :propose_block, fn ^document, attrs ->
       refute Map.has_key?(attrs, "block_ops")
-      {:ok, %{proposal: proposal, live_proposals: 1}}
+      {:ok, proposed([proposal])}
     end)
 
     conn =
@@ -341,7 +377,13 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
     expect(DocumentsMock, :propose_document, fn ^document, attrs ->
       assert attrs["content"] == "## New\n\n## Old"
       assert attrs["change_summary"] == "Added an intro"
-      {:ok, %{proposal: proposal, live_proposals: 1}}
+
+      {:ok,
+       proposed(
+         [proposal],
+         [],
+         %{changed: 0, added: 1, removed: 0}
+       )}
     end)
 
     conn =
@@ -355,11 +397,13 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
 
     # The operations come back so a client can show the diff a person is being
     # asked to approve, rather than two bodies to compare by eye.
-    assert %{
-             "scope" => "document",
-             "block_ops" => ^operations,
-             "change_summary" => "Added an intro"
-           } = json_response(conn, 201)["data"]
+    assert [
+             %{
+               "scope" => "document",
+               "block_ops" => ^operations,
+               "change_summary" => "Added an intro"
+             }
+           ] = json_response(conn, 201)["data"]
   end
 
   test "POST proposals refuses a scope it does not serve", %{conn: conn, document: document} do
@@ -437,5 +481,18 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
 
     assert patch(conn, path, %{}).status == 404
     assert delete(conn, path).status == 404
+  end
+
+  defp proposed(proposals, contended \\ [], summary \\ %{changed: 1, added: 0, removed: 0}) do
+    primary = Enum.find(proposals, hd(proposals), &(&1.scope == :document))
+
+    %{
+      proposal: primary,
+      live_proposals: 1,
+      proposals: proposals,
+      summary: summary,
+      superseded: [],
+      contended: contended
+    }
   end
 end

@@ -17,10 +17,25 @@ defmodule RintoPMO.Documents.Behaviour do
         }
 
   @typedoc """
-  A proposal together with how many live proposals now stand on its block.
-  Two or more is a contention.
+  The rows written by one proposal request, its operation summary, any prior
+  rows replaced by it, and every contention the request encountered.
+
+  `proposal` and `live_proposals` remain available to internal callers during
+  the response transition; the REST representation exposes the four plural
+  fields only.
   """
-  @type proposed :: %{proposal: BlockProposal.t(), live_proposals: pos_integer()}
+  @type proposed :: %{
+          proposal: BlockProposal.t(),
+          live_proposals: pos_integer(),
+          proposals: [BlockProposal.t()],
+          summary: %{
+            changed: non_neg_integer(),
+            added: non_neg_integer(),
+            removed: non_neg_integer()
+          },
+          superseded: [UUIDv7.t()],
+          contended: [map()]
+        }
 
   @type contention :: %{block_id: UUIDv7.t(), proposals: [BlockProposal.t()]}
 
@@ -39,7 +54,11 @@ defmodule RintoPMO.Documents.Behaviour do
   @typedoc """
   One document-level argument: a scope, and the proposals competing in it.
   """
-  @type scope_contention :: %{scope: BlockProposal.scope(), proposals: [BlockProposal.t()]}
+  @type scope_contention :: %{
+          optional(:overlaps_block_ids) => [UUIDv7.t()],
+          scope: BlockProposal.scope(),
+          proposals: [BlockProposal.t()]
+        }
 
   @typedoc """
   One block as a single topic sees it: its own proposal standing in where it

@@ -72,6 +72,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     stale_proposal:
       {409, "The whole-document proposal was written against an older revision. Propose again.",
        %{proposal_id: "proposal-1", base_revision_id: "rev-1", current_revision_id: "rev-2"}},
+    stale_block_proposal:
+      {409, "A block proposal's base text has changed since it was proposed.",
+       %{block_ids: ["block-1"]}},
     conflicting_commit:
       {422,
        "The whole-document proposal already rewrites or removes blocks the selection " <>

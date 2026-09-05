@@ -12,7 +12,7 @@ defmodule RintoPMO.Documents.BlockProposal do
   | `scope` | changes | keyed by |
   |---|---|---|
   | `:block` | one block's content | `block_id` |
-  | `:document` | the whole block sequence | `document_id` |
+  | `:document` | structural block operations | `document_id` |
   | `:title` | the revision's title | `document_id` |
 
   `:block` came first and is still the ordinary case. It has one shape of
@@ -20,10 +20,12 @@ defmodule RintoPMO.Documents.BlockProposal do
   inserts or reorders blocks could not be expressed at all: `BlockOps` has the
   vocabulary, a block proposal has no way to reach it.
 
-  `:document` carries whole-document markdown, compiled at propose time into the
-  op list held in `block_ops`. The compilation preserves `block_id` wherever
-  content is unchanged, so the blocks nobody touched keep their annotations and
-  their history; only genuinely rewritten blocks lose the thread.
+  Whole-document markdown is an input format, not a stored proposal scope. At
+  propose time it is compiled into operations: every `update` becomes an
+  ordinary `:block` proposal, while `insert_after`, `delete` and `move_after`
+  remain together in at most one `:document` row. Its `content` is the complete
+  propose-time input snapshot for display only; `block_ops` is the structural
+  intent that rebase and commit use.
 
   `:title` is separate rather than folded into `:document` because a title lives
   on the revision and is never read out of the body (see
@@ -50,9 +52,9 @@ defmodule RintoPMO.Documents.BlockProposal do
   ## Scopes are not alternatives to each other
 
   Two block proposals on one block compete to be that block's next content, so
-  picking one is a decision. A document proposal is not competing for a block;
-  it claims the whole sequence, including which blocks exist. "Which of these
-  two" does not typecheck between them.
+  picking one is a decision. A structural document proposal is not competing
+  for a block slot; it claims the sequence, including which blocks exist.
+  "Which of these two" does not typecheck between them.
 
   That is not the same as saying they cannot be committed together, which is
   what this said for a while. A document proposal's `block_ops` reach every
@@ -69,15 +71,10 @@ defmodule RintoPMO.Documents.BlockProposal do
   text has been overruled. Proposals on blocks it merely moved past are left
   alone; nothing about them stopped being true.
 
-  In the other direction nothing special is needed: committing block proposals
-  moves the document on, and a document proposal is only committable while
-  `base_revision_id` is still the latest revision. Whichever lands first
-  invalidates the other, which is why neither a lock nor a priority is wanted.
-
-  `base_revision_id` is recorded but is deliberately *not* the conflict test: a
-  working copy is loaded per-document from the latest revision, so every
-  topic's base is identical by construction and could never tell two proposals
-  apart.
+  A structural proposal is only committable while `base_revision_id` is the
+  latest revision. A block proposal may survive unrelated revisions, but its
+  own block must still contain the text from that base before it can be
+  committed; this prevents a stale proposal from overwriting a direct revision.
 
   ## Nothing is ever deleted
 

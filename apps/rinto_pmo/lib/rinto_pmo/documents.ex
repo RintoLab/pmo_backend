@@ -418,13 +418,42 @@ defmodule RintoPMO.Documents do
   # One query for the whole set rather than one per document: the answer is a
   # membership test, and the set is small.
   defp contended_slots(document_ids, conversation_id) do
-    BlockProposal
-    |> where([proposal], proposal.document_id in ^document_ids)
-    |> where([proposal], proposal.status == :live)
-    |> where([proposal], proposal.conversation_id != ^conversation_id)
-    |> select([proposal], {proposal.document_id, proposal.scope, proposal.block_id})
-    |> Repo.all()
-    |> MapSet.new()
+    proposals =
+      BlockProposal
+      |> where([proposal], proposal.document_id in ^document_ids)
+      |> where([proposal], proposal.status == :live)
+      |> Repo.all()
+
+    {mine, others} = Enum.split_with(proposals, &(&1.conversation_id == conversation_id))
+    direct = MapSet.new(others, &slot_key/1)
+
+    legacy_block_slots =
+      for proposal <- others,
+          proposal.scope == :document,
+          block_id <- updated_blocks(proposal),
+          into: MapSet.new() do
+        {proposal.document_id, :block, block_id}
+      end
+
+    other_block_ids =
+      others
+      |> Enum.filter(&(&1.scope == :block))
+      |> Enum.group_by(& &1.document_id, & &1.block_id)
+
+    overlapped_document_slots =
+      for proposal <- mine,
+          proposal.scope == :document,
+          not MapSet.disjoint?(
+            updated_blocks(proposal),
+            MapSet.new(Map.get(other_block_ids, proposal.document_id, []))
+          ),
+          into: MapSet.new() do
+        slot_key(proposal)
+      end
+
+    direct
+    |> MapSet.union(legacy_block_slots)
+    |> MapSet.union(overlapped_document_slots)
   end
 
   # A block proposal contends over its block; a document or title proposal
@@ -477,7 +506,15 @@ defmodule RintoPMO.Documents do
       with {:ok, author_id} <- proposal_author(attrs),
            :ok <- ensure_known_block(latest, block_id),
            {:ok, proposal} <- upsert_proposal(repo, locked_document, latest, author_id, attrs) do
-        {:ok, %{proposal: proposal, live_proposals: count_live(repo, locked_document, block_id)}}
+        live_proposals = count_live(repo, locked_document, block_id)
+
+        {:ok,
+         proposed_result(
+           [proposal],
+           %{changed: 1, added: 0, removed: 0},
+           [],
+           block_contentions(repo, locked_document, block_id, live_proposals)
+         )}
       end
     end)
     |> unwrap_error()
@@ -514,20 +551,29 @@ defmodule RintoPMO.Documents do
       with {:ok, author_id} <- proposal_author(attrs),
            {:ok, proposal} <-
              upsert_scoped_proposal(repo, locked_document, latest, :title, author_id, attrs) do
+        live_proposals = count_live_scope(repo, locked_document, :title)
+
         {:ok,
-         %{proposal: proposal, live_proposals: count_live_scope(repo, locked_document, :title)}}
+         proposed_result(
+           [proposal],
+           %{changed: 1, added: 0, removed: 0},
+           [],
+           title_contentions(live_proposals)
+         )}
       end
     end)
     |> unwrap_error()
   end
 
   @doc """
-  Records a topic's rewrite of a whole document.
+  Records a topic's rewrite of a whole document as independently reviewable
+  proposals.
 
   `content` is Markdown for the entire body, and is compiled here into the
-  block operations that would produce it -- the only way to propose a change
-  that splits, merges, inserts, removes or reorders blocks, none of which a
-  block proposal can express.
+  block operations that would produce it. Updates become ordinary block
+  proposals; inserts, deletes and moves remain together in at most one
+  document-scope structural proposal. The input Markdown is retained on that
+  structural row as a propose-time snapshot, never as the source of its ops.
 
   The operations are stored rather than recomputed at commit time, because they
   are what a person will have reviewed. What keeps them honest is that a
@@ -548,6 +594,8 @@ defmodule RintoPMO.Documents do
 
   defp do_propose_document(%Document{} = document, attrs) do
     Repo.transact(fn repo ->
+      decided_at = DateTime.utc_now()
+
       locked_document =
         Document
         |> where([candidate], candidate.id == ^document.id)
@@ -559,23 +607,126 @@ defmodule RintoPMO.Documents do
       with {:ok, author_id} <- proposal_author(attrs),
            {:ok, contents} <- split_proposed_markdown(attrs),
            {:ok, operations} <- compile_operations(latest, contents, author_id),
-           {:ok, proposal} <-
-             upsert_document_proposal(
+           {:ok, proposals} <-
+             upsert_decomposed_proposals(
                repo,
                locked_document,
                latest,
                operations,
                author_id,
                attrs
+             ),
+           {:ok, superseded} <-
+             supersede_replaced_body_proposals(
+               repo,
+               locked_document,
+               attr(attrs, :conversation_id, nil),
+               proposals,
+               author_id,
+               decided_at
              ) do
         {:ok,
-         %{
-           proposal: proposal,
-           live_proposals: count_live_scope(repo, locked_document, :document)
-         }}
+         proposed_result(
+           proposals,
+           operation_summary(operations),
+           superseded,
+           proposal_contentions(repo, locked_document, proposals)
+         )}
       end
     end)
     |> unwrap_error()
+  end
+
+  # Preserve the ordinary changeset errors for an omitted body. An empty diff
+  # with a body never reaches here because `compile_operations/3` reports
+  # `no_change_proposed` first.
+  defp upsert_decomposed_proposals(repo, document, latest, [], actor_id, attrs) do
+    case upsert_document_proposal(repo, document, latest, [], actor_id, attrs) do
+      {:error, changeset} -> {:error, changeset}
+      {:ok, _unexpected} -> {:error, {:no_change_proposed, %{}}}
+    end
+  end
+
+  defp upsert_decomposed_proposals(repo, document, latest, operations, actor_id, attrs) do
+    {updates, structural} =
+      Enum.split_with(operations, &(to_string(op_field(&1, :op)) == "update"))
+
+    with {:ok, block_proposals} <-
+           upsert_update_proposals(repo, document, latest, updates, actor_id, attrs),
+         {:ok, structural_proposal} <-
+           upsert_structural_proposal(
+             repo,
+             document,
+             latest,
+             structural,
+             actor_id,
+             attrs
+           ) do
+      {:ok, block_proposals ++ List.wrap(structural_proposal)}
+    end
+  end
+
+  defp upsert_update_proposals(repo, document, latest, updates, actor_id, attrs) do
+    Enum.reduce_while(updates, {:ok, []}, fn operation, {:ok, proposals} ->
+      proposal_attrs = %{
+        block_id: op_field(operation, :block_id),
+        conversation_id: attr(attrs, :conversation_id, nil),
+        content: op_field(operation, :content),
+        change_summary: attr(attrs, :change_summary, nil)
+      }
+
+      case upsert_proposal(repo, document, latest, actor_id, proposal_attrs) do
+        {:ok, proposal} -> {:cont, {:ok, [proposal | proposals]}}
+        {:error, changeset} -> {:halt, {:error, changeset}}
+      end
+    end)
+    |> case do
+      {:ok, proposals} -> {:ok, Enum.reverse(proposals)}
+      error -> error
+    end
+  end
+
+  defp upsert_structural_proposal(_repo, _document, _latest, [], _actor_id, _attrs),
+    do: {:ok, nil}
+
+  defp upsert_structural_proposal(repo, document, latest, operations, actor_id, attrs) do
+    upsert_document_proposal(repo, document, latest, operations, actor_id, attrs)
+  end
+
+  defp supersede_replaced_body_proposals(
+         repo,
+         document,
+         conversation_id,
+         proposals,
+         actor_id,
+         decided_at
+       ) do
+    kept = Enum.map(proposals, & &1.id)
+
+    replaced =
+      BlockProposal
+      |> where([proposal], proposal.document_id == ^document.id)
+      |> where([proposal], proposal.conversation_id == ^conversation_id)
+      |> where([proposal], proposal.status == :live and proposal.scope in [:block, :document])
+      |> where([proposal], proposal.id not in ^kept)
+      |> lock("FOR UPDATE")
+      |> repo.all()
+
+    case decide_each(repo, replaced, :superseded, actor_id, decided_at) do
+      :ok -> {:ok, Enum.map(replaced, & &1.id)}
+      {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  defp operation_summary(operations) do
+    Enum.reduce(operations, %{changed: 0, added: 0, removed: 0}, fn operation, summary ->
+      case to_string(op_field(operation, :op)) do
+        "update" -> Map.update!(summary, :changed, &(&1 + 1))
+        "move_after" -> Map.update!(summary, :changed, &(&1 + 1))
+        "insert_after" -> Map.update!(summary, :added, &(&1 + 1))
+        "delete" -> Map.update!(summary, :removed, &(&1 + 1))
+      end
+    end)
   end
 
   @doc """
@@ -629,6 +780,14 @@ defmodule RintoPMO.Documents do
   end
 
   defp rebase_onto(repo, document, parent, proposal) do
+    if MapSet.size(updated_blocks(proposal)) > 0 do
+      rebase_legacy_document_onto(repo, document, parent, proposal)
+    else
+      rebase_structure_onto(repo, document, parent, proposal)
+    end
+  end
+
+  defp rebase_legacy_document_onto(repo, document, parent, proposal) do
     base = revision_with_blocks!(repo, document, proposal.base_revision_id)
 
     with {:ok, wanted} <- replay_operations(base, proposal.block_ops),
@@ -639,6 +798,79 @@ defmodule RintoPMO.Documents do
       # The original proposer, not whoever the topic is talking to now: carrying
       # a proposal across a revision is a merge, not somebody writing again.
       upsert_document_proposal(repo, document, parent, operations, proposal.actor_id, attrs)
+    end
+  end
+
+  defp rebase_structure_onto(repo, document, parent, proposal) do
+    base = revision_with_blocks!(repo, document, proposal.base_revision_id)
+
+    with :ok <- ensure_structure_references_exist(proposal, parent),
+         :ok <- ensure_delete_targets_unchanged(proposal, base, parent),
+         :ok <- ensure_block_sequence_unchanged(base, parent) do
+      proposal
+      |> BlockProposal.content_changeset(%{
+        actor_id: proposal.actor_id,
+        content: proposal.content,
+        block_ops: proposal.block_ops,
+        base_revision_id: parent.id,
+        change_summary: proposal.change_summary
+      })
+      |> repo.update()
+    end
+  end
+
+  defp ensure_structure_references_exist(proposal, parent) do
+    current = parent |> ordered_blocks() |> MapSet.new(& &1.block_id)
+
+    missing =
+      proposal.block_ops
+      |> List.wrap()
+      |> Enum.flat_map(fn operation ->
+        [op_field(operation, :block_id), op_field(operation, :after_block_id)]
+      end)
+      |> Enum.reject(&(is_nil(&1) or MapSet.member?(current, &1)))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    if missing == [] do
+      :ok
+    else
+      {:error, {:rebase_conflict, %{reason: :missing_anchors, block_ids: missing}}}
+    end
+  end
+
+  defp ensure_delete_targets_unchanged(proposal, base, parent) do
+    base_content = Map.new(ordered_blocks(base), &{&1.block_id, &1.content})
+    current_content = Map.new(ordered_blocks(parent), &{&1.block_id, &1.content})
+
+    changed =
+      proposal.block_ops
+      |> List.wrap()
+      |> Enum.flat_map(fn operation ->
+        case {to_string(op_field(operation, :op)), op_field(operation, :block_id)} do
+          {"delete", block_id} -> [block_id]
+          _other -> []
+        end
+      end)
+      |> Enum.filter(&(Map.get(base_content, &1) != Map.get(current_content, &1)))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    if changed == [] do
+      :ok
+    else
+      {:error, {:rebase_conflict, %{reason: :diverged, block_ids: changed}}}
+    end
+  end
+
+  defp ensure_block_sequence_unchanged(base, parent) do
+    base_ids = Enum.map(ordered_blocks(base), & &1.block_id)
+    current_ids = Enum.map(ordered_blocks(parent), & &1.block_id)
+
+    if base_ids == current_ids do
+      :ok
+    else
+      {:error, {:rebase_conflict, %{reason: :restructured}}}
     end
   end
 
@@ -736,10 +968,38 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def scope_contentions(%Document{} = document) do
-    for scope <- [:document, :title],
-        proposals = live_proposals(document, scope),
-        length(proposals) > 1,
-        do: %{scope: scope, proposals: Enum.sort_by(proposals, & &1.id)}
+    document_proposals = live_proposals(document, :document)
+    title_proposals = live_proposals(document, :title)
+    live_block_ids = document |> live_proposals(:block) |> MapSet.new(& &1.block_id)
+
+    overlaps =
+      document_proposals
+      |> Enum.reduce(MapSet.new(), fn proposal, ids ->
+        MapSet.union(ids, MapSet.intersection(updated_blocks(proposal), live_block_ids))
+      end)
+      |> Enum.sort()
+
+    document_contention =
+      if length(document_proposals) > 1 or overlaps != [] do
+        [
+          %{
+            scope: :document,
+            proposals: Enum.sort_by(document_proposals, & &1.id),
+            overlaps_block_ids: overlaps
+          }
+        ]
+      else
+        []
+      end
+
+    title_contention =
+      if length(title_proposals) > 1 do
+        [%{scope: :title, proposals: Enum.sort_by(title_proposals, & &1.id)}]
+      else
+        []
+      end
+
+    document_contention ++ title_contention
   end
 
   @doc """
@@ -1046,6 +1306,7 @@ defmodule RintoPMO.Documents do
     with {:ok, block_ids} <- selected_blocks(attrs, by_block, title),
          :ok <- ensure_no_contention(block_ids, by_block),
          {:ok, adopted} <- adopted_proposals(block_ids, by_block),
+         :ok <- ensure_block_proposals_fresh(repo, document, parent, adopted),
          revision_attrs = revision_attrs(attrs, adopted, title),
          {:ok, revision} <- insert_revision(repo, document, parent, revision_attrs),
          :ok <- accept_all(repo, adopted ++ adopted_title(title), attr(attrs, :actor_id, nil)),
@@ -1064,6 +1325,7 @@ defmodule RintoPMO.Documents do
          :ok <- ensure_no_contention(block_ids, by_block),
          {:ok, adopted} <- adopted_proposals(block_ids, by_block),
          :ok <- ensure_ops_compatible(proposal, adopted),
+         :ok <- ensure_block_proposals_fresh(repo, document, parent, adopted),
          revision_attrs = document_revision_attrs(attrs, proposal, adopted, title),
          {:ok, revision} <- insert_revision(repo, document, parent, revision_attrs),
          :ok <- accept_all(repo, [proposal | adopted] ++ adopted_title(title), actor_id),
@@ -1112,6 +1374,18 @@ defmodule RintoPMO.Documents do
     block_ops
     |> List.wrap()
     |> Enum.flat_map(&settled_block/1)
+    |> MapSet.new()
+  end
+
+  defp updated_blocks(%BlockProposal{block_ops: block_ops}) do
+    block_ops
+    |> List.wrap()
+    |> Enum.flat_map(fn operation ->
+      case {to_string(op_field(operation, :op)), op_field(operation, :block_id)} do
+        {"update", block_id} when is_binary(block_id) -> [block_id]
+        _other -> []
+      end
+    end)
     |> MapSet.new()
   end
 
@@ -1167,6 +1441,38 @@ defmodule RintoPMO.Documents do
     end
   end
 
+  defp ensure_block_proposals_fresh(_repo, _document, _parent, []), do: :ok
+
+  defp ensure_block_proposals_fresh(repo, document, parent, proposals) do
+    base_ids = proposals |> Enum.map(& &1.base_revision_id) |> Enum.uniq()
+
+    bases =
+      document
+      |> Ecto.assoc(:revisions)
+      |> where([revision], revision.id in ^base_ids)
+      |> repo.all()
+      |> repo.preload(:blocks)
+      |> Map.new(&{&1.id, Map.new(&1.blocks, fn block -> {block.block_id, block.content} end)})
+
+    current = Map.new(parent.blocks, &{&1.block_id, &1.content})
+
+    stale =
+      proposals
+      |> Enum.filter(fn proposal ->
+        get_in(bases, [proposal.base_revision_id, proposal.block_id]) !=
+          Map.get(current, proposal.block_id)
+      end)
+      |> Enum.map(& &1.block_id)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    if stale == [] do
+      :ok
+    else
+      {:error, {:stale_block_proposal, %{block_ids: stale}}}
+    end
+  end
+
   # What a document commit invalidates, and no more.
   #
   # Every other live *document* proposal goes: each one claims the whole
@@ -1216,9 +1522,7 @@ defmodule RintoPMO.Documents do
       source_conversation_id: attr(attrs, :source_conversation_id, nil)
     }
     |> maybe_put(:title, title_content(title))
-    # The proposer's own summary stands in when the committer wrote none: a
-    # whole-document diff is what most needs a sentence in front of it.
-    |> maybe_put(:change_summary, attr(attrs, :change_summary, nil) || proposal.change_summary)
+    |> maybe_put(:change_summary, proposal_change_summary(attrs, [proposal | adopted]))
   end
 
   defp split_markdown(attrs, author_id) do
@@ -1715,6 +2019,99 @@ defmodule RintoPMO.Documents do
     |> repo.aggregate(:count)
   end
 
+  defp proposed_result([first | _rest] = proposals, summary, superseded, contended) do
+    primary = Enum.find(proposals, first, &(&1.scope == :document))
+
+    live_proposals =
+      contended
+      |> Enum.map(&Map.get(&1, :live_proposals, 1))
+      |> Enum.max(fn -> 1 end)
+
+    %{
+      # Kept for context callers while the REST response changes as one unit.
+      proposal: primary,
+      live_proposals: live_proposals,
+      proposals: proposals,
+      summary: summary,
+      superseded: superseded,
+      contended: contended
+    }
+  end
+
+  defp block_contentions(repo, document, block_id, live_proposals) do
+    direct =
+      if live_proposals > 1 do
+        [%{scope: :block, block_id: block_id, live_proposals: live_proposals}]
+      else
+        []
+      end
+
+    direct ++ legacy_document_overlaps(repo, document, [block_id])
+  end
+
+  defp title_contentions(live_proposals) when live_proposals > 1,
+    do: [%{scope: :title, live_proposals: live_proposals}]
+
+  defp title_contentions(_live_proposals), do: []
+
+  defp proposal_contentions(repo, document, proposals) do
+    block_ids =
+      for %BlockProposal{scope: :block, block_id: block_id} <- proposals, do: block_id
+
+    block_contentions =
+      Enum.flat_map(block_ids, fn block_id ->
+        case count_live(repo, document, block_id) do
+          count when count > 1 ->
+            [%{scope: :block, block_id: block_id, live_proposals: count}]
+
+          _count ->
+            []
+        end
+      end)
+
+    document_contentions =
+      if Enum.any?(proposals, &(&1.scope == :document)) do
+        case count_live_scope(repo, document, :document) do
+          count when count > 1 -> [%{scope: :document, live_proposals: count}]
+          _count -> []
+        end
+      else
+        []
+      end
+
+    block_contentions ++
+      document_contentions ++ legacy_document_overlaps(repo, document, block_ids)
+  end
+
+  defp legacy_document_overlaps(_repo, _document, []), do: []
+
+  defp legacy_document_overlaps(repo, document, block_ids) do
+    selected = MapSet.new(block_ids)
+
+    repo
+    |> live_proposals(document, :document)
+    |> Enum.flat_map(fn proposal ->
+      overlaps =
+        proposal
+        |> updated_blocks()
+        |> MapSet.intersection(selected)
+        |> Enum.sort()
+
+      if overlaps == [] do
+        []
+      else
+        [
+          %{
+            scope: :document,
+            proposal_id: proposal.id,
+            overlaps_block_ids: overlaps,
+            decidable: false
+          }
+        ]
+      end
+    end)
+  end
+
   defp decide_all(repo, adopted, losers, actor_id, decided_at) do
     with :ok <- decide_each(repo, losers, :rejected, actor_id, decided_at) do
       {:ok, adopted}
@@ -1790,7 +2187,23 @@ defmodule RintoPMO.Documents do
       source_conversation_id: attr(attrs, :source_conversation_id, nil)
     }
     |> maybe_put(:title, title_content(title))
-    |> maybe_put(:change_summary, attr(attrs, :change_summary, nil))
+    |> maybe_put(:change_summary, proposal_change_summary(attrs, adopted))
+  end
+
+  defp proposal_change_summary(attrs, proposals) do
+    case attr(attrs, :change_summary, nil) do
+      summary when is_binary(summary) and summary != "" ->
+        summary
+
+      _absent ->
+        case proposals
+             |> Enum.map(& &1.change_summary)
+             |> Enum.filter(&(is_binary(&1) and &1 != ""))
+             |> Enum.uniq() do
+          [summary] -> summary
+          _none_or_ambiguous -> nil
+        end
+    end
   end
 
   # The one shape of outcome a block proposal has. Credited to the proposer

@@ -66,6 +66,8 @@ defmodule RintoPMOWeb.ErrorJSON do
     no_change_proposed: {422, "The proposed body is the document that already exists."},
     stale_proposal:
       {409, "The whole-document proposal was written against an older revision. Propose again."},
+    stale_block_proposal:
+      {409, "A block proposal's base text has changed since it was proposed."},
     # The document proposal and a selected block proposal both claim the same
     # block. `details.block_ids` names which, so the screen can ask about those
     # blocks rather than about the whole commit.

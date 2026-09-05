@@ -6864,20 +6864,68 @@ components:
                 `GET /documents/{document_id}/contentions`.
     ProposedResponse:
       type: object
-      required: [data, live_proposals, contended]
+      required: [data, summary, superseded, contended]
       properties:
         data:
-          $ref: "#/components/schemas/BlockProposal"
+          type: array
+          description: All proposal rows written by this request.
+          items:
+            $ref: "#/components/schemas/BlockProposal"
+        summary:
+          $ref: "#/components/schemas/ProposalOperationSummary"
+        superseded:
+          type: array
+          description: Proposal ids removed from this topic's live body set by this request.
+          items:
+            type: string
+            format: uuid
+        contended:
+          type: array
+          description: >
+            Every slot this request found contended. Legacy document proposals
+            that update one of these blocks are reported as non-decidable
+            overlaps instead of block candidates.
+          items:
+            $ref: "#/components/schemas/ProposalContentionSummary"
+      additionalProperties: false
+    ProposalOperationSummary:
+      type: object
+      required: [changed, added, removed]
+      properties:
+        changed:
+          type: integer
+          minimum: 0
+        added:
+          type: integer
+          minimum: 0
+        removed:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    ProposalContentionSummary:
+      type: object
+      required: [scope]
+      properties:
+        scope:
+          type: string
+          enum: [block, document, title]
+        block_id:
+          type: string
+          format: uuid
         live_proposals:
           type: integer
-          minimum: 1
-          description: Live proposals now standing on this block.
-        contended:
+          minimum: 2
+        proposal_id:
+          type: string
+          format: uuid
+        overlaps_block_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        decidable:
           type: boolean
-          description: >
-            True once a second topic has proposed on the same block. Returned
-            here so a topic learns it before building further on the assumption
-            that its version is the one that will land.
+          description: False for a cross-scope legacy overlap.
       additionalProperties: false
     BlockProposalCreateInput:
       type: object
@@ -6919,12 +6967,37 @@ components:
       additionalProperties: false
     ContentionListResponse:
       type: object
-      required: [data]
+      required: [data, document_scopes]
       properties:
         data:
           type: array
           items:
             $ref: "#/components/schemas/Contention"
+        document_scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentScopeContention"
+      additionalProperties: false
+    DocumentScopeContention:
+      type: object
+      required: [scope, proposals]
+      properties:
+        scope:
+          type: string
+          enum: [document, title]
+        proposals:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/BlockProposal"
+        overlaps_block_ids:
+          type: array
+          description: >
+            Blocks also changed by live block proposals while a legacy
+            document proposal still contains update operations.
+          items:
+            type: string
+            format: uuid
       additionalProperties: false
     ConversationBlock:
       type: object
@@ -6997,7 +7070,9 @@ components:
             Which blocks to commit. Omit to take every block holding exactly
             one live proposal -- except alongside `document_proposal_id`, where
             omitting it commits the document proposal alone and nothing is
-            inferred.
+            inferred. Each selected proposal is compared with the same block
+            in its own base revision; changed base text is reported as
+            `stale_block_proposal` with the affected ids.
           items:
             type: string
             format: uuid
@@ -7005,11 +7080,11 @@ components:
           type: string
           format: uuid
           description: >
-            Also commit a whole-document proposal, in the same revision. Named
-            rather than adopted by default, because it settles every block and
-            letting one land implicitly would discard other topics' work
-            without anybody choosing to. It must be compiled against the
-            current revision (`stale_proposal`).
+            Also commit a structural document proposal, in the same revision.
+            It is named rather than adopted by default and must be compiled
+            against the current revision (`stale_proposal`). Legacy document
+            proposals that contain update operations remain committable during
+            the compatibility period.
 
 
             It may be combined with `block_ids`: the document's structural
