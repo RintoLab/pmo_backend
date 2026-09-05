@@ -1450,6 +1450,7 @@ defmodule RintoPMO.Documents do
     block_id = attr(attrs, :block_id, nil)
     conversation_id = attr(attrs, :conversation_id, nil)
     content = attr(attrs, :content, nil)
+    change_summary = attr(attrs, :change_summary, nil)
 
     case live_proposal(repo, document, block_id, conversation_id) do
       nil ->
@@ -1463,6 +1464,7 @@ defmodule RintoPMO.Documents do
           conversation_id: conversation_id,
           actor_id: actor_id,
           content: content,
+          change_summary: change_summary,
           base_revision_id: latest.id
         }
         |> BlockProposal.changeset()
@@ -1470,7 +1472,12 @@ defmodule RintoPMO.Documents do
 
       proposal ->
         proposal
-        |> BlockProposal.content_changeset(%{actor_id: actor_id, content: content})
+        |> BlockProposal.content_changeset(%{
+          actor_id: actor_id,
+          content: content,
+          change_summary: change_summary,
+          base_revision_id: latest.id
+        })
         |> repo.update()
     end
   end

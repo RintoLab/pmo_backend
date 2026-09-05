@@ -78,6 +78,44 @@ defmodule RintoPMO.Documents.ProposalsTest do
       assert Documents.contentions(document) == []
     end
 
+    test "stores the current summary and base when a block proposal is revised" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
+      conversation = insert(:conversation)
+
+      assert {:ok, %{proposal: first}} =
+               Documents.propose_block(document, %{
+                 block_id: block.block_id,
+                 conversation_id: conversation.id,
+                 content: "First attempt",
+                 change_summary: "Tighten the section"
+               })
+
+      assert first.change_summary == "Tighten the section"
+
+      actor = insert(:actor)
+
+      assert {:ok, revision} =
+               Documents.create_revision(document, %{
+                 actor_id: actor.id,
+                 base_revision_id: latest_revision_id(document),
+                 block_ops: [
+                   %{
+                     op: :update,
+                     block_id: block.block_id,
+                     actor_id: actor.id,
+                     content: "Landed in between"
+                   }
+                 ]
+               })
+
+      assert {:ok, %{proposal: revised}} =
+               propose(document, block.block_id, conversation, "Second attempt")
+
+      assert revised.id == first.id
+      assert revised.base_revision_id == revision.id
+      assert revised.change_summary == nil
+    end
+
     test "two topics on one block make a contention, both still live" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["One"])
       first = insert(:conversation)
