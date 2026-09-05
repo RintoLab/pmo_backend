@@ -89,6 +89,14 @@ defmodule RintoPMO.Documents.Document do
   end
 
   @doc false
+  def refile_changeset(%__MODULE__{} = document, project_id) do
+    document
+    |> cast(%{project_id: project_id}, [:project_id])
+    |> validate_required([:project_id])
+    |> foreign_key_constraint(:project_id)
+  end
+
+  @doc false
   def archive_changeset(%__MODULE__{archived_at: nil} = document) do
     change(document, archived_at: DateTime.utc_now())
   end

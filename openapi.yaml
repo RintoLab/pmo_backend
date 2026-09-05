@@ -1315,6 +1315,66 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/refile:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Documents]
+      operationId: refileDocument
+      summary: Move a document to another project
+      description: >
+        Corrects which project a document is filed under. What it is for is a
+        document that landed in the wrong place and is fixed shortly after --
+        typically one an AI wrote in a topic without naming a project, which
+        files it in the default project. A person's action, like `formalize`,
+        with no counterpart in the agent CLI: the author is not who corrects
+        the author.
+
+
+        **Meant for documents just written, and nothing enforces that.** Any
+        document is accepted, `applied` ones included, but tasks filed from a
+        breakdown took a copy of the project id at the moment they were filed
+        and do not follow the document -- there is no way to move them
+        afterwards. Moving a document something else has already acted on
+        leaves the two disagreeing, silently.
+
+
+        Nothing else has to be brought back into line. No copy of the project
+        id is kept anywhere: search and every listing filter by joining the
+        document row, so one write puts everything downstream in the right
+        project at once.
+
+
+        `project_id` is required and must name a project that exists. A body
+        without one is `400` and an unknown project is `422`; neither is
+        defaulted to anything. There is no way to file a document under nothing
+        -- a document filed nowhere is one nothing lists, which is why creation
+        reaches for the default project in the first place.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id]
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+                  description: The project to file this document under.
+      responses:
+        "200":
+          description: Document with its latest revision and blocks, now in the new project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /documents/{document_id}/file_breakdown:
     parameters:
       - $ref: "#/components/parameters/DocumentId"

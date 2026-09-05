@@ -141,6 +141,13 @@ defmodule RintoPMOWeb.Router do
     # no counterpart in the agent CLI.
     post "/documents/:id/formalize", DocumentController, :formalize
 
+    # Correcting which project a document was filed under -- meant for one just
+    # written into the wrong place, usually the default project an AI landed in
+    # by not naming one. A person's action for the same reason `formalize` is,
+    # and the only write to a document that is not a revision: the project is a
+    # property of the document itself, not of anything it says.
+    post "/documents/:id/refile", DocumentController, :refile
+
     # The breakdown somebody adopted becomes the work. A task document is
     # written from a topic, with the breakdown prompt shortcut; filing it is a
     # person's action, which is why it is here and not something the model did

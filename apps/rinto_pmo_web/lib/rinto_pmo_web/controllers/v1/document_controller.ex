@@ -57,6 +57,37 @@ defmodule RintoPMOWeb.V1.DocumentController do
     {:error, :bad_request, %{markdown: ["can't be blank"]}}
   end
 
+  @doc """
+  Files a document under a different project.
+
+  For a document that landed in the wrong project and is corrected right after
+  -- typically one an AI wrote in a topic without naming a project, which put
+  it in the default one. A person's action, so it is reachable here and not
+  from the agent CLI: the author is not who corrects the author.
+
+  Any document may be moved, including an `:applied` one, and that is not an
+  invitation. Tasks filed from a breakdown keep the project they were filed
+  into and do not follow -- see `RintoPMO.Documents.refile_document/2`.
+
+  `project_id` is required and is never defaulted; a body without one is a
+  bad request rather than a move to nowhere.
+  """
+  def refile(conn, %{"id" => id, "project_id" => project_id}) when is_binary(project_id) do
+    context = Utils.module(:documents)
+    document = context.get_document!(id)
+
+    with {:ok, document} <- context.refile_document(document, project_id) do
+      render(conn, :show, document: document)
+    end
+  end
+
+  # Nothing is defaulted here. Creation reaches for the default project so that
+  # a document is never filed nowhere; letting a body that names no project
+  # move one out of every listing would undo that by omission.
+  def refile(_conn, _params) do
+    {:error, :bad_request, %{project_id: ["can't be blank"]}}
+  end
+
   def delete(conn, %{"id" => id}) do
     context = Utils.module(:documents)
     document = context.get_document!(id)

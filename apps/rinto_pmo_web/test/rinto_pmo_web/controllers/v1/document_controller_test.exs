@@ -200,6 +200,38 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
     assert json_response(conn, 200)["data"]["status"] == "formal"
   end
 
+  test "POST /api/v1/documents/:id/refile moves it to the project named", %{conn: conn} do
+    document = document_with_revision()
+    project = insert(:project)
+    moved = %{document | project_id: project.id}
+
+    expect(DocumentsMock, :get_document!, fn id ->
+      assert id == document.id
+      document
+    end)
+
+    expect(DocumentsMock, :refile_document, fn ^document, project_id ->
+      assert project_id == project.id
+      {:ok, moved}
+    end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/refile", %{project_id: project.id})
+
+    assert json_response(conn, 200)["data"]["project_id"] == project.id
+  end
+
+  # Not defaulted to anything, and refused before the document is even read.
+  # Filing a document nowhere is what creation reaches for the default project
+  # to avoid, and doing it here by omission would undo that quietly.
+  test "POST /api/v1/documents/:id/refile without a project is a bad request", %{conn: conn} do
+    document = document_with_revision()
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/refile", %{})
+
+    assert %{"error" => "bad_request", "details" => %{"project_id" => ["can't be blank"]}} =
+             json_response(conn, 400)
+  end
+
   test "DELETE /api/v1/documents/:id archives idempotently", %{conn: conn} do
     document = document_with_revision()
     archived = %{document | archived_at: DateTime.utc_now()}

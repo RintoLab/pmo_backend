@@ -65,6 +65,80 @@ defmodule RintoPMO.DocumentsTest do
     end
   end
 
+  # The correction for the case above going wrong: an AI wrote a document in a
+  # topic without naming a project, so it landed in the default one instead of
+  # the project the discussion was about.
+  describe "moving a document to another project" do
+    test "files it under the project it should have been in" do
+      {:ok, document} = Documents.create_document(%{title: "A note"})
+      chosen = insert(:project)
+
+      assert {:ok, moved} = Documents.refile_document(document, chosen.id)
+      assert moved.project_id == chosen.id
+      assert moved.id == document.id
+
+      assert Documents.list_documents(%{project: chosen.id}) |> document_ids() ==
+               MapSet.new([document.id])
+    end
+
+    # The project is a property of the document itself, not of anything it
+    # says, so moving it writes no revision and changes no standing.
+    test "touches neither the content nor the status" do
+      project = insert(:project)
+      actor = insert(:actor)
+
+      {:ok, document} =
+        create_document(project, %{
+          title: "A note",
+          actor_id: actor.id,
+          markdown: "## One\n\nText"
+        })
+
+      {:ok, document} = Documents.formalize_document(document)
+
+      assert {:ok, moved} = Documents.refile_document(document, insert(:project).id)
+      assert moved.status == :formal
+      assert length(Documents.list_revisions(document)) == 1
+      assert Documents.get_document!(document.id).latest_revision.title == "A note"
+    end
+
+    # Deliberately not gated on status. An `:applied` document has already been
+    # filed as work, and the tasks that came out of it keep the project they
+    # were filed into -- moving the document afterwards leaves the two
+    # disagreeing. This is a habit rather than a guard, in a system with one
+    # operator, and this test says so out loud rather than leaving the next
+    # reader to wonder whether the check was forgotten.
+    test "an applied document moves too, and the work it produced stays put" do
+      project = insert(:project)
+      {:ok, document} = create_document(project, %{title: "A breakdown"})
+      {:ok, document} = Documents.formalize_document(document)
+      {:ok, document} = Documents.apply_document(document)
+
+      task = insert(:task, project: project, document_id: document.id)
+      elsewhere = insert(:project)
+
+      assert {:ok, moved} = Documents.refile_document(document, elsewhere.id)
+      assert moved.project_id == elsewhere.id
+      assert Repo.reload!(task).project_id == project.id
+    end
+
+    # A document filed nowhere is one nothing lists, which is the reason
+    # creation reaches for the default project rather than leaving it null.
+    test "refuses to file it under nothing" do
+      {:ok, document} = Documents.create_document(%{title: "A note"})
+
+      assert {:error, changeset} = Documents.refile_document(document, nil)
+      assert "can't be blank" in errors_on(changeset).project_id
+    end
+
+    test "refuses a project that does not exist" do
+      {:ok, document} = Documents.create_document(%{title: "A note"})
+
+      assert {:error, changeset} = Documents.refile_document(document, UUIDv7.generate())
+      assert errors_on(changeset).project_id != []
+    end
+  end
+
   # A write made inside a topic is by that topic's assistant; one made outside
   # any topic is by whoever says so. The CLI is configured with the server's
   # human actor, so without this the pi running inside a topic would have

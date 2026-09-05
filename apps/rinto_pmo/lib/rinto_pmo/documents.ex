@@ -161,6 +161,50 @@ defmodule RintoPMO.Documents do
   def preview_blocks(markdown) when is_binary(markdown), do: Markdown.split(markdown)
 
   @doc """
+  Moves a document to another project.
+
+  ## What this is for
+
+  A document that landed in the wrong project, corrected shortly after it was
+  written. The case it exists for is an AI writing a document in a topic
+  without a `project_id`, which files it in the default project (see
+  `create_document/1`) rather than the one the discussion was about.
+
+  **It is not a general re-filing tool, and there is deliberately no check
+  stopping it from behaving as one.** An `:applied` document has already been
+  filed as a work breakdown, and the tasks that came out of it took a copy of
+  the project id at that moment (`RintoPMO.Tasks.file_breakdown/1`) -- moving
+  the document afterwards leaves the work where it was, with no way to move it
+  after the fact. Refusing the call would be the stricter answer; the honest
+  one is that this is a single-operator system and the rule is a habit, not a
+  guard. Move documents that were just written, not documents something else
+  has already acted on.
+
+  ## A person's action
+
+  Reachable only over HTTP, with no counterpart in the agent CLI -- the same
+  rule `formalize_document/1` follows. Which project a document belongs to is
+  the judgement an author got wrong, so an author is not the one who gets to
+  correct it.
+
+  Nothing else has to move with it. No copy of `project_id` is kept anywhere:
+  search filters by joining the document row (`RintoPMO.Search`), and the
+  earlier attempt to denormalise it onto blocks was removed for exactly the
+  reason this function would have broken it. One column, and everything
+  downstream is in line the moment it is written.
+
+  A `project_id` that names nothing comes back as a changeset error, and so
+  does a missing one: a document filed nowhere is one nothing lists, which is
+  what `create_document/1` reaches for the default project to avoid.
+  """
+  @impl true
+  def refile_document(%Document{} = document, project_id) do
+    document
+    |> Document.refile_changeset(project_id)
+    |> Repo.update()
+  end
+
+  @doc """
   Idempotently archives a document.
 
   Nothing else has to happen. Search leaves archived content out by joining to
