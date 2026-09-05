@@ -12,6 +12,11 @@ run = "cargo build --locked --manifest-path cli/Cargo.toml --target-dir cli/targ
 # them out of [env] lets the ordinary terminal keep using the installed CLI.
 [tasks.dev]
 description = "Start Phoenix with the development CLI, configuration and skills"
+# Built rather than assumed: _.path below points at the build directory, so a
+# stale or missing binary would leave the topic agent silently running the
+# installed release against this server. Cargo is incremental, so an unchanged
+# checkout costs a mtime comparison.
+depends = ["cli:build"]
 dir = "{{config_root}}"
 run = "mix phx.server"
 
