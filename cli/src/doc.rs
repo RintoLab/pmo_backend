@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
@@ -412,10 +413,10 @@ fn show(client: &Client, args: ShowArgs) -> Result<()> {
 /// silently. Reading through here before changing a document again is what stops
 /// that.
 ///
-/// A whole-document rewrite is reported by the server alongside the blocks
-/// rather than folded into them -- it has no block ids to hang on -- and when
-/// one is standing, the block list is explicitly *not* what this topic intends.
-/// So it replaces the listing rather than annotating it.
+/// A document proposal is reported alongside the blocks. Its operations are
+/// layered onto the list: legacy updates replace block text, while structural
+/// operations become markers between blocks. The proposal's whole `content`
+/// is only a propose-time snapshot and is never printed as current intent.
 fn working(client: &Client, config: &Config, args: ShowArgs) -> Result<()> {
     let conversation_id = topic(config, "a working copy")?;
     let path = format!(
@@ -424,19 +425,14 @@ fn working(client: &Client, config: &Config, args: ShowArgs) -> Result<()> {
     );
     let answer = client.get(&path, &[])?;
 
-    if let Some(proposal) = answer.get("document_proposal").filter(|it| !it.is_null()) {
-        return whole_document(proposal);
-    }
-
-    let blocks = client::data(answer)?;
-    let blocks = blocks.as_array().map(Vec::as_slice).unwrap_or_default();
-
-    for (index, block) in blocks.iter().enumerate() {
+    for (index, chunk) in working_chunks(&answer, args.with_block_ids)
+        .iter()
+        .enumerate()
+    {
         if index > 0 {
             println!();
         }
-        print!("{}", marks(block, args.with_block_ids));
-        println!("{}", content_of(block));
+        println!("{chunk}");
     }
 
     // The title is a slot of its own and is not in this answer, so saying where
@@ -450,6 +446,169 @@ fn working(client: &Client, config: &Config, args: ShowArgs) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn working_chunks(answer: &Value, with_block_ids: bool) -> Vec<String> {
+    let mut blocks = answer
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let Some(proposal) = answer.get("document_proposal").filter(|it| !it.is_null()) else {
+        return blocks
+            .iter()
+            .map(|block| format!("{}{}", marks(block, with_block_ids), content_of(block)))
+            .collect();
+    };
+
+    let proposal_id = string(proposal, "id", "?");
+    let revision_id = answer.get("revision_id").and_then(Value::as_str);
+    let proposal_base = proposal.get("base_revision_id").and_then(Value::as_str);
+
+    if revision_id.is_some() && proposal_base.is_some() && revision_id != proposal_base {
+        let mut chunks = vec![format!(
+            "! structural proposal {proposal_id} targets an older revision; rebase it before treating it as current intent"
+        )];
+        chunks.extend(
+            blocks
+                .iter()
+                .map(|block| format!("{}{}", marks(block, with_block_ids), content_of(block))),
+        );
+        return chunks;
+    }
+
+    let operations = proposal
+        .get("block_ops")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let block_ids: HashSet<String> = blocks
+        .iter()
+        .filter_map(|block| block.get("block_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+
+    let missing: Vec<&str> = operations
+        .iter()
+        .flat_map(|operation| {
+            [
+                operation.get("block_id").and_then(Value::as_str),
+                operation.get("after_block_id").and_then(Value::as_str),
+            ]
+        })
+        .flatten()
+        .filter(|id| !block_ids.contains(*id))
+        .collect();
+
+    if !missing.is_empty() {
+        let mut chunks = vec![format!(
+            "! structural proposal {proposal_id} names blocks that no longer exist ({}); re-propose it",
+            missing.join(", ")
+        )];
+        chunks.extend(
+            blocks
+                .iter()
+                .map(|block| format!("{}{}", marks(block, with_block_ids), content_of(block))),
+        );
+        return chunks;
+    }
+
+    let mut before: Vec<Vec<String>> = vec![Vec::new(); blocks.len()];
+    let mut after: Vec<Vec<String>> = vec![Vec::new(); blocks.len()];
+    let mut head = Vec::new();
+
+    for (op_index, operation) in operations.iter().enumerate() {
+        let key = format!("{proposal_id}:{op_index}");
+        let name = operation.get("op").and_then(Value::as_str).unwrap_or("?");
+        let block_id = operation.get("block_id").and_then(Value::as_str);
+        let anchor_id = operation.get("after_block_id").and_then(Value::as_str);
+
+        match name {
+            "update" => {
+                if let Some(index) = block_index(&blocks, block_id) {
+                    let proposed =
+                        blocks[index].get("proposed").and_then(Value::as_bool) == Some(true);
+                    let content = content_of(operation).to_string();
+
+                    if proposed {
+                        after[index].push(format!(
+                            "! legacy document proposal {proposal_id} also updates this block [{key}]\n{content}"
+                        ));
+                    } else if let Some(block) = blocks[index].as_object_mut() {
+                        block.insert("content".to_string(), Value::String(content));
+                        before[index].push(format!(
+                            "* legacy document proposal {proposal_id} updates this block [{key}]"
+                        ));
+                    }
+                }
+            }
+            "delete" => {
+                if let Some(index) = block_index(&blocks, block_id) {
+                    before[index].push(format!(
+                        "* structural proposal {proposal_id} deletes this block [{key}]"
+                    ));
+                }
+            }
+            "insert_after" => {
+                let marker = format!(
+                    "* structural proposal {proposal_id} inserts after {} [{key}]\n{}",
+                    anchor_id.unwrap_or("document start"),
+                    content_of(operation)
+                );
+                push_after_anchor(&blocks, &mut head, &mut after, anchor_id, marker);
+            }
+            "move_after" => {
+                let marker = format!(
+                    "* structural proposal {proposal_id} moves {} after {} [{key}]",
+                    block_id.unwrap_or("?"),
+                    anchor_id.unwrap_or("document start")
+                );
+                push_after_anchor(&blocks, &mut head, &mut after, anchor_id, marker);
+            }
+            _other => {}
+        }
+    }
+
+    // Several inserts sharing an anchor are emitted in reverse application
+    // order by the server; reverse them again for the target reading order.
+    head.reverse();
+    for markers in &mut after {
+        markers.reverse();
+    }
+
+    let mut chunks = head;
+    for (index, block) in blocks.iter().enumerate() {
+        chunks.extend(before[index].clone());
+        chunks.push(format!(
+            "{}{}",
+            marks(block, with_block_ids),
+            content_of(block)
+        ));
+        chunks.extend(after[index].clone());
+    }
+
+    chunks
+}
+
+fn block_index(blocks: &[Value], block_id: Option<&str>) -> Option<usize> {
+    let block_id = block_id?;
+    blocks
+        .iter()
+        .position(|block| block.get("block_id").and_then(Value::as_str) == Some(block_id))
+}
+
+fn push_after_anchor(
+    blocks: &[Value],
+    head: &mut Vec<String>,
+    after: &mut [Vec<String>],
+    anchor_id: Option<&str>,
+    marker: String,
+) {
+    match block_index(blocks, anchor_id) {
+        Some(index) => after[index].push(marker),
+        None => head.push(marker),
+    }
 }
 
 /// The block id, and what is standing on this block, as leading lines.
@@ -482,17 +641,6 @@ fn marks(block: &Value, with_block_ids: bool) -> String {
     }
 
     marks
-}
-
-/// What a standing whole-document rewrite says, in place of the block list.
-fn whole_document(proposal: &Value) -> Result<()> {
-    let id = proposal.get("id").and_then(Value::as_str).unwrap_or("?");
-
-    println!("* your topic has a whole-document rewrite standing ({id}).");
-    println!("  The committed block list is not what it intends. That rewrite reads:\n");
-    println!("{}", content_of(proposal));
-
-    Ok(())
 }
 
 /// Puts a change up for review.
@@ -551,18 +699,86 @@ fn content(args: &ProposeArgs) -> Result<String> {
 
 /// What the server made of it.
 ///
-/// The contention count is the part worth printing: it says somebody else is
-/// also changing this, which the model should know before building further on
-/// the assumption that its version is the one that will land. The operations are
-/// summarised rather than listed -- the shape of the change is the useful part,
-/// and the diff itself is for whoever reviews it.
+/// One whole-document input can produce several rows. The server's summary and
+/// contention list are printed once for the request, while every created row is
+/// named so the caller can address it later. The old single-object response is
+/// still accepted during a staggered rollout.
 fn report(answer: &Value) -> Result<()> {
-    let proposal = client::data(answer.clone())?;
-    let id = proposal.get("id").and_then(Value::as_str).unwrap_or("?");
-    let scope = proposal.get("scope").and_then(Value::as_str).unwrap_or("?");
+    let data = client::data(answer.clone())?;
+    let proposals: Vec<&Value> = match data.as_array() {
+        Some(proposals) => proposals.iter().collect(),
+        None => vec![&data],
+    };
 
-    println!("proposed {scope} change {id}, awaiting review");
+    for proposal in &proposals {
+        let id = proposal.get("id").and_then(Value::as_str).unwrap_or("?");
+        let scope = proposal.get("scope").and_then(Value::as_str).unwrap_or("?");
+        println!("proposed {scope} change {id}, awaiting review");
+    }
 
+    if let Some(summary) = answer.get("summary") {
+        println!(
+            "  {} changed, {} added, {} removed",
+            summary.get("changed").and_then(Value::as_u64).unwrap_or(0),
+            summary.get("added").and_then(Value::as_u64).unwrap_or(0),
+            summary.get("removed").and_then(Value::as_u64).unwrap_or(0)
+        );
+    } else if let Some(proposal) = proposals.first() {
+        report_legacy_operations(proposal);
+    }
+
+    if let Some(superseded) = answer.get("superseded").and_then(Value::as_array) {
+        if !superseded.is_empty() {
+            println!(
+                "  this proposal round withdrew {} earlier change(s): {}",
+                superseded.len(),
+                superseded
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    if let Some(contentions) = answer.get("contended").and_then(Value::as_array) {
+        for contention in contentions {
+            match contention.get("decidable").and_then(Value::as_bool) {
+                Some(false) => println!(
+                    "  legacy document proposal {} also changes block(s) {}; handle that proposal first",
+                    string(contention, "proposal_id", "?"),
+                    contention
+                        .get("overlaps_block_ids")
+                        .and_then(Value::as_array)
+                        .map(|ids| ids.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                        .unwrap_or_default()
+                ),
+                _other => println!(
+                    "  {} scope is contended{}; a person decides between the proposals",
+                    string(contention, "scope", "?"),
+                    contention
+                        .get("block_id")
+                        .and_then(Value::as_str)
+                        .map(|id| format!(" on block {id}"))
+                        .unwrap_or_default()
+                ),
+            }
+        }
+    } else {
+        let live = answer
+            .get("live_proposals")
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
+
+        if live > 1 {
+            println!("  {live} topics have a change standing here; a person decides between them");
+        }
+    }
+
+    Ok(())
+}
+
+fn report_legacy_operations(proposal: &Value) {
     if let Some(operations) = proposal.get("block_ops").and_then(Value::as_array) {
         let mut updated = 0;
         let mut inserted = 0;
@@ -579,17 +795,6 @@ fn report(answer: &Value) -> Result<()> {
 
         println!("  {updated} changed, {inserted} added, {deleted} removed");
     }
-
-    let live = answer
-        .get("live_proposals")
-        .and_then(Value::as_u64)
-        .unwrap_or(1);
-
-    if live > 1 {
-        println!("  {live} topics have a change standing here; a person decides between them");
-    }
-
-    Ok(())
 }
 
 /// Which filters this asks for, using the server's own parameter names.
@@ -1197,8 +1402,8 @@ fn read(path: &Path) -> Result<String> {
 mod tests {
     use super::{
         annotation_summary, annotations_query, backlink_lines, list_query, marks, opening_of,
-        proposal_summary, proposals_query, reply_heading, scope, AnnotationsArgs, ListArgs,
-        ProposalsArgs, ProposeArgs,
+        proposal_summary, proposals_query, reply_heading, scope, working_chunks, AnnotationsArgs,
+        ListArgs, ProposalsArgs, ProposeArgs,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -1457,7 +1662,12 @@ mod tests {
         fn a_whole_document_proposal_names_its_topic_and_scope() {
             let server = StubServer::start(vec![Reply::json(
                 200,
-                json!({"data": {"id": "proposal-1", "scope": "document"}, "live_proposals": 1}),
+                json!({
+                    "data": [{"id": "proposal-1", "scope": "document"}],
+                    "summary": {"changed": 0, "added": 1, "removed": 0},
+                    "superseded": [],
+                    "contended": []
+                }),
             )]);
 
             propose(
@@ -1490,7 +1700,12 @@ mod tests {
         fn a_block_proposal_carries_the_block_it_replaces() {
             let server = StubServer::start(vec![Reply::json(
                 200,
-                json!({"data": {"id": "proposal-1", "scope": "block"}}),
+                json!({
+                    "data": [{"id": "proposal-1", "scope": "block"}],
+                    "summary": {"changed": 1, "added": 0, "removed": 0},
+                    "superseded": [],
+                    "contended": []
+                }),
             )]);
 
             propose(
@@ -1517,7 +1732,12 @@ mod tests {
         fn a_title_proposal_sends_the_title_as_its_content() {
             let server = StubServer::start(vec![Reply::json(
                 200,
-                json!({"data": {"id": "proposal-1", "scope": "title"}}),
+                json!({
+                    "data": [{"id": "proposal-1", "scope": "title"}],
+                    "summary": {"changed": 1, "added": 0, "removed": 0},
+                    "superseded": [],
+                    "contended": []
+                }),
             )]);
 
             propose(
@@ -2066,5 +2286,85 @@ mod tests {
             proposal_summary(&proposal),
             "proposal-2  live  document  (no summary)"
         );
+    }
+
+    #[test]
+    fn a_working_copy_layers_updates_and_structural_markers_over_blocks() {
+        let chunks = working_chunks(
+            &json!({
+                "revision_id": "revision-1",
+                "data": [
+                    {"block_id": "b1", "content": "One", "proposed": false, "other_proposals": 0},
+                    {"block_id": "b2", "content": "My block proposal", "proposed": true, "other_proposals": 0}
+                ],
+                "document_proposal": {
+                    "id": "proposal-1",
+                    "base_revision_id": "revision-1",
+                    "content": "OUTDATED SNAPSHOT",
+                    "block_ops": [
+                        {"op": "update", "block_id": "b1", "content": "One from legacy rewrite"},
+                        {"op": "update", "block_id": "b2", "content": "Two from legacy rewrite"},
+                        {"op": "insert_after", "after_block_id": "b1", "content": "Inserted"}
+                    ]
+                }
+            }),
+            false,
+        );
+
+        let rendered = chunks.join("\n\n");
+        assert!(rendered.contains("One from legacy rewrite"), "{rendered}");
+        assert!(rendered.contains("My block proposal"), "{rendered}");
+        assert!(rendered.contains("Two from legacy rewrite"), "{rendered}");
+        assert!(rendered.contains("proposal-1:2"), "{rendered}");
+        assert!(rendered.contains("Inserted"), "{rendered}");
+        assert!(!rendered.contains("OUTDATED SNAPSHOT"), "{rendered}");
+    }
+
+    #[test]
+    fn a_stale_structural_proposal_is_marked_without_rendering_its_ops() {
+        let chunks = working_chunks(
+            &json!({
+                "revision_id": "revision-2",
+                "data": [
+                    {"block_id": "b1", "content": "Current", "proposed": false, "other_proposals": 0}
+                ],
+                "document_proposal": {
+                    "id": "proposal-1",
+                    "base_revision_id": "revision-1",
+                    "content": "OUTDATED SNAPSHOT",
+                    "block_ops": [
+                        {"op": "insert_after", "after_block_id": "b1", "content": "Not current"}
+                    ]
+                }
+            }),
+            false,
+        );
+
+        let rendered = chunks.join("\n\n");
+        assert!(rendered.contains("older revision"), "{rendered}");
+        assert!(rendered.contains("Current"), "{rendered}");
+        assert!(!rendered.contains("Not current"), "{rendered}");
+        assert!(!rendered.contains("OUTDATED SNAPSHOT"), "{rendered}");
+    }
+
+    #[test]
+    fn an_old_blocks_response_without_revision_id_still_renders_operations() {
+        let chunks = working_chunks(
+            &json!({
+                "data": [
+                    {"block_id": "b1", "content": "Current", "proposed": false, "other_proposals": 0}
+                ],
+                "document_proposal": {
+                    "id": "proposal-1",
+                    "base_revision_id": "revision-1",
+                    "block_ops": [
+                        {"op": "insert_after", "after_block_id": "b1", "content": "Compatible marker"}
+                    ]
+                }
+            }),
+            false,
+        );
+
+        assert!(chunks.join("\n").contains("Compatible marker"));
     }
 }
