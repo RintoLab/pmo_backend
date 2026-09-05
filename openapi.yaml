@@ -6954,12 +6954,23 @@ components:
       additionalProperties: false
     ConversationBlockListResponse:
       type: object
-      required: [data]
+      required: [revision_id, data, document_proposal]
       properties:
+        revision_id:
+          type: string
+          format: uuid
+          description: >
+            The revision from the same snapshot as `data` and
+            `document_proposal`. A document proposal whose base differs from
+            this value must be rebased before it is rendered as current intent.
         data:
           type: array
           items:
             $ref: "#/components/schemas/ConversationBlock"
+        document_proposal:
+          allOf:
+            - $ref: "#/components/schemas/BlockProposal"
+          nullable: true
       additionalProperties: false
     CommitInput:
       type: object

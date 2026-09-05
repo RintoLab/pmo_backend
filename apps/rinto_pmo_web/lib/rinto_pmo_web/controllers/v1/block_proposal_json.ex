@@ -35,8 +35,13 @@ defmodule RintoPMOWeb.V1.BlockProposalJSON do
     }
   end
 
-  def blocks(%{blocks: blocks, document_proposal: document_proposal}) do
+  def blocks(%{
+        revision_id: revision_id,
+        blocks: blocks,
+        document_proposal: document_proposal
+      }) do
     %{
+      revision_id: revision_id,
       data: Enum.map(blocks, &block/1),
       # Present when this topic has a whole-document rewrite standing. The block
       # list above still describes the document without it; the rewrite is a

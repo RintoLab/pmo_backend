@@ -54,6 +54,12 @@ defmodule RintoPMO.Documents.Behaviour do
           other_proposals: non_neg_integer()
         }
 
+  @type conversation_document_view :: %{
+          revision_id: UUIDv7.t(),
+          blocks: [conversation_block()],
+          document_proposal: BlockProposal.t() | nil
+        }
+
   @callback list_documents(filter()) :: [Document.t()]
   @callback get_document!(UUIDv7.t()) :: Document.t()
   @callback create_document(map()) ::
@@ -98,6 +104,8 @@ defmodule RintoPMO.Documents.Behaviour do
   @callback document_proposal_for_conversation(Document.t(), UUIDv7.t()) ::
               BlockProposal.t() | nil
   @callback blocks_for_conversation(Document.t(), UUIDv7.t()) :: [conversation_block()]
+  @callback conversation_document_view(Document.t(), UUIDv7.t()) ::
+              {:ok, conversation_document_view()}
   @callback decide_block(Document.t(), UUIDv7.t(), UUIDv7.t(), UUIDv7.t()) ::
               {:ok, BlockProposal.t()}
               | {:error, Ecto.Changeset.t()}

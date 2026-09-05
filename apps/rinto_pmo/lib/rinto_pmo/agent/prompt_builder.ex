@@ -625,8 +625,62 @@ defmodule RintoPMO.Agent.PromptBuilder do
         optional_attribute("block", block_label(document, proposal.block_id)) ++
         optional_attribute("conversation", proposal_topic(proposal))
 
-    element("proposal", attributes, proposal.content)
+    element("proposal", attributes, proposal_body(document, proposal))
   end
+
+  defp proposal_body(_document, %BlockProposal{scope: scope, content: content})
+       when scope in [:block, :title],
+       do: content
+
+  defp proposal_body(document, %BlockProposal{scope: :document, block_ops: operations})
+       when is_list(operations) do
+    operations
+    |> Enum.with_index(1)
+    |> Enum.map_join("\n\n", fn {operation, index} ->
+      render_proposal_operation(document, operation, index)
+    end)
+  end
+
+  # Rows created before operation snapshots were required remain readable, but
+  # their whole body is named as the propose-time snapshot it is.
+  defp proposal_body(_document, %BlockProposal{scope: :document, content: content}) do
+    element("snapshot", [{"at", "propose-time"}], content)
+  end
+
+  defp render_proposal_operation(document, operation, index) do
+    case operation_value(operation, :op) do
+      name when name in [:update, "update"] ->
+        block = operation_block(document, operation_value(operation, :block_id))
+        "[operation:#{index} update block:#{block}]\n#{operation_value(operation, :content)}"
+
+      name when name in [:insert_after, "insert_after"] ->
+        anchor = operation_anchor(document, operation_value(operation, :after_block_id))
+        "[operation:#{index} insert after:#{anchor}]\n#{operation_value(operation, :content)}"
+
+      name when name in [:delete, "delete"] ->
+        block = operation_block(document, operation_value(operation, :block_id))
+        "[operation:#{index} delete block:#{block}]"
+
+      name when name in [:move_after, "move_after"] ->
+        block = operation_block(document, operation_value(operation, :block_id))
+        anchor = operation_anchor(document, operation_value(operation, :after_block_id))
+        "[operation:#{index} move block:#{block} after:#{anchor}]"
+
+      name ->
+        "[operation:#{index} unsupported:#{inspect(name)}]"
+    end
+  end
+
+  defp operation_value(operation, key) do
+    Map.get(operation, key, Map.get(operation, Atom.to_string(key)))
+  end
+
+  defp operation_block(document, block_id) do
+    block_label(document, block_id) || block_id || "missing"
+  end
+
+  defp operation_anchor(_document, nil), do: "document-start"
+  defp operation_anchor(document, block_id), do: operation_block(document, block_id)
 
   # The source topic appears as its title -- a label, like `document_id` on an
   # annotation. Expanding the topic itself is exactly what a proposal reference

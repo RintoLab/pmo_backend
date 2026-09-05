@@ -646,9 +646,10 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
   # own work against it, and would rewrite from the base -- discarding what it had
   # already put up for review.
   describe "build/3 replay of a topic's own proposals" do
-    test "hands back the whole-document rewrite it had standing" do
+    test "hands back a legacy whole-document rewrite through its operations" do
       conversation = insert(:conversation)
       document = document_with_blocks(["The current text"])
+      [block] = document.latest_revision.blocks
 
       proposal =
         insert(:block_proposal,
@@ -656,7 +657,10 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
           conversation: conversation,
           scope: :document,
           block_id: nil,
-          content: "## Rewritten\n\nMy version"
+          content: "## Rewritten\n\nMy version",
+          block_ops: [
+            %{"op" => "update", "block_id" => block.block_id, "content" => "My version"}
+          ]
         )
 
       expect(ConversationsMock, :recent_messages, fn _conversation, _limit -> [] end)
@@ -672,10 +676,48 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                PromptBuilder.build("carry on", [], replay: conversation)
 
       assert message =~ ~s(<proposal ref="1" id="#{proposal.id}" scope="document" status="live")
-      assert message =~ "## Rewritten"
+      assert message =~ "update block:b1"
+      assert message =~ "My version"
       # No block to name on a whole-document rewrite, so the attribute is absent
       # rather than empty.
       refute message =~ ~s(block_id="")
+    end
+
+    test "renders structural intent without presenting its content snapshot as current" do
+      conversation = insert(:conversation)
+      document = document_with_blocks(["Keep", "Remove"])
+      [first, second] = Enum.sort_by(document.latest_revision.blocks, & &1.position)
+
+      proposal =
+        insert(:block_proposal,
+          document: document,
+          conversation: conversation,
+          scope: :document,
+          block_id: nil,
+          content: "OUTDATED WHOLE BODY SNAPSHOT",
+          block_ops: [
+            %{
+              "op" => "insert_after",
+              "after_block_id" => first.block_id,
+              "content" => "## Added\n\nNew section"
+            },
+            %{"op" => "delete", "block_id" => second.block_id}
+          ]
+        )
+
+      expect(ConversationsMock, :recent_messages, fn _conversation, _limit -> [] end)
+      expect(DocumentsMock, :live_conversation_proposals, fn _id -> [proposal] end)
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+      expect(DocumentsMock, :get_proposal!, fn ^document, _id -> proposal end)
+      stub(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("carry on", [], replay: conversation)
+
+      assert message =~ "insert after:b1"
+      assert message =~ "delete block:b2"
+      assert message =~ "New section"
+      refute message =~ "OUTDATED WHOLE BODY SNAPSHOT"
     end
 
     test "puts what it proposed after the document it proposed it for" do

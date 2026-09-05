@@ -156,28 +156,32 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
     conversation = insert(:conversation)
     conversation_id = conversation.id
     block_id = UUIDv7.generate()
+    revision_id = UUIDv7.generate()
 
-    expect(DocumentsMock, :blocks_for_conversation, fn ^document, ^conversation_id ->
-      [
-        %{
-          block_id: block_id,
-          position: 0,
-          content: "My version",
-          proposal_id: nil,
-          proposed?: true,
-          other_proposals: 2
-        }
-      ]
-    end)
-
-    expect(DocumentsMock, :document_proposal_for_conversation, fn ^document, ^conversation_id ->
-      nil
+    expect(DocumentsMock, :conversation_document_view, fn ^document, ^conversation_id ->
+      {:ok,
+       %{
+         revision_id: revision_id,
+         blocks: [
+           %{
+             block_id: block_id,
+             position: 0,
+             content: "My version",
+             proposal_id: nil,
+             proposed?: true,
+             other_proposals: 2
+           }
+         ],
+         document_proposal: nil
+       }}
     end)
 
     conn =
       get(conn, ~p"/api/v1/documents/#{document.id}/conversations/#{conversation.id}/blocks")
 
-    assert [block] = json_response(conn, 200)["data"]
+    response = json_response(conn, 200)
+    assert response["revision_id"] == revision_id
+    assert [block] = response["data"]
     assert block["content"] == "My version"
     assert block["proposed"] == true
     assert block["other_proposals"] == 2
@@ -193,6 +197,7 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
   } do
     conversation = insert(:conversation)
     conversation_id = conversation.id
+    revision_id = UUIDv7.generate()
 
     proposal =
       insert(:block_proposal,
@@ -204,17 +209,18 @@ defmodule RintoPMOWeb.V1.BlockProposalControllerTest do
 
     proposal_id = proposal.id
 
-    expect(DocumentsMock, :blocks_for_conversation, fn ^document, ^conversation_id -> [] end)
-
-    expect(DocumentsMock, :document_proposal_for_conversation, fn ^document, ^conversation_id ->
-      proposal
+    expect(DocumentsMock, :conversation_document_view, fn ^document, ^conversation_id ->
+      {:ok, %{revision_id: revision_id, blocks: [], document_proposal: proposal}}
     end)
 
     conn =
       get(conn, ~p"/api/v1/documents/#{document.id}/conversations/#{conversation.id}/blocks")
 
+    response = json_response(conn, 200)
+    assert response["revision_id"] == revision_id
+
     assert %{"id" => ^proposal_id, "scope" => "document", "block_ops" => [_only]} =
-             json_response(conn, 200)["document_proposal"]
+             response["document_proposal"]
   end
 
   test "GET contentions reports document-level arguments separately", %{

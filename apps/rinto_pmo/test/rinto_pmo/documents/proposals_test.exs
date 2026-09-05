@@ -204,6 +204,32 @@ defmodule RintoPMO.Documents.ProposalsTest do
     end
   end
 
+  describe "conversation_document_view/2" do
+    test "returns the revision, blocks and document proposal from one read" do
+      %{document: document, blocks: [block | _rest]} = document_with_blocks(["Original"])
+      conversation = insert(:conversation)
+
+      assert {:ok, %{proposal: block_proposal}} =
+               propose(document, block.block_id, conversation, "My version")
+
+      document_proposal =
+        insert(:block_proposal,
+          document: document,
+          conversation: conversation,
+          scope: :document,
+          block_id: nil,
+          block_ops: [%{"op" => "insert_after", "after_block_id" => block.block_id}]
+        )
+
+      assert {:ok, view} = Documents.conversation_document_view(document, conversation.id)
+      assert view.revision_id == latest_revision_id(document)
+      assert view.document_proposal.id == document_proposal.id
+      assert [shown] = view.blocks
+      assert shown.content == "My version"
+      assert shown.proposal_id == block_proposal.id
+    end
+  end
+
   describe "conversation_working_set/1" do
     test "groups a topic's standing work by the document it is against" do
       %{document: first, blocks: [first_block | _rest]} = document_with_blocks(["One", "Two"])

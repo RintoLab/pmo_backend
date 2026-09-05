@@ -770,9 +770,48 @@ defmodule RintoPMO.Documents do
       |> live_proposals(:block)
       |> Enum.group_by(& &1.block_id)
 
-    document
-    |> latest_revision!(preload_blocks?: true)
-    |> Map.fetch!(:blocks)
+    revision = latest_revision!(document, preload_blocks?: true)
+    conversation_blocks(revision, proposals, conversation_id)
+  end
+
+  @doc """
+  Reads the topic's blocks, structural proposal and revision id atomically.
+
+  Proposal writers and revision writers lock the document row before changing
+  any of these values. A shared lock therefore keeps the three parts on one
+  snapshot until this read completes, so a client can compare the structural
+  proposal's base with `revision_id` without racing a second latest-revision
+  lookup.
+  """
+  @impl true
+  def conversation_document_view(%Document{} = document, conversation_id) do
+    Repo.transact(fn repo ->
+      locked_document =
+        Document
+        |> where([candidate], candidate.id == ^document.id)
+        |> lock("FOR SHARE")
+        |> repo.one!()
+
+      revision = latest_revision!(repo, locked_document, preload_blocks?: true)
+
+      proposals =
+        repo
+        |> live_proposals(locked_document, :block)
+        |> Enum.group_by(& &1.block_id)
+
+      {:ok,
+       %{
+         revision_id: revision.id,
+         blocks: conversation_blocks(revision, proposals, conversation_id),
+         document_proposal:
+           live_scoped_proposal(repo, locked_document, :document, conversation_id)
+       }}
+    end)
+    |> unwrap_error()
+  end
+
+  defp conversation_blocks(revision, proposals, conversation_id) do
+    revision.blocks
     |> Enum.sort_by(& &1.position)
     |> Enum.map(fn block ->
       block_proposals = Map.get(proposals, block.block_id, [])

@@ -103,15 +103,9 @@ defmodule RintoPMOWeb.V1.BlockProposalController do
     context = documents_context()
     document = get_document!(document_id)
 
-    with {:ok, conversation_id} <- cast_id(conversation_id, "conversation_id") do
-      # A whole-document rewrite is reported alongside the blocks rather than
-      # standing in for them: it is not a per-block overlay, and rendering it as
-      # one would mean inventing ids for text that has none yet. A client seeing
-      # one shows its diff instead of this list.
-      render(conn, :blocks,
-        blocks: context.blocks_for_conversation(document, conversation_id),
-        document_proposal: context.document_proposal_for_conversation(document, conversation_id)
-      )
+    with {:ok, conversation_id} <- cast_id(conversation_id, "conversation_id"),
+         {:ok, view} <- context.conversation_document_view(document, conversation_id) do
+      render(conn, :blocks, view)
     end
   end
 
