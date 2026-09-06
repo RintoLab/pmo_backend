@@ -189,17 +189,14 @@ defmodule RintoPMO.Search do
   defp searchable?(type), do: type in searchable_types()
 
   defp run(query, type, opts) do
-    result =
-      with {:ok, vector} <- ai().embed_query(query) do
-        candidates = candidates(type, Pgvector.new(vector), opts)
+    with {:ok, vector} <- named(ai().embed_query(query), :embedding) do
+      candidates = candidates(type, Pgvector.new(vector), opts)
 
-        case rank(query, candidates) do
-          {:ok, ranked} -> {:ok, Enum.take(ranked, Keyword.get(opts, :limit, result_limit()))}
-          error -> error
-        end
+      case rank(query, candidates) do
+        {:ok, ranked} -> {:ok, Enum.take(ranked, Keyword.get(opts, :limit, result_limit()))}
+        error -> error
       end
-
-    named(result)
+    end
   end
 
   # The inference service is not optional here: without it there is no vector to
@@ -210,14 +207,33 @@ defmodule RintoPMO.Search do
   # `unauthorized`: an installation that was never given `RINTO_AI_TOKEN` is an
   # operator's oversight, a service that is down is an outage, and nobody does
   # the same thing about them.
-  defp named({:error, :not_configured}), do: {:error, :ai_not_configured, %{}}
+  defp named({:error, :not_configured}, _stage), do: {:error, :ai_not_configured, %{}}
 
-  defp named({:error, {:http, status, _body}}), do: {:error, :ai_unavailable, %{status: status}}
+  defp named({:error, {:http, status, body}}, stage) do
+    details = %{stage: stage, status: status}
 
-  defp named({:error, {:transport, reason}}),
-    do: {:error, :ai_unavailable, %{reason: inspect(reason)}}
+    details =
+      case upstream_message(body) do
+        message when is_binary(message) ->
+          Map.put(details, :reason, String.slice(message, 0, 500))
 
-  defp named(result), do: result
+        _other ->
+          details
+      end
+
+    {:error, :ai_unavailable, details}
+  end
+
+  defp named({:error, {:transport, reason}}, stage),
+    do: {:error, :ai_unavailable, %{stage: stage, reason: inspect(reason)}}
+
+  defp named(result, _stage), do: result
+
+  # Keep the service's explanation without forwarding an arbitrary response
+  # body (which may be a gateway page or contain the whole request).
+  defp upstream_message(%{"error" => %{"message" => message}}), do: message
+  defp upstream_message(%{"message" => message}), do: message
+  defp upstream_message(_body), do: nil
 
   # Reranking is what the candidate set was gathered for, so a reranker that is
   # unavailable is a failed search rather than a chance to hand back the cosine
@@ -225,7 +241,8 @@ defmodule RintoPMO.Search do
   defp rank(_query, []), do: {:ok, []}
 
   defp rank(query, candidates) do
-    with {:ok, rankings} <- ai().rerank(query, Enum.map(candidates, & &1.text)) do
+    with {:ok, rankings} <-
+           named(ai().rerank(query, Enum.map(candidates, & &1.text)), :rerank) do
       {:ok,
        rankings
        |> Enum.map(fn %{index: index, score: score} ->

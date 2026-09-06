@@ -173,7 +173,7 @@ defmodule RintoPMOWeb.ErrorJSON do
     # configuring, and no amount of retrying will change it.
     ai_not_configured:
       {503, "The server was started without RINTO_AI_TOKEN, so it cannot search."},
-    ai_unavailable: {503, "The inference service could not be reached."},
+    ai_unavailable: {503, "The inference service could not complete the search."},
     # Asked for a working copy on a server that keeps none. Told apart from
     # `repo_unavailable` for the same reason `ai_not_configured` is told apart
     # from `ai_unavailable`: this one is an installation nobody finished

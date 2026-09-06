@@ -149,7 +149,7 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {503, "The agent runtime could not be started.", %{reason: ":pi_not_found"}},
     ai_not_configured:
       {503, "The server was started without RINTO_AI_TOKEN, so it cannot search.", %{}},
-    ai_unavailable: {503, "The inference service could not be reached.", %{status: 502}},
+    ai_unavailable: {503, "The inference service could not complete the search.", %{status: 502}},
     session_limit_reached:
       {409, "Every running agent session is waiting on a person. Close one to make room.", %{}},
     codex_auth_not_pending:

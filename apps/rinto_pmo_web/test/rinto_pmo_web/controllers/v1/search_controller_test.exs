@@ -171,12 +171,26 @@ defmodule RintoPMOWeb.V1.SearchControllerTest do
 
   test "GET search says so when the inference service is down", %{conn: conn} do
     expect(SearchMock, :search, fn _query, _opts ->
-      {:error, :ai_unavailable, %{reason: ":econnrefused"}}
+      {:error, :ai_unavailable, %{stage: :embedding, reason: ":econnrefused"}}
     end)
 
     conn = get(conn, ~p"/api/v1/search?q=部署&type=block")
 
     assert %{"error" => "ai_unavailable", "details" => details} = json_response(conn, 503)
+    assert details["stage"] == "embedding"
     assert details["reason"] == ":econnrefused"
+  end
+
+  test "GET search explains an upstream rejection", %{conn: conn} do
+    reason = "This model's maximum context length is 4096 tokens."
+
+    expect(SearchMock, :search, fn _query, _opts ->
+      {:error, :ai_unavailable, %{stage: :rerank, status: 400, reason: reason}}
+    end)
+
+    conn = get(conn, ~p"/api/v1/search?q=部署&type=block")
+    response = json_response(conn, 503)
+    assert response["message"] == "The inference service could not complete the search."
+    assert response["details"] == %{"stage" => "rerank", "status" => 400, "reason" => reason}
   end
 end

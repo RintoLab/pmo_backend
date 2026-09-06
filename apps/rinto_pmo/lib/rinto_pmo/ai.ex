@@ -29,6 +29,10 @@ defmodule RintoPMO.AI do
   row alone and try again.
   """
 
+  alias RintoPMO.AI.Passages
+
+  @rerank_batch_size 100
+
   @typedoc """
   A vector, in the order its input was given.
   """
@@ -91,22 +95,48 @@ defmodule RintoPMO.AI do
 
   `index` refers to the position in the list handed in, which is how a caller
   gets back from a score to whatever it was scoring.
+
+  Long documents are scored in passages with the query repeated for each.
+  A document keeps its best passage's score and its original index. Every
+  passage participates, including the end of a long document.
   """
   @impl true
   @spec rerank(String.t(), [String.t()]) :: {:ok, [ranking()]} | error()
   def rerank(_query, []), do: {:ok, []}
 
   def rerank(query, documents) when is_binary(query) and is_list(documents) do
-    payload = %{model: model(:rerank_model), query: query, documents: documents}
+    passages = Passages.for_rerank(documents, query, config(:rerank_max_input_bytes))
+
+    passages
+    |> Enum.chunk_every(@rerank_batch_size)
+    |> Enum.reduce_while({:ok, []}, fn batch, {:ok, ranked} ->
+      case rank_passages(query, batch) do
+        {:ok, rankings} -> {:cont, {:ok, rankings ++ ranked}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, rankings} ->
+        {:ok, rankings |> Enum.sort_by(&{-&1.score, &1.index}) |> Enum.uniq_by(& &1.index)}
+
+      error ->
+        error
+    end
+  end
+
+  defp rank_passages(query, passages) do
+    payload = %{
+      model: model(:rerank_model),
+      query: query,
+      documents: Enum.map(passages, & &1.text)
+    }
 
     with {:ok, body} <- post(:rerank_uri, payload) do
-      rankings =
-        body
-        |> Map.get("results", [])
-        |> Enum.map(&%{index: &1["index"], score: &1["relevance_score"]})
-        |> Enum.sort_by(& &1.score, :desc)
-
-      {:ok, rankings}
+      {:ok,
+       Enum.map(Map.get(body, "results", []), fn ranking ->
+         passage = Enum.at(passages, ranking["index"])
+         %{index: passage.index, score: ranking["relevance_score"]}
+       end)}
     end
   end
 
@@ -143,18 +173,18 @@ defmodule RintoPMO.AI do
       token ->
         config(:base_url)
         |> Kernel.<>(config(uri_key))
-        |> Req.post(
-          json: payload,
-          auth: {:bearer, token},
-          receive_timeout: config(:timeout),
-          retry: :transient
-        )
+        |> Req.post(request_options(payload, token))
         |> case do
           {:ok, %{status: 200, body: body}} -> {:ok, body}
           {:ok, %{status: status, body: body}} -> {:error, {:http, status, body}}
           {:error, reason} -> {:error, {:transport, reason}}
         end
     end
+  end
+
+  defp request_options(payload, token) do
+    [json: payload, auth: {:bearer, token}, receive_timeout: config(:timeout), retry: :transient]
+    |> Keyword.merge(Application.get_env(:rinto_pmo, :ai_req_options, []))
   end
 
   defp model(key), do: config(key)

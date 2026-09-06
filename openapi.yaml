@@ -918,6 +918,15 @@ paths:
         Content written in the last few seconds may not be here yet -- a row is
         findable once its vector has been computed, which happens on a sweep
         rather than at write time.
+
+
+        Long candidate texts are reranked in passages; every passage is scored
+        with the complete query, and the candidate keeps its highest passage
+        score. Results retain their original resource URI. Passage splitting
+        does not reduce `recall_limit` or truncate stored content.
+        The deployed reranker uses an 8192-token context. Each passage and its
+        query share a conservative 7680-byte UTF-8 budget, leaving 512 tokens
+        for the model's prompt template.
       parameters:
         - name: q
           in: query
@@ -1024,7 +1033,12 @@ paths:
             `ai_not_configured` -- this server was started without
             `RINTO_AI_TOKEN`, so it has no way to embed a query and never will
             until somebody deploys it one; or `ai_unavailable` -- the inference
-            service refused or could not be reached.
+            service refused or could not be reached. Its message is
+            "The inference service could not complete the search." Details
+            identify the failed `stage` (`embedding` or `rerank`), and include
+            the upstream HTTP `status` or transport `reason`. A structured
+            upstream error message is included as `reason` when available,
+            limited to 500 characters; arbitrary response bodies are omitted.
 
 
             Both are the whole of the search rather than a degraded one. Without

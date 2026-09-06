@@ -18,6 +18,9 @@ config :rinto_pmo, RintoPMO.Repo,
 # so the environment a developer happens to have cannot reach in here.
 config :rinto_pmo, RintoPMO.Actors, token: "test-actor-token"
 
+config :rinto_pmo, :ai, token: "test-ai-token"
+config :rinto_pmo, :ai_req_options, plug: {Req.Test, RintoPMO.AI}, retry: false
+
 config :rinto_pmo, :injectors,
   actors: RintoPMO.ActorsMock,
   annotations: RintoPMO.AnnotationsMock,

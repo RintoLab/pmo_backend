@@ -77,7 +77,7 @@ config :rinto_pmo,
 # installation can be moved to another gateway, or asked for a bigger model,
 # without a rebuild. Absent or blank leaves the value below in place.
 #
-# `query_instruction` and `timeout` are the exception, on purpose: they are
+# `query_instruction`, `timeout` and `rerank_max_input_bytes` are exceptions: they are
 # tuning knobs of how this system searches, the same on every installation, and
 # a per-deployment override of them would mean two servers of the same version
 # quietly retrieving differently.
@@ -121,6 +121,11 @@ config :rinto_pmo, :ai,
   # Wall clock for one call. These are single-shot transformations, not a model
   # thinking, so a slow one is a service in trouble rather than one working.
   timeout: 30_000,
+  # The reranker is served with an 8192-token context. A byte budget avoids
+  # guessing how many tokens Chinese/code/emoji use and reserves 512 tokens
+  # for its template. AI splits documents after subtracting the query's bytes,
+  # then keeps the best passage score. This does not change stored embeddings.
+  rerank_max_input_bytes: 7680,
   token: nil
 
 # `vector` is not a type Postgrex knows natively -- it comes with the pgvector

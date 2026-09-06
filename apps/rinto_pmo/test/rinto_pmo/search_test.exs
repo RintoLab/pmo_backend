@@ -218,7 +218,7 @@ defmodule RintoPMO.SearchTest do
     test "a failed query embedding fails the search" do
       expect(AIMock, :embed_query, fn _query -> {:error, {:transport, :econnrefused}} end)
 
-      assert {:error, :ai_unavailable, %{reason: ":econnrefused"}} =
+      assert {:error, :ai_unavailable, %{stage: :embedding, reason: ":econnrefused"}} =
                Search.search("部署", type: "block")
     end
 
@@ -229,7 +229,33 @@ defmodule RintoPMO.SearchTest do
       assert {:error, :ai_not_configured, %{}} = Search.search("部署", type: "block")
 
       expect(AIMock, :embed_query, fn _query -> {:error, {:http, 502, "bad gateway"}} end)
-      assert {:error, :ai_unavailable, %{status: 502}} = Search.search("部署", type: "block")
+      assert {:error, :ai_unavailable, details} = Search.search("部署", type: "block")
+      assert details == %{stage: :embedding, status: 502}
+    end
+
+    test "a rejected rerank retains the stage and upstream explanation" do
+      document_with("## 部署\n\n内容")
+      embed_everything()
+      message = "This model's maximum context length is 4096 tokens."
+
+      expect(AIMock, :embed_query, fn _query -> {:ok, vector()} end)
+
+      expect(AIMock, :rerank, fn _query, _documents ->
+        {:error,
+         {:http, 400, %{"error" => %{"message" => message}, "input" => "private content"}}}
+      end)
+
+      assert {:error, :ai_unavailable, details} = Search.search("部署", type: "block")
+      assert details == %{stage: :rerank, status: 400, reason: message}
+    end
+
+    test "an upstream explanation is bounded" do
+      expect(AIMock, :embed_query, fn _query ->
+        {:error, {:http, 400, %{"message" => String.duplicate("长", 600)}}}
+      end)
+
+      assert {:error, :ai_unavailable, details} = Search.search("部署", type: "block")
+      assert details == %{stage: :embedding, status: 400, reason: String.duplicate("长", 500)}
     end
   end
 
