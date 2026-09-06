@@ -4,17 +4,25 @@ elixir = "1.20.2-otp-29"
 rust = "1.97.1"
 
 [env]
+# Shared values are available to the ordinary terminal as well as tasks.
 _.file = { path = ".env", redact = true }
 
+[task_templates.development.env]
+# This Bash script sources .env, then applies development-only overrides.
+# Every repository task extends this template; the terminal never sources it.
+_.source = { path = ".env.dev", redact = true }
+
 [tasks."cli:build"]
+extends = "development"
 description = "Compile the local rinto-pmo CLI"
 dir = "{{config_root}}"
 run = "cargo build --locked --manifest-path cli/Cargo.toml --target-dir cli/target"
 
-# These variables belong to the server and its children, including Pi. The
-# repository-wide database environment comes from [env] above; this task adds
-# only the development CLI, configuration and skill locations.
+# The task environment belongs to the server and its children, including Pi.
+# The shared template loads .env.dev; this task adds the development CLI,
+# configuration and skill locations.
 [tasks.dev]
+extends = "development"
 description = "Start Phoenix with the development CLI, configuration and skills"
 # Built rather than assumed: _.path below points at the build directory, so a
 # stale or missing binary would leave the topic agent silently running the
@@ -30,6 +38,7 @@ RINTO_CONFIG = "{{config_root}}/config/cli.json"
 RINTO_PI_SKILLS_DIR = "{{config_root}}/skills/server"
 
 [tasks."pi:dev"]
+extends = "development"
 description = "Open interactive Pi with the development CLI, configuration and skills"
 dir = "{{config_root}}"
 raw = true
@@ -51,6 +60,7 @@ RINTO_TOKEN = false
 RINTO_CONVERSATION_ID = false
 
 [tasks."rinto-pmo:dev"]
+extends = "development"
 description = "Run the development rinto-pmo CLI with its isolated configuration"
 dir = "{{config_root}}"
 raw = true
@@ -70,6 +80,7 @@ RINTO_TOKEN = false
 RINTO_CONVERSATION_ID = false
 
 [tasks.check]
-description = "Run mix check with the local database configuration"
+extends = "development"
+description = "Run mix check with the development environment"
 dir = "{{config_root}}"
 run = "mix check"

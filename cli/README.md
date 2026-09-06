@@ -105,7 +105,12 @@ directories recursively, and the CLI build generates its embedded registry from
 the same tree. Development topic sessions load the `server` bundle directly
 using `--no-skills --skill <repository>/skills/server`. Start a new topic process after editing it;
 there is no need to overwrite the installed production skills. Run
-`mise run check` for the backend's `mix check` with task-scoped `.env` values.
+`mise run check` for the backend's `mix check`. Every repository task extends
+the `development` template and sources `.env.dev`, which loads the shared
+`.env` before applying development overrides. These overrides stay in tasks
+and their children; `.env` alone is loaded into the ordinary terminal. Keep
+the development `RINTO_TOKEN` in `.env.dev`. The explicit connection and topic
+variables cleared by `pi:dev` and `rinto-pmo:dev` still take precedence.
 
 ## What it can do
 

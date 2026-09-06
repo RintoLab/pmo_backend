@@ -24,6 +24,7 @@ erl_crash.dump
 
 *.secret.exs
 .env
+.env.dev
 /config/cli.json
 docs/
 pmo_attachments/

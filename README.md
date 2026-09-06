@@ -10,6 +10,17 @@ The development CLI configuration and source skills are described in
 [`cli/README.md`](cli/README.md#local-development). The ordinary terminal keeps
 using the installed production CLI. Run `mise run check` for the backend checks.
 
+Mise loads `.env` into the project terminal for shared values. Copy
+`.env.dev.example` to `.env.dev` for development overrides: every repository
+task extends the `development` task template, which sources `.env.dev` with
+Bash. That file sources `.env` first, then applies its overrides only to the
+task and its children. Keep both files compatible with Bash assignments and
+quote values containing spaces or shell metacharacters. Keep the development
+`RINTO_TOKEN` in `.env.dev`, outside the shared `.env`, so it cannot override
+the production CLI's configured token. Both local files are ignored by Git.
+Task-specific settings take precedence, including the connection and topic
+variables cleared by `pi:dev` and `rinto-pmo:dev`.
+
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
 The REST API contract is maintained in [`openapi.yaml`](openapi.yaml).

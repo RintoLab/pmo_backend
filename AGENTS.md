@@ -47,9 +47,16 @@ This is a web application written using the Phoenix web framework.
   `RINTO_CONFIG="$PWD/config/cli.json" cli/target/debug/rinto-pmo config init --api http://localhost:4000/api/v1`.
   Supply the development server's token when prompted. For manual development CLI
   calls, prefix the local binary with the same `RINTO_CONFIG` variable.
-- Run `mise run check` to execute the required `mix check` alias with `.env` loaded
-  only for that task. Other direct Mix commands that need database credentials must
-  likewise receive their environment explicitly.
+- Every repository task must extend mise's `development` task template. It sources
+  `.env.dev` with Bash; that file first sources `.env`, then sets development
+  overrides. Copy `.env.dev.example` to `.env.dev` when setting up a checkout.
+  `.env` contains shared values and is loaded into the project terminal; development
+  overrides, especially `RINTO_TOKEN`, belong in `.env.dev`. Keep both files
+  compatible with Bash assignments. Task-specific settings and cleared variables
+  take precedence over the template's environment.
+- Run `mise run check` to execute the required `mix check` alias with `.env.dev`
+  loaded for that task. Other direct Mix commands that need development overrides
+  must likewise receive their environment explicitly.
 
 ### Phoenix v1.8 guidelines
 
