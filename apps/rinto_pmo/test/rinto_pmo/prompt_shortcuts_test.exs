@@ -86,6 +86,44 @@ defmodule RintoPMO.PromptShortcutsTest do
     end
   end
 
+  # Two presets are offered against annotations, and the split between them is
+  # the thing worth pinning: one triages and never touches the document, the
+  # other proposes -- but only for the notes it is sure about.
+  describe "the annotation presets" do
+    test "one triages and one proposes" do
+      outcomes = Presets.seed()
+
+      assert {:created, triage} = outcome_for(outcomes, "梳理批注")
+      assert triage.resource_type == "annotation"
+      refute triage.prompt =~ "rinto-pmo doc propose"
+
+      assert {:created, act} = outcome_for(outcomes, "按批注提案")
+      assert act.resource_type == "annotation"
+      assert act.prompt =~ "rinto-pmo doc propose"
+      assert act.prompt == act.default_prompt
+    end
+
+    test "the proposing one keeps the notes it is unsure about out of the document" do
+      # The whole judgement the preset exists to carry: a note that names a
+      # problem without naming a fix gets a question, not a guess proposed
+      # against it. Losing that half leaves it rewriting whatever it was
+      # handed, and a wrong proposal costs more to unpick than a missing one.
+      {:created, act} = outcome_for(Presets.seed(), "按批注提案")
+
+      assert act.prompt =~ "存疑"
+      assert act.prompt =~ "一条都不清楚就一条都不提"
+
+      # Confirming a note is the person's act, and the preset has to say so:
+      # nothing in the CLI would stop it, because there is no verb for it.
+      assert act.prompt =~ "不要确认批注"
+
+      # Read first, and read the working copy -- a proposal computed against
+      # the published body silently drops this topic's own standing work.
+      assert act.prompt =~ "--with-block-ids --working"
+      assert act.prompt =~ "--base-revision-id"
+    end
+  end
+
   # The two presets offered against proposals. Where each is offered is decided
   # entirely by `resource_type`, so that is what these pin -- along with the
   # thing the conflict one exists to produce, which is a proposal of its own.

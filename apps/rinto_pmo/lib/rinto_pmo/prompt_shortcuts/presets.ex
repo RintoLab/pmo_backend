@@ -36,7 +36,7 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
   ## What is here, and what is not yet
 
-  Two presets write. "拆成任务" creates a document, which `rinto-pmo doc create`
+  Three presets write. "拆成任务" creates a document, which `rinto-pmo doc create`
   has always been able to do, and its prompt spells the command out because
   the shape of what it files is the whole point of the preset. "提案冲突处理" ends in a
   proposal of its own, and names `rinto-pmo doc propose` because the shape it
@@ -54,6 +54,13 @@ defmodule RintoPMO.PromptShortcuts.Presets do
   `rinto-pmo doc annotation-reply` is still there and is still how it happens.
   What went away is the click, not the capability -- which is the general
   shape: reserve a preset for the prompt somebody would not write from scratch.
+
+  "按批注提案" is the same topic and passes that test where the reply one
+  failed. "照这几条批注改一下" is an ordinary sentence; what is not is the half
+  page deciding which of them may be acted on at all -- a note that names a
+  problem without naming a fix, or that is really a question waiting on
+  somebody, gets a guess proposed against it otherwise, and a wrong proposal
+  costs more to unpick than a missing one.
 
   Every write here has the command it needs. That was the constraint the order
   of this file was built around, and it is still met.
@@ -301,6 +308,95 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
       **你现在只做分诊，不做处理。** 不要替我写回复正文，不要提议改文档 ——
       这两件事都要单独说了才做。
+      """
+    },
+    %{
+      key: "rxt67rwqqi4d34ls",
+      resource_type: "annotation",
+      label: "按批注提案",
+      icon: "file-pen",
+      prompt: """
+      我引用的是文档上的批注，同一条消息里还有它们所在的文档。把这些批注变成提案
+      —— **但只在你确定该怎么改的时候。**
+
+      ## 先逐条判断：清楚，还是存疑
+
+      每条批注带着 `block:`（写这条批注时那一段的样子）、`selected:`（它指着的那
+      句话）、批注正文，以及底下已有的回复。
+
+      一条批注**清楚**，是指照它改只有一种做法，而且改出来的东西不取决于任何还没
+      人拿的主意。这种直接提。
+
+      下面任何一条成立就是**存疑**，先别提：
+
+      - 它说了这里不对，但没说该成什么样，而合理的改法不止一种，几种改法做出来的
+        东西还不一样
+      - 它要的改动会牵动这一段之外：文档别处还在按旧的说，或者它改掉的是别处依赖
+        的决定
+      - 它和另一条批注要的方向相反
+      - 它其实是个问句，在等人拿主意 ——「这里要不要保留 X」不是一条修改要求
+      - `block:` 的锚文本和文档现在的正文对不上：这一段后来被人改过，批注指的问题
+        可能已经不在了
+      - 它底下的回复得出的结论和批注本身要的不一样
+
+      **看不懂一条批注在说什么，就是存疑。** 顺着字面猜一个改法提上去，比不提更糟。
+
+      同一件事有好几种写法但结果一样 —— 那不叫存疑，挑一种写就是了。
+
+      ## 清楚的那些：提上去
+
+      先读回文档，一次拿到真的 block id 和 `base_revision_id`：
+
+          rinto-pmo doc show <document-id> --with-block-ids --working
+
+      `--working` 不能省。`doc show` 给的是已发布的正文，不含你自己挂着的提案，
+      拿它去改等于把上一轮的改动当成没提过，而且不会报错。提示词里的 `[block:b3]`
+      是给人读的标签，**不是 id**。
+
+      **默认传整篇：**
+
+          rinto-pmo doc propose <document-id> \\
+            --body revised.md \\
+            --base-revision-id <上面读到的值> \\
+            --change-summary "按 N 条批注修改"
+
+      服务端自己算差异，把这一轮拆成一条条独立的提案 —— 改一段是一条，加一段是一
+      条，删一段是一条。这正是这里要的：我可以只接受其中两条。而且加一节、删一节、
+      拆一节、调顺序，只有整篇输入表达得出来。
+
+      改动确实只落在一段、而且你已经知道是哪一段，才用：
+
+          rinto-pmo doc propose <document-id> \\
+            --block <block-id> \\
+            --body one-section.md \\
+            --base-revision-id <上面读到的值>
+
+      响应里的 `superseded` 非空，说明本轮撤下了你上一轮的某些提案 —— 看一眼有没有
+      漏掉仍然想保留的改动。
+
+      ## 存疑的那些：问，不要提
+
+      把问题问出来，并说清楚「答案不同会改出什么不同的东西」。答案不影响改法的问题
+      不要问。
+
+      **同一段里既有清楚的批注也有存疑的，那一段整个先别动**，连同清楚的那条一起
+      问。半段先改出去，等答案回来又要重提一次，我看到的是两条互相打架的提案。
+
+      **一条都不清楚就一条都不提。** 只问，不要为了有产出硬改一版。
+
+      ## 规则
+
+      - **不要确认批注。** 给批注盖章是我的动作。你能做的是提一条把它解决掉的改动，
+        然后说这条提案对应那条批注。
+      - 只做我引用的这几条。文档上还挂着别的批注不是这次的事，不要顺手一起做掉。
+      - 一条批注指着哪一段就改哪一段，不要借机把整篇重写一遍。
+      - **不要 adopt。** 提案是候选，选哪条是我的动作。
+      - 用文档本身的语言写正文。
+
+      ## 回话
+
+      说清楚提了哪几条提案（id）、每条对应哪条批注；以及哪几条批注没提，各自卡在
+      什么问题上。不要把正文贴回聊天里 —— 它们已经是提案了。
       """
     },
     %{
