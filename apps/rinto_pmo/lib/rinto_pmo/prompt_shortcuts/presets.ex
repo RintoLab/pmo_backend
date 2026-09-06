@@ -36,8 +36,13 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
   ## What is here, and what is not yet
 
-  One preset writes: "拆成任务" creates a document, which `rinto-pmo doc create`
-  has always been able to do. The rest answer in prose.
+  Two presets write. "拆成任务" creates a document, which `rinto-pmo doc create`
+  has always been able to do, and its prompt spells the command out because
+  the shape of what it files is the whole point of the preset. "提案冲突处理" ends in a
+  proposal of its own, and names `rinto-pmo doc propose` because the shape it
+  has to produce -- one more candidate, on the block the cited ones are arguing
+  over -- is the preset. It writes only after the person has settled which way
+  to go, which is the second half of the same prompt. The rest answer in prose.
 
   ## A shortcut is a starting point, not a workflow
 
@@ -51,7 +56,7 @@ defmodule RintoPMO.PromptShortcuts.Presets do
   shape: reserve a preset for the prompt somebody would not write from scratch.
 
   Every write here has the command it needs. That was the constraint the order
-  of this file was built around, and it is now met.
+  of this file was built around, and it is still met.
 
   ## Removing one is two acts
 
@@ -314,6 +319,124 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
       每个问题都要说清楚「答案不同会导致做出什么不同的东西」。
       答案不影响做法的问题不要问。
+      """
+    },
+    %{
+      key: "2fj3dqkwanw23i3g",
+      resource_type: "proposal",
+      label: "提案冲突处理",
+      icon: "sparkles",
+      prompt: """
+      我引用的这几条提案在争同一段正文，同一条消息里还有它们所属的文档。
+
+      这件事分两步：**先跟我把冲突讲清楚，等我确认一个方向，你再提一条新提案。**
+      不要跳过第一步。
+
+      ## 第一步：这个冲突该怎么解
+
+      读的时候两件事一起看：
+
+      - 每条提案带三段文字。`<old>` 是它写作时那一段的样子，`<new>` 是它要改成
+        的样子，`<current>` 只在正文后来又被人改过时才出现，那是这一段现在的
+        样子。分歧在 `<new>` 之间，但一条基于旧正文写的提案，可能已经在解决一个
+        不存在的问题了。
+      - **整篇文档也在，用它。** 一段改写好不好，取决于它跟文档其余部分说不说得
+        通：术语对不对得上、它改掉的决定别处是不是还在按旧的说、和前后两段还接不
+        接得上。只盯着这一段比不出对错。
+
+      然后回答这几件事：
+
+      - **它们实际在争什么。** 不是把每条提案改了什么列一遍，是指出分歧收敛到的
+        那一个点 —— 通常一句话讲得完：是要更严还是更松、是保留那个承诺还是删掉、
+        是写给谁看的。
+      - **侧重点是什么。** 这个选择真正取决于什么：这一段谁会读、下游哪个决定
+        依赖它、选错了谁会受影响。把判断标准摆出来 —— 标准明说了，我才有办法不
+        同意你。
+      - **每条提案在这个标准下的得失。** 哪条抓住了要点、哪条顺手改了不该改的、
+        哪条是从已经过时的正文改起的。
+      - **你的建议。** 给一个我能直接答「就这个」的具体方向，不要摆三个并列选项
+        让我挑。
+      - **还需要我拿主意才能往下走的问题**，如果有。
+
+      说完停下。**这一步不提案、不动文档。**
+
+      ## 第二步：我确认之后，提一条新的
+
+      我说了「就按这个」或者告诉你调整哪里之后，你再动手 —— 提的是**独立的一条新
+      提案**，不是去改某条现有的。四条冲突提案进去，出来的是第五条，我在评审界面
+      从这五条里选一条 adopt。
+
+      取正文和真的 block id：
+
+          rinto-pmo doc show <document-id> --with-block-ids --working
+
+      两样东西都在这一次输出里：每一段真实的 block id，以及 `base_revision_id: ...`
+      那一行。提示词里的 `[block:b1]` 是给人读的标签，**不是 id**，编一个出来不会
+      报错，只会把提案挂到别处去。`base_revision_id` 原样传给下一步，不要另外查一
+      个"最新的"顶上 —— 服务端靠它判断你这一版是从哪份正文改起的。
+
+      把融合后的那一段写进文件，只写这一段，不是整篇：
+
+          rinto-pmo doc propose <document-id> \\
+            --block <block-id> \\
+            --body merged.md \\
+            --base-revision-id <上面读到的值> \\
+            --change-summary "按讨论融合 N 条提案"
+
+      **一个 block 只提一条。** 你这个话题在同一个 block 上只挂得住一条 live
+      提案，再提一次是替换掉自己上一条，不是多一个候选。
+
+      写正文时：
+
+      - **综合的是主张，不是措辞。** 两条各对一半就各取一半；互斥就按确认的方向
+        选一条。不要写一句把两边都装进去、于是什么都没说的话。
+      - 不要为了显得公平而给每条都留一点痕迹。融合版要能独立读通，不是四条的拼贴。
+      - 只动这一段。别的 block、文档标题、别人的提案都不是这次的事。
+      - **不要 adopt，也不要试图撤下别人的提案。** 选哪一条是我的动作。
+      - 用文档本身的语言写。
+
+      提完说清楚新提案的 id、它落在哪一段，以及相对我确认的方向你在哪里做了取舍。
+      不要把正文贴回聊天里 —— 它已经是一条提案了。
+
+      ## 两种例外
+
+      **它们其实不冲突** —— 落在不同 block，或者可以同时成立 —— 第一步就说清楚，
+      不要为了交差硬融一版出来。
+
+      **确实分属几个 block 各有各的争用** —— 按 block 分组，第一步一次把几组都讲
+      完，第二步每组各提一条。不同 block 之间没有争用，不要揉进同一段文字里。
+      """
+    },
+    %{
+      key: "l6ju74xlltnyekgb",
+      resource_type: "proposal",
+      label: "提案评审",
+      icon: "clipboard-check",
+      prompt: """
+      逐条读我引用的提案，给出评审意见，帮我决定每一条要不要采纳。
+
+      每条提案带三段文字：`<old>` 是它写作时那一段的样子，`<new>` 是它要改成的
+      样子，`<current>` 只在正文后来又被人改过时才出现，那是这一段现在的样子。
+
+      对每一条说清楚：
+
+      - **它实际改变了什么。** 对着 `<old>` 和 `<new>` 说差别，不是把 `<new>`
+        复述一遍。改了一个决定、加了一个约束、删掉一段承诺，都要点名。
+      - **值不值得采纳，为什么。** 给结论，不要列出"可以考虑的几个方面"。
+      - **有没有我不看就发现不了的问题。** 重点是这三类：出现了 `<current>`，
+        说明这一段已经被人改过，这条提案是不是在把那次修改覆盖掉；它改掉的东西
+        文档别处还在按旧的说；它顺手改了标题、语气或结构，而那不是它声称要做的事。
+
+      有几条落在同一处互相冲突的，放在一起说，并给一个倾向和理由 ——
+      「都有道理，你定」不是评审意见。
+
+      按「需要先决定的」排在前面。
+
+      不要评论措辞、语气和格式。没有问题的提案就说没有问题，不要为了显得认真而
+      给每条都挑一点毛病。
+
+      **你现在只做评审。** 采纳、撤案、改文档都是单独的动作，要做了才做 ——
+      想让我看一版融合的，那是另一件事。
       """
     }
   ]

@@ -15,6 +15,13 @@ defmodule RintoPMO.PromptShortcutsTest do
     )
   end
 
+  defp outcome_for(outcomes, label) do
+    Enum.find(outcomes, fn
+      {_tag, %PromptShortcut{label: ^label}} -> true
+      _other -> false
+    end)
+  end
+
   describe "create_shortcut/1" do
     test "generates a key and leaves no default to reset to" do
       assert {:ok, shortcut} = PromptShortcuts.create_shortcut(attrs())
@@ -76,6 +83,90 @@ defmodule RintoPMO.PromptShortcutsTest do
 
       assert reset.prompt == preset.default_prompt
       assert reset.label == "我的名字"
+    end
+  end
+
+  # The two presets offered against proposals. Where each is offered is decided
+  # entirely by `resource_type`, so that is what these pin -- along with the
+  # thing the conflict one exists to produce, which is a proposal of its own.
+  describe "the proposal presets" do
+    test "both ship against proposals" do
+      outcomes = Presets.seed()
+
+      assert {:created, conflict} = outcome_for(outcomes, "提案冲突处理")
+      assert conflict.resource_type == "proposal"
+      assert conflict.icon == "sparkles"
+      assert conflict.prompt == conflict.default_prompt
+
+      assert {:created, review} = outcome_for(outcomes, "提案评审")
+      assert review.resource_type == "proposal"
+      assert review.icon == "clipboard-check"
+      assert review.prompt == review.default_prompt
+    end
+
+    test "the conflict one talks first and proposes only after that" do
+      # The preset is two halves and the order is the whole design: the model
+      # says what the disagreement turns on and stops, and only once a person
+      # has settled it does an extra candidate get put up. A prompt that lost
+      # the pause would propose into an argument nobody had finished having.
+      {:created, conflict} = outcome_for(Presets.seed(), "提案冲突处理")
+
+      assert conflict.prompt =~ "这一步不提案"
+
+      # And the second half, which is where the command lives: N conflicting
+      # proposals in, one more out, on the block they are arguing over. Losing
+      # the command or the block scope would leave it answering in prose.
+
+      assert conflict.prompt =~ "rinto-pmo doc propose"
+      assert conflict.prompt =~ "--block"
+      assert conflict.prompt =~ "--base-revision-id"
+
+      # Real ids come from a read; the `[block:b1]` in the expansion is a label.
+      assert conflict.prompt =~ "--with-block-ids"
+
+      # The command is four lines joined by shell continuations. A single `\`
+      # in the source would be a *heredoc* continuation instead, folding the
+      # example onto one line and eating the backslashes on the way.
+      assert conflict.prompt =~ "<document-id> \\\n"
+    end
+
+    test "the review one writes nothing and says so" do
+      {:created, review} = outcome_for(Presets.seed(), "提案评审")
+
+      refute review.prompt =~ "rinto-pmo doc propose"
+      assert review.prompt =~ "只做评审"
+    end
+
+    test "an installation that predates them gets the rows, and its others are left alone" do
+      # What an older deploy left behind: every preset except these two.
+      outcomes = Presets.seed()
+      {:created, conflict} = outcome_for(outcomes, "提案冲突处理")
+      {:created, review} = outcome_for(outcomes, "提案评审")
+      {:ok, _gone} = PromptShortcuts.delete_shortcut(conflict)
+      {:ok, _gone} = PromptShortcuts.delete_shortcut(review)
+
+      again = Presets.seed()
+
+      assert {:created, back} = outcome_for(again, "提案冲突处理")
+      assert back.prompt == conflict.prompt
+      assert {:created, _review} = outcome_for(again, "提案评审")
+
+      # The upgrade writes those two rows. Anything else moving would mean a
+      # deploy bumping `updated_at` on rows it had nothing to say about.
+      assert Enum.count(again, &match?({:created, _shortcut}, &1)) == 2
+      assert Enum.count(again, &match?({:unchanged, _shortcut}, &1)) == length(Presets.all()) - 2
+    end
+
+    test "a reworded one keeps its wording, and reset hands back what shipped" do
+      {:created, shipped} = outcome_for(Presets.seed(), "提案冲突处理")
+
+      {:ok, _edited} = PromptShortcuts.update_shortcut(shipped, %{"prompt" => "我自己写的融合要求"})
+
+      assert {:default_only, kept} = outcome_for(Presets.seed(), "提案冲突处理")
+      assert kept.prompt == "我自己写的融合要求"
+
+      assert {:ok, reset} = PromptShortcuts.reset_shortcut(kept)
+      assert reset.prompt == shipped.prompt
     end
   end
 

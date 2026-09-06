@@ -423,6 +423,65 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
       assert message =~ ~s(status="rejected")
     end
 
+    test "expands the proposals it was handed and no others on the same document" do
+      # What "AI 融合" compares is the set the composer carried. The document
+      # behind it holds more than that -- a rejected proposal, and a live one
+      # from a topic nobody cited -- and neither joins the comparison by being
+      # nearby. Nothing on this path reads a document's other proposals, and
+      # this is what says so.
+      document = document_with_blocks(["Original"])
+      [block] = document.latest_revision.blocks
+
+      # Each from its own topic: one topic holds one live proposal per block,
+      # so competing takes on one paragraph are by definition several topics'.
+      cited =
+        for content <- ["First take", "Second take"] do
+          insert(:block_proposal,
+            document: document,
+            base_revision: document.latest_revision,
+            block_id: block.block_id,
+            content: content,
+            status: :live
+          )
+        end
+
+      _rejected =
+        insert(:block_proposal,
+          document: document,
+          base_revision: document.latest_revision,
+          block_id: block.block_id,
+          content: "Dropped earlier",
+          status: :rejected
+        )
+
+      _uncited =
+        insert(:block_proposal,
+          document: document,
+          base_revision: document.latest_revision,
+          block_id: block.block_id,
+          content: "A topic nobody cited",
+          status: :live
+        )
+
+      by_id = Map.new(cited, &{&1.id, &1})
+      topics = Map.new(cited, &{&1.conversation_id, &1.conversation})
+
+      stub(DocumentsMock, :get_document!, fn _id -> document end)
+      expect(DocumentsMock, :get_proposal!, 2, fn ^document, id -> Map.fetch!(by_id, id) end)
+      stub(DocumentsMock, :get_revision!, fn _document, _id -> document.latest_revision end)
+      stub(ConversationsMock, :get_conversation!, fn id -> Map.fetch!(topics, id) end)
+
+      refs =
+        Enum.map(cited, &%{"type" => "proposal", "id" => &1.id, "document_id" => document.id})
+
+      assert {:ok, %{message: message}} = PromptBuilder.build("哪个更好，能不能合", refs)
+
+      assert message =~ "First take"
+      assert message =~ "Second take"
+      refute message =~ "Dropped earlier"
+      refute message =~ "A topic nobody cited"
+    end
+
     test "refuses a proposal ref with no document to scope it" do
       assert {:error, :invalid_ref, _details} =
                PromptBuilder.build("hi", [%{"type" => "proposal", "id" => UUIDv7.generate()}])
