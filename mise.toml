@@ -3,13 +3,17 @@ erlang = "29.0.4"
 elixir = "1.20.2-otp-29"
 rust = "1.97.1"
 
+[env]
+_.file = { path = ".env", redact = true }
+
 [tasks."cli:build"]
 description = "Compile the local rinto-pmo CLI"
 dir = "{{config_root}}"
 run = "cargo build --locked --manifest-path cli/Cargo.toml --target-dir cli/target"
 
-# These variables belong to the server and its children, including Pi. Keeping
-# them out of [env] lets the ordinary terminal keep using the installed CLI.
+# These variables belong to the server and its children, including Pi. The
+# repository-wide database environment comes from [env] above; this task adds
+# only the development CLI, configuration and skill locations.
 [tasks.dev]
 description = "Start Phoenix with the development CLI, configuration and skills"
 # Built rather than assumed: _.path below points at the build directory, so a
@@ -21,7 +25,6 @@ dir = "{{config_root}}"
 run = "mix phx.server"
 
 [tasks.dev.env]
-_.file = { path = ".env", redact = true }
 _.path = ["{{config_root}}/cli/target/debug"]
 RINTO_CONFIG = "{{config_root}}/config/cli.json"
 RINTO_PI_SKILLS_DIR = "{{config_root}}/skills/server"
@@ -70,6 +73,3 @@ RINTO_CONVERSATION_ID = false
 description = "Run mix check with the local database configuration"
 dir = "{{config_root}}"
 run = "mix check"
-
-[tasks.check.env]
-_.file = { path = ".env", redact = true }
