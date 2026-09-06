@@ -26,7 +26,11 @@ defmodule RintoPMOWeb.V1.CommitControllerTest do
                not Map.has_key?(attrs, "document_id")
              end)
 
-      {:ok, revisions}
+      # Each entry names its own proposals, for the same reason the
+      # single-document call does: nothing about a publish is inferred.
+      assert Enum.all?(entries, fn {_document, attrs} -> attrs["proposal_ids"] != [] end)
+
+      {:ok, Enum.map(revisions, &published/1)}
     end)
 
     conn =
@@ -35,11 +39,13 @@ defmodule RintoPMOWeb.V1.CommitControllerTest do
           %{
             "document_id" => first.id,
             "actor_id" => actor.id,
+            "proposal_ids" => [UUIDv7.generate()],
             "source_conversation_id" => conversation.id
           },
           %{
             "document_id" => second.id,
             "actor_id" => actor.id,
+            "proposal_ids" => [UUIDv7.generate()],
             "source_conversation_id" => conversation.id
           }
         ]
@@ -64,7 +70,7 @@ defmodule RintoPMOWeb.V1.CommitControllerTest do
 
     expect(DocumentsMock, :commit_many, fn entries ->
       assert Enum.all?(entries, fn {_document, attrs} -> attrs["actor_id"] == actor_id end)
-      {:ok, [revision]}
+      {:ok, [published(revision)]}
     end)
 
     conn =
@@ -138,6 +144,18 @@ defmodule RintoPMOWeb.V1.CommitControllerTest do
                  "commits" => [%{"document_id" => UUIDv7.generate()}]
                })
              end)
+  end
+
+  defp published(revision) do
+    %{
+      result: :published,
+      revision: %{revision | blocks: []},
+      current_revision_id: revision.id,
+      document_id: revision.document_id,
+      accepted: [],
+      superseded: [],
+      already_applied: []
+    }
   end
 
   defp expect_documents(documents) do

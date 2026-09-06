@@ -39,9 +39,9 @@ defmodule RintoPMOWeb.V1.WorkingSetJSON do
   # The other proposal's text is deliberately absent -- reconciling versions is
   # `GET /documents/{id}/contentions`, and a review screen showing two bodies
   # side by side is a different screen.
-  defp standing(%{proposal: proposal, contended: contended}) do
-    proposal
-    |> BlockProposalJSON.data()
+  defp standing(%{proposal: detail, contended: contended}) do
+    detail
+    |> BlockProposalJSON.detail()
     |> Map.put(:contended, contended)
   end
 end

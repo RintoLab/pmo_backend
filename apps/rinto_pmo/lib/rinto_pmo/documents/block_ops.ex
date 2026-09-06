@@ -49,13 +49,35 @@ defmodule RintoPMO.Documents.BlockOps do
   defp dispatch(_entries, operation, _attrs),
     do: {:error, "unsupported operation: #{inspect(operation)}"}
 
+  # `block_id` is optional and usually absent: a revision written directly names
+  # only the text and where it goes. A published proposal supplies one, because
+  # the block was given its id when the insertion was proposed -- so the
+  # paragraph somebody reviewed, cited in a topic and then published is one
+  # block throughout, rather than a new one appearing at commit time.
   defp insert_after(entries, operation) do
     with {:ok, after_block_id} <- fetch(operation, :after_block_id),
          {:ok, actor_id} <- fetch(operation, :actor_id),
          {:ok, content} <- fetch(operation, :content),
+         {:ok, block_id} <- inserted_block_id(entries, operation),
          {:ok, position} <- insertion_position(entries, after_block_id) do
-      entry = %{block_id: UUIDv7.generate(), actor_id: actor_id, content: content}
+      entry = %{block_id: block_id, actor_id: actor_id, content: content}
       {:ok, List.insert_at(entries, position, entry)}
+    end
+  end
+
+  defp inserted_block_id(entries, operation) do
+    case fetch(operation, :block_id) do
+      {:error, _absent} ->
+        {:ok, UUIDv7.generate()}
+
+      {:ok, nil} ->
+        {:ok, UUIDv7.generate()}
+
+      {:ok, block_id} ->
+        case block_position(entries, block_id) do
+          {:error, _absent} -> {:ok, block_id}
+          {:ok, _taken} -> {:error, "block_id already identifies a current block"}
+        end
     end
   end
 

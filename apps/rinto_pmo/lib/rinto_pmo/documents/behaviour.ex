@@ -11,54 +11,89 @@ defmodule RintoPMO.Documents.Behaviour do
         }
 
   @type proposal_filter :: %{
+          optional(:id) => UUIDv7.t(),
           optional(:status) => BlockProposal.status(),
           optional(:block_id) => UUIDv7.t(),
           optional(:conversation_id) => UUIDv7.t()
         }
 
   @typedoc """
-  The rows written by one proposal request, its operation summary, any prior
-  rows replaced by it, and every contention the request encountered.
-
-  `proposal` and `live_proposals` remain available to internal callers during
-  the response transition; the REST representation exposes the four plural
-  fields only.
+  The rows written by one proposal request, what they add up to, any prior rows
+  they replaced, and every argument the request walked into.
   """
   @type proposed :: %{
-          proposal: BlockProposal.t(),
-          live_proposals: pos_integer(),
           proposals: [BlockProposal.t()],
           summary: %{
             changed: non_neg_integer(),
             added: non_neg_integer(),
-            removed: non_neg_integer()
+            removed: non_neg_integer(),
+            moved: non_neg_integer()
           },
           superseded: [UUIDv7.t()],
-          contended: [map()]
+          contended: [%{proposal_id: UUIDv7.t(), conflicting_proposal_ids: [UUIDv7.t()]}]
         }
 
-  @type contention :: %{block_id: UUIDv7.t(), proposals: [BlockProposal.t()]}
+  @typedoc """
+  One pair of live proposals that cannot both stand, and what they are arguing
+  about. A pair rather than a group: conflict is a relation, and nothing about
+  it is transitive.
+  """
+  @type contention :: %{
+          reason: atom(),
+          proposal_ids: [UUIDv7.t()],
+          scope: BlockProposal.scope(),
+          block_id: UUIDv7.t() | nil
+        }
+
+  @typedoc """
+  One proposal as a review screen needs it: the row, what it still means against
+  the document as it now stands, whether the choice that picked it still holds,
+  and what it is competing with.
+  """
+  @type proposal_detail :: %{
+          proposal: BlockProposal.t(),
+          state: :applicable | :already_applied | :needs_confirmation | :not_applicable,
+          reason: atom() | nil,
+          adopted: boolean(),
+          adoption_stale: boolean(),
+          conflicting_proposal_ids: [UUIDv7.t()],
+          current_revision_id: UUIDv7.t()
+        }
+
+  @typedoc """
+  A consistent read of a document's proposals: the comparison and the revision
+  it was computed against, from one snapshot.
+  """
+  @type proposal_review :: %{
+          current_revision_id: UUIDv7.t(),
+          proposals: [proposal_detail()]
+        }
+
+  @typedoc """
+  What one publish did. `revision` is `nil` when every selected proposal had
+  already been applied, which writes nothing and says so.
+  """
+  @type publication :: %{
+          result: :published | :already_applied,
+          revision: DocumentRevision.t() | nil,
+          current_revision_id: UUIDv7.t(),
+          document_id: UUIDv7.t(),
+          accepted: [UUIDv7.t()],
+          superseded: [UUIDv7.t()],
+          already_applied: [UUIDv7.t()]
+        }
 
   @typedoc """
   One of a topic's proposals, and whether anybody else is proposing into the
   same slot.
   """
-  @type standing_proposal :: %{proposal: BlockProposal.t(), contended: boolean()}
+  @type standing_proposal :: %{proposal: proposal_detail(), contended: boolean()}
 
   @typedoc """
   What one topic has standing against one document. The document carries its
   latest revision, so a review screen has a title without a second read.
   """
   @type working_set_entry :: %{document: Document.t(), proposals: [standing_proposal()]}
-
-  @typedoc """
-  One document-level argument: a scope, and the proposals competing in it.
-  """
-  @type scope_contention :: %{
-          optional(:overlaps_block_ids) => [UUIDv7.t()],
-          scope: BlockProposal.scope(),
-          proposals: [BlockProposal.t()]
-        }
 
   @typedoc """
   One block as a single topic sees it: its own proposal standing in where it
@@ -76,7 +111,8 @@ defmodule RintoPMO.Documents.Behaviour do
   @type conversation_document_view :: %{
           revision_id: UUIDv7.t(),
           blocks: [conversation_block()],
-          document_proposal: BlockProposal.t() | nil
+          title: String.t() | nil,
+          unapplicable: [map()]
         }
 
   @callback list_documents(filter()) :: [Document.t()]
@@ -99,6 +135,8 @@ defmodule RintoPMO.Documents.Behaviour do
               | {:error, atom(), map()}
 
   @callback list_proposals(Document.t(), proposal_filter()) :: [BlockProposal.t()]
+  @callback review_proposals(Document.t(), proposal_filter()) ::
+              {:ok, proposal_review()} | {:error, atom(), map()}
   @callback get_proposal!(Document.t(), UUIDv7.t()) :: BlockProposal.t()
   @callback live_conversation_proposals(UUIDv7.t()) :: [BlockProposal.t()]
   @callback conversation_working_set(UUIDv7.t()) :: [working_set_entry()]
@@ -114,35 +152,32 @@ defmodule RintoPMO.Documents.Behaviour do
               {:ok, proposed()}
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
-  @callback rebase_document_proposal(Document.t(), UUIDv7.t()) ::
-              {:ok, BlockProposal.t()}
+  @callback stage_proposal(Document.t(), UUIDv7.t(), boolean()) ::
+              {:ok, proposal_detail()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
+  @callback adopt_proposal(Document.t(), UUIDv7.t(), UUIDv7.t(), UUIDv7.t()) ::
+              {:ok, proposal_detail()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
+  @callback unadopt_proposal(Document.t(), UUIDv7.t()) ::
+              {:ok, proposal_detail()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, atom(), map()}
+  @callback reject_proposal(Document.t(), UUIDv7.t(), UUIDv7.t(), String.t() | nil) ::
+              {:ok, proposal_detail()}
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
   @callback contentions(Document.t()) :: [contention()]
-  @callback scope_contentions(Document.t()) :: [scope_contention()]
-  @callback document_proposal_for_conversation(Document.t(), UUIDv7.t()) ::
-              BlockProposal.t() | nil
   @callback blocks_for_conversation(Document.t(), UUIDv7.t()) :: [conversation_block()]
   @callback conversation_document_view(Document.t(), UUIDv7.t()) ::
               {:ok, conversation_document_view()}
-  @callback decide_block(Document.t(), UUIDv7.t(), UUIDv7.t(), UUIDv7.t()) ::
-              {:ok, BlockProposal.t()}
-              | {:error, Ecto.Changeset.t()}
-              | {:error, atom(), map()}
-  @callback decide_title(Document.t(), UUIDv7.t(), UUIDv7.t()) ::
-              {:ok, BlockProposal.t()}
-              | {:error, Ecto.Changeset.t()}
-              | {:error, atom(), map()}
-  @callback decide_document(Document.t(), UUIDv7.t(), UUIDv7.t()) ::
-              {:ok, BlockProposal.t()}
-              | {:error, Ecto.Changeset.t()}
-              | {:error, atom(), map()}
   @callback commit_proposals(Document.t(), map()) ::
-              {:ok, DocumentRevision.t()}
+              {:ok, publication()}
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
   @callback commit_many([{Document.t(), map()}]) ::
-              {:ok, [DocumentRevision.t()]}
+              {:ok, [publication()]}
               | {:error, Ecto.Changeset.t()}
               | {:error, atom(), map()}
   @callback apply_document(Document.t()) ::

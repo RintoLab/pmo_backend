@@ -44,13 +44,13 @@ defmodule RintoPMO.Documents do
 
   alias Ecto.Changeset
   alias RintoPMO.Documents.BlockDiff
-  alias RintoPMO.Documents.BlockMerge
   alias RintoPMO.Documents.BlockOps
   alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Documents.Markdown
+  alias RintoPMO.Documents.ProposalPlan
   alias RintoPMO.Documents.Revisions
   alias RintoPMO.Links
   alias RintoPMO.References.Guard
@@ -332,6 +332,47 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
+  The read a review screen is made of: the proposals, and what each of them
+  still means against the document as it now stands.
+
+  One snapshot, under a shared lock, so that the comparison and the revision id
+  it was computed against cannot disagree. A client handed last week's diff
+  beside this morning's revision id would publish against the wrong thing and
+  have no way of knowing.
+
+  Nothing is written here. Reading a proposal does not adopt it, does not
+  refresh what an earlier choice was made against, and does not tidy anything
+  up -- a read that quietly confirmed a stale decision would be the one way this
+  could overwrite somebody's words without anybody choosing to.
+  """
+  @impl true
+  def review_proposals(%Document{} = document, filter) when is_map(filter) do
+    Repo.transact(fn repo ->
+      locked_document =
+        Document
+        |> where([candidate], candidate.id == ^document.id)
+        |> lock("FOR SHARE")
+        |> repo.one!()
+
+      revision = latest_revision!(repo, locked_document, preload_blocks?: true)
+
+      proposals =
+        locked_document
+        |> Ecto.assoc(:proposals)
+        |> filter_proposals(filter)
+        |> order_by([proposal], desc: proposal.id)
+        |> repo.all()
+
+      {:ok,
+       %{
+         current_revision_id: revision.id,
+         proposals: describe_proposals(repo, locked_document, proposals, revision)
+       }}
+    end)
+    |> unwrap_error()
+  end
+
+  @doc """
   Lists a topic's live proposals, across every document it has touched.
 
   Not scoped to a document, unlike `list_proposals/2`, because the caller is a
@@ -358,8 +399,8 @@ defmodule RintoPMO.Documents do
 
     * the document each group is against, with its current title -- an id is not
       something to review against
-    * whether each proposal is **contended**: somebody else's live proposal is
-      standing in the same slot
+    * whether each proposal is **contended**: somebody else's live proposal
+      claims the same thing this one does
 
   `contended` is computed here rather than left to a caller because the
   alternative is a request to `/contentions` per document, which is a query per
@@ -370,7 +411,7 @@ defmodule RintoPMO.Documents do
   ascending order, for the same reason.
 
   Only what is still live. A rejected proposal is a record of why something was
-  not chosen -- valuable, and not part of what is waiting to be committed.
+  not chosen -- valuable, and not part of what is waiting to be published.
   """
   @impl true
   def conversation_working_set(conversation_id) when is_binary(conversation_id) do
@@ -378,89 +419,69 @@ defmodule RintoPMO.Documents do
 
     case Enum.map(mine, & &1.document_id) |> Enum.uniq() do
       [] -> []
-      document_ids -> group_working_set(mine, document_ids, conversation_id)
+      document_ids -> group_working_set(mine, document_ids)
     end
   end
 
-  defp group_working_set(mine, document_ids, conversation_id) do
+  defp group_working_set(mine, document_ids) do
     documents = Map.new(working_set_documents(document_ids), &{&1.id, &1})
-    contended = contended_slots(document_ids, conversation_id)
+    contended = contended_proposals(document_ids)
 
     mine
     |> Enum.group_by(& &1.document_id)
     |> Enum.map(fn {document_id, proposals} ->
+      document = Map.fetch!(documents, document_id)
+      details = describe_proposals(Repo, document, proposals, document.latest_revision)
+
       %{
-        document: Map.fetch!(documents, document_id),
+        document: document,
         proposals:
-          Enum.map(proposals, fn proposal ->
-            %{proposal: proposal, contended: MapSet.member?(contended, slot_key(proposal))}
+          Enum.map(details, fn detail ->
+            %{proposal: detail, contended: MapSet.member?(contended, detail.proposal.id)}
           end)
       }
     end)
     # The order the topic reached each document, which is the order somebody
     # reviewing the discussion read it happen.
-    |> Enum.sort_by(fn %{proposals: [%{proposal: first} | _rest]} -> first.id end)
+    |> Enum.sort_by(fn %{proposals: [%{proposal: first} | _rest]} -> first.proposal.id end)
   end
 
   defp working_set_documents(document_ids) do
-    Document
-    |> from(as: :document)
-    |> where([document], document.id in ^document_ids)
-    |> join(:inner, [document: document], revision in subquery(Revisions.latest()),
-      on: revision.document_id == document.id
-    )
-    |> select([document, revision], {document, revision})
-    |> Repo.all()
-    |> Enum.map(fn {document, revision} -> %{document | latest_revision: revision} end)
-  end
-
-  # Every slot in these documents that somebody *else* is also proposing into.
-  # One query for the whole set rather than one per document: the answer is a
-  # membership test, and the set is small.
-  defp contended_slots(document_ids, conversation_id) do
-    proposals =
-      BlockProposal
-      |> where([proposal], proposal.document_id in ^document_ids)
-      |> where([proposal], proposal.status == :live)
+    pairs =
+      Document
+      |> from(as: :document)
+      |> where([document], document.id in ^document_ids)
+      |> join(:inner, [document: document], revision in subquery(Revisions.latest()),
+        on: revision.document_id == document.id
+      )
+      |> select([document, revision], {document, revision})
       |> Repo.all()
 
-    {mine, others} = Enum.split_with(proposals, &(&1.conversation_id == conversation_id))
-    direct = MapSet.new(others, &slot_key/1)
+    revisions =
+      pairs
+      |> Enum.map(&elem(&1, 1))
+      |> Repo.preload(:blocks)
+      |> Map.new(&{&1.id, &1})
 
-    legacy_block_slots =
-      for proposal <- others,
-          proposal.scope == :document,
-          block_id <- updated_blocks(proposal),
-          into: MapSet.new() do
-        {proposal.document_id, :block, block_id}
-      end
-
-    other_block_ids =
-      others
-      |> Enum.filter(&(&1.scope == :block))
-      |> Enum.group_by(& &1.document_id, & &1.block_id)
-
-    overlapped_document_slots =
-      for proposal <- mine,
-          proposal.scope == :document,
-          not MapSet.disjoint?(
-            updated_blocks(proposal),
-            MapSet.new(Map.get(other_block_ids, proposal.document_id, []))
-          ),
-          into: MapSet.new() do
-        slot_key(proposal)
-      end
-
-    direct
-    |> MapSet.union(legacy_block_slots)
-    |> MapSet.union(overlapped_document_slots)
+    Enum.map(pairs, fn {document, revision} ->
+      %{document | latest_revision: Map.fetch!(revisions, revision.id)}
+    end)
   end
 
-  # A block proposal contends over its block; a document or title proposal
-  # contends over the whole document, where `block_id` is null and the scope is
-  # what tells two of them apart.
-  defp slot_key(%BlockProposal{} = proposal),
-    do: {proposal.document_id, proposal.scope, proposal.block_id}
+  # Every proposal in these documents that something else is competing with. One
+  # query for the whole set rather than one per document: the answer is a
+  # membership test, and the set is small.
+  defp contended_proposals(document_ids) do
+    BlockProposal
+    |> where([proposal], proposal.document_id in ^document_ids)
+    |> where([proposal], proposal.status == :live)
+    |> Repo.all()
+    |> Enum.group_by(& &1.document_id)
+    |> Enum.flat_map(fn {_document_id, proposals} ->
+      for {id, [_first | _rest]} <- conflict_map(proposals), do: id
+    end)
+    |> MapSet.new()
+  end
 
   @doc """
   Fetches one proposal scoped to its document.
@@ -474,574 +495,418 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
-  Records what a topic wants a block to say.
+  Records what a topic wants one block to say.
 
-  A topic already holding a live proposal on the block has it rewritten in
-  place rather than gaining a second one: five rounds of "tighten this" are one
-  intent iterating, and the contention count would be meaningless otherwise.
+  `base_revision_id` is the revision whose text the topic actually read. It is
+  not a version to be bumped and not a rebase: it says what this proposal is a
+  change *from*, so that a later reader can tell an untouched paragraph from a
+  contested one. Naming the latest revision without having read it -- looking one
+  up at request time to fill the field in -- is the one thing that would make
+  every comparison downstream lie.
 
-  Answers with the number of live proposals now standing on that block, so the
-  caller learns it has walked into a contention without having to ask again --
-  and, more usefully, so the topic can be told before it builds further on the
-  assumption that its version will win.
+  A topic re-proposing exactly what it already has standing keeps that proposal,
+  id and all. Anything else is a different modification: a new row, and the one
+  it replaces becomes `superseded`. Ids are never rewritten, because a message
+  citing one has to keep saying what it said.
   """
   @impl true
   def propose_block(%Document{} = document, attrs) do
     with :ok <- Guard.check(attr(attrs, :content, nil)) do
-      do_propose_block(document, attrs)
+      propose(document, attrs, &block_intent/3)
     end
-  end
-
-  defp do_propose_block(%Document{} = document, attrs) do
-    Repo.transact(fn repo ->
-      locked_document =
-        Document
-        |> where([candidate], candidate.id == ^document.id)
-        |> lock("FOR UPDATE")
-        |> repo.one!()
-
-      latest = latest_revision!(repo, locked_document, preload_blocks?: true)
-      block_id = attr(attrs, :block_id, nil)
-
-      with {:ok, author_id} <- proposal_author(attrs),
-           :ok <- ensure_known_block(latest, block_id),
-           {:ok, proposal} <- upsert_proposal(repo, locked_document, latest, author_id, attrs) do
-        live_proposals = count_live(repo, locked_document, block_id)
-
-        {:ok,
-         proposed_result(
-           [proposal],
-           %{changed: 1, added: 0, removed: 0},
-           [],
-           block_contentions(repo, locked_document, block_id, live_proposals)
-         )}
-      end
-    end)
-    |> unwrap_error()
   end
 
   @doc """
   Records what a topic wants a document to be called.
 
-  A title cannot travel inside a `:document` proposal's Markdown: a document's
-  title is a field of the revision and is never read out of the body (see
-  `RintoPMO.Documents.Markdown`), so it needs a proposal of its own.
-
-  Like a block proposal, a topic holds one live slot and rewriting is iteration
-  rather than a second opinion. Unlike one, the slot is the document -- there is
-  only one title to argue about.
+  A title cannot travel inside Markdown: a document's title is a field of the
+  revision and is never read out of the body (see
+  `RintoPMO.Documents.Markdown`), so it needs a proposal of its own. It is not
+  otherwise a special case -- two titles compete like two rewrites of a
+  paragraph, either may be adopted, and neither has to be.
   """
   @impl true
   def propose_title(%Document{} = document, attrs) do
     with :ok <- Guard.check(attr(attrs, :content, nil)) do
-      do_propose_title(document, attrs)
+      propose(document, attrs, &title_intent/3)
     end
   end
 
-  defp do_propose_title(%Document{} = document, attrs) do
-    Repo.transact(fn repo ->
-      locked_document =
-        Document
-        |> where([candidate], candidate.id == ^document.id)
-        |> lock("FOR UPDATE")
-        |> repo.one!()
-
-      latest = latest_revision!(repo, locked_document, preload_blocks?: false)
-
-      with {:ok, author_id} <- proposal_author(attrs),
-           {:ok, proposal} <-
-             upsert_scoped_proposal(repo, locked_document, latest, :title, author_id, attrs) do
-        live_proposals = count_live_scope(repo, locked_document, :title)
-
-        {:ok,
-         proposed_result(
-           [proposal],
-           %{changed: 1, added: 0, removed: 0},
-           [],
-           title_contentions(live_proposals)
-         )}
-      end
-    end)
-    |> unwrap_error()
-  end
-
   @doc """
-  Records a topic's rewrite of a whole document as independently reviewable
-  proposals.
+  Takes a topic's rewrite of a whole document and records it as the separate
+  changes it is made of.
 
-  `content` is Markdown for the entire body, and is compiled here into the
-  block operations that would produce it. Updates become ordinary block
-  proposals; inserts, deletes and moves remain together in at most one
-  document-scope structural proposal. The input Markdown is retained on that
-  structural row as a propose-time snapshot, never as the source of its ops.
+  `content` is Markdown for the entire body. It is compiled against the revision
+  the topic read -- `base_revision_id` -- into updates, insertions, deletions and
+  moves, and each of those becomes a proposal of its own. Whole-document Markdown
+  is therefore an input format and nothing else: there is no row holding it, no
+  id naming it, and nothing to adopt or publish that means "all of this".
 
-  The operations are stored rather than recomputed at commit time, because they
-  are what a person will have reviewed. What keeps them honest is that a
-  document-scope proposal is only committable while its `base_revision_id` is
-  still the document's latest revision; re-proposing recompiles against
-  whatever is current, so iterating is also how a topic catches up.
+  That is the point. A rewrite that tightens two paragraphs, adds a section and
+  drops a stale note is four things a person will have four opinions about, and
+  a single object holding all four offers them no way to say so.
 
-  Refused when the Markdown produces the document that already exists: a
-  proposal that changes nothing would commit as a revision identical to its
-  parent.
+  Re-proposing replaces only what this topic had standing in this document's
+  body. Its title proposal is untouched -- a title is a different question --
+  and so is every other topic's work.
+
+  Refused when the Markdown produces the document that already exists: nothing
+  to propose is not a way of withdrawing what was proposed before, and a topic
+  meaning that says so with `reject`.
   """
   @impl true
   def propose_document(%Document{} = document, attrs) do
-    with :ok <- Guard.check(attr(attrs, :markdown, nil)) do
-      do_propose_document(document, attrs)
+    with :ok <- Guard.check(attr(attrs, :content, nil)) do
+      propose(document, attrs, &document_intent/3)
     end
   end
 
-  defp do_propose_document(%Document{} = document, attrs) do
+  defp propose(%Document{} = document, attrs, intent) do
     Repo.transact(fn repo ->
-      decided_at = DateTime.utc_now()
-
       locked_document =
         Document
         |> where([candidate], candidate.id == ^document.id)
         |> lock("FOR UPDATE")
         |> repo.one!()
-
-      latest = latest_revision!(repo, locked_document, preload_blocks?: true)
 
       with {:ok, author_id} <- proposal_author(attrs),
-           {:ok, contents} <- split_proposed_markdown(attrs),
-           {:ok, operations} <- compile_operations(latest, contents, author_id),
-           {:ok, proposals} <-
-             upsert_decomposed_proposals(
-               repo,
-               locked_document,
-               latest,
-               operations,
-               author_id,
-               attrs
-             ),
-           {:ok, superseded} <-
-             supersede_replaced_body_proposals(
-               repo,
-               locked_document,
-               attr(attrs, :conversation_id, nil),
-               proposals,
-               author_id,
-               decided_at
-             ) do
+           {:ok, base} <- fetch_base_revision(repo, locked_document, attrs),
+           {:ok, wanted, replaces} <- intent.(base, author_id, attrs),
+           {:ok, proposals, superseded} <-
+             reconcile_proposals(repo, locked_document, base, author_id, attrs, wanted, replaces) do
+        {:ok, proposed_result(repo, locked_document, proposals, superseded)}
+      end
+    end)
+    |> unwrap_error()
+  end
+
+  # One block's new text. What it replaces is this topic's standing rewrite of
+  # that same block -- not its move of it, and not its deletion of it, which are
+  # different intents about the same paragraph and compose with this one.
+  defp block_intent(%DocumentRevision{} = base, actor_id, attrs) do
+    block_id = attr(attrs, :block_id, nil)
+    content = attr(attrs, :content, nil)
+    said = base.blocks |> Enum.find(&(&1.block_id == block_id)) |> then(&(&1 && &1.content))
+
+    cond do
+      is_nil(block_id) or is_nil(said) ->
+        {:error, {:unknown_block, %{block_id: block_id}}}
+
+      said == content ->
+        {:error, {:no_change_proposed, %{block_id: block_id}}}
+
+      true ->
         {:ok,
-         proposed_result(
-           proposals,
-           operation_summary(operations),
-           superseded,
-           proposal_contentions(repo, locked_document, proposals)
-         )}
-      end
-    end)
-    |> unwrap_error()
-  end
-
-  # Preserve the ordinary changeset errors for an omitted body. An empty diff
-  # with a body never reaches here because `compile_operations/3` reports
-  # `no_change_proposed` first.
-  defp upsert_decomposed_proposals(repo, document, latest, [], actor_id, attrs) do
-    case upsert_document_proposal(repo, document, latest, [], actor_id, attrs) do
-      {:error, changeset} -> {:error, changeset}
-      {:ok, _unexpected} -> {:error, {:no_change_proposed, %{}}}
+         [
+           %{
+             scope: :block,
+             operation: :update,
+             block_id: block_id,
+             content: content,
+             actor_id: actor_id
+           }
+         ], {:slots, [{block_id, :update}]}}
     end
   end
 
-  defp upsert_decomposed_proposals(repo, document, latest, operations, actor_id, attrs) do
-    {updates, structural} =
-      Enum.split_with(operations, &(to_string(op_field(&1, :op)) == "update"))
+  defp title_intent(%DocumentRevision{} = base, actor_id, attrs) do
+    content = attr(attrs, :content, nil)
 
-    with {:ok, block_proposals} <-
-           upsert_update_proposals(repo, document, latest, updates, actor_id, attrs),
-         {:ok, structural_proposal} <-
-           upsert_structural_proposal(
-             repo,
-             document,
-             latest,
-             structural,
-             actor_id,
-             attrs
-           ) do
-      {:ok, block_proposals ++ List.wrap(structural_proposal)}
-    end
-  end
-
-  defp upsert_update_proposals(repo, document, latest, updates, actor_id, attrs) do
-    Enum.reduce_while(updates, {:ok, []}, fn operation, {:ok, proposals} ->
-      proposal_attrs = %{
-        block_id: op_field(operation, :block_id),
-        conversation_id: attr(attrs, :conversation_id, nil),
-        content: op_field(operation, :content),
-        change_summary: attr(attrs, :change_summary, nil)
-      }
-
-      case upsert_proposal(repo, document, latest, actor_id, proposal_attrs) do
-        {:ok, proposal} -> {:cont, {:ok, [proposal | proposals]}}
-        {:error, changeset} -> {:halt, {:error, changeset}}
-      end
-    end)
-    |> case do
-      {:ok, proposals} -> {:ok, Enum.reverse(proposals)}
-      error -> error
-    end
-  end
-
-  defp upsert_structural_proposal(_repo, _document, _latest, [], _actor_id, _attrs),
-    do: {:ok, nil}
-
-  defp upsert_structural_proposal(repo, document, latest, operations, actor_id, attrs) do
-    upsert_document_proposal(repo, document, latest, operations, actor_id, attrs)
-  end
-
-  defp supersede_replaced_body_proposals(
-         repo,
-         document,
-         conversation_id,
-         proposals,
-         actor_id,
-         decided_at
-       ) do
-    kept = Enum.map(proposals, & &1.id)
-
-    replaced =
-      BlockProposal
-      |> where([proposal], proposal.document_id == ^document.id)
-      |> where([proposal], proposal.conversation_id == ^conversation_id)
-      |> where([proposal], proposal.status == :live and proposal.scope in [:block, :document])
-      |> where([proposal], proposal.id not in ^kept)
-      |> lock("FOR UPDATE")
-      |> repo.all()
-
-    case decide_each(repo, replaced, :superseded, actor_id, decided_at) do
-      :ok -> {:ok, Enum.map(replaced, & &1.id)}
-      {:error, changeset} -> {:error, changeset}
-    end
-  end
-
-  defp operation_summary(operations) do
-    Enum.reduce(operations, %{changed: 0, added: 0, removed: 0}, fn operation, summary ->
-      case to_string(op_field(operation, :op)) do
-        "update" -> Map.update!(summary, :changed, &(&1 + 1))
-        "move_after" -> Map.update!(summary, :changed, &(&1 + 1))
-        "insert_after" -> Map.update!(summary, :added, &(&1 + 1))
-        "delete" -> Map.update!(summary, :removed, &(&1 + 1))
-      end
-    end)
-  end
-
-  @doc """
-  Carries a whole-document proposal across the revisions that landed under it.
-
-  A document proposal goes stale the moment anything else commits, and the
-  alternative to this is throwing it away and asking the model again -- losing a
-  round trip and whatever review a person had already done. So the three
-  versions are merged instead: the revision it was written against, the blocks it
-  wanted, and the blocks as they now stand. See
-  `RintoPMO.Documents.BlockMerge` for how each block is decided.
-
-  The merged body is then proposed exactly as a fresh one would be, so the
-  content and the operations agree by construction rather than by care.
-
-  Three answers are not success. A conflict reports the blocks two people wrote
-  differently, at the same grain as any other contention, so the decision is one
-  a person already knows how to make. A restructured document is refused rather
-  than merged. And a proposal whose merge leaves nothing to change reports
-  `no_change_proposed`: what it wanted is already true.
-  """
-  @impl true
-  def rebase_document_proposal(%Document{} = document, proposal_id) do
-    Repo.transact(fn repo ->
-      locked_document =
-        Document
-        |> where([candidate], candidate.id == ^document.id)
-        |> lock("FOR UPDATE")
-        |> repo.one!()
-
-      parent = latest_revision!(repo, locked_document, preload_blocks?: true)
-
-      with {:ok, proposal} <- live_document_proposal(repo, locked_document, proposal_id) do
-        rebase_onto(repo, locked_document, parent, proposal)
-      end
-    end)
-    |> unwrap_error()
-  end
-
-  # Already current. Rebasing is idempotent rather than an error, so a caller may
-  # ask without first working out whether it needs to.
-  defp rebase_onto(
-         _repo,
-         _document,
-         %DocumentRevision{id: id},
-         %BlockProposal{
-           base_revision_id: id
-         } = proposal
-       ) do
-    {:ok, proposal}
-  end
-
-  defp rebase_onto(repo, document, parent, proposal) do
-    if MapSet.size(updated_blocks(proposal)) > 0 do
-      rebase_legacy_document_onto(repo, document, parent, proposal)
+    if base.title == content do
+      {:error, {:no_change_proposed, %{scope: :title}}}
     else
-      rebase_structure_onto(repo, document, parent, proposal)
+      {:ok, [%{scope: :title, operation: :update, content: content, actor_id: actor_id}],
+       {:scope, :title}}
     end
   end
 
-  defp rebase_legacy_document_onto(repo, document, parent, proposal) do
-    base = revision_with_blocks!(repo, document, proposal.base_revision_id)
-
-    with {:ok, wanted} <- replay_operations(base, proposal.block_ops),
-         {:ok, contents} <- merge_onto(base, wanted, parent),
-         attrs = rebased_attrs(proposal, contents),
-         {:ok, split} <- split_proposed_markdown(attrs),
-         {:ok, operations} <- compile_operations(parent, split, proposal.actor_id) do
-      # The original proposer, not whoever the topic is talking to now: carrying
-      # a proposal across a revision is a merge, not somebody writing again.
-      upsert_document_proposal(repo, document, parent, operations, proposal.actor_id, attrs)
+  defp document_intent(%DocumentRevision{} = base, actor_id, attrs) do
+    with {:ok, contents} <- split_proposed_markdown(attrs),
+         {:ok, operations} <- compile_operations(base, contents, actor_id) do
+      {:ok, Enum.map(operations, &intent_of(&1, actor_id)), {:scope, :block}}
     end
   end
 
-  defp rebase_structure_onto(repo, document, parent, proposal) do
-    base = revision_with_blocks!(repo, document, proposal.base_revision_id)
-
-    with :ok <- ensure_structure_references_exist(proposal, parent),
-         :ok <- ensure_delete_targets_unchanged(proposal, base, parent),
-         :ok <- ensure_block_sequence_unchanged(base, parent) do
-      proposal
-      |> BlockProposal.content_changeset(%{
-        actor_id: proposal.actor_id,
-        content: proposal.content,
-        block_ops: proposal.block_ops,
-        base_revision_id: parent.id,
-        change_summary: proposal.change_summary
-      })
-      |> repo.update()
-    end
-  end
-
-  defp ensure_structure_references_exist(proposal, parent) do
-    current = parent |> ordered_blocks() |> MapSet.new(& &1.block_id)
-
-    missing =
-      proposal.block_ops
-      |> List.wrap()
-      |> Enum.flat_map(fn operation ->
-        [op_field(operation, :block_id), op_field(operation, :after_block_id)]
-      end)
-      |> Enum.reject(&(is_nil(&1) or MapSet.member?(current, &1)))
-      |> Enum.uniq()
-      |> Enum.sort()
-
-    if missing == [] do
-      :ok
-    else
-      {:error, {:rebase_conflict, %{reason: :missing_anchors, block_ids: missing}}}
-    end
-  end
-
-  defp ensure_delete_targets_unchanged(proposal, base, parent) do
-    base_content = Map.new(ordered_blocks(base), &{&1.block_id, &1.content})
-    current_content = Map.new(ordered_blocks(parent), &{&1.block_id, &1.content})
-
-    changed =
-      proposal.block_ops
-      |> List.wrap()
-      |> Enum.flat_map(fn operation ->
-        case {to_string(op_field(operation, :op)), op_field(operation, :block_id)} do
-          {"delete", block_id} -> [block_id]
-          _other -> []
-        end
-      end)
-      |> Enum.filter(&(Map.get(base_content, &1) != Map.get(current_content, &1)))
-      |> Enum.uniq()
-      |> Enum.sort()
-
-    if changed == [] do
-      :ok
-    else
-      {:error, {:rebase_conflict, %{reason: :diverged, block_ids: changed}}}
-    end
-  end
-
-  defp ensure_block_sequence_unchanged(base, parent) do
-    base_ids = Enum.map(ordered_blocks(base), & &1.block_id)
-    current_ids = Enum.map(ordered_blocks(parent), & &1.block_id)
-
-    if base_ids == current_ids do
-      :ok
-    else
-      {:error, {:rebase_conflict, %{reason: :restructured}}}
-    end
-  end
-
-  defp replay_operations(%DocumentRevision{} = base, operations) do
-    case BlockOps.apply(ordered_blocks(base), operations || []) do
-      {:ok, entries} -> {:ok, entries}
-      {:error, code, details} -> {:error, {code, details}}
-    end
-  end
-
-  defp merge_onto(%DocumentRevision{} = base, wanted, %DocumentRevision{} = parent) do
-    case BlockMerge.merge(ordered_blocks(base), wanted, ordered_blocks(parent)) do
-      {:ok, contents} -> {:ok, contents}
-      {:conflict, details} -> {:error, {:rebase_conflict, details}}
-    end
-  end
-
-  # Rejoined into a body and put back through the ordinary propose path, so the
-  # stored Markdown and the stored operations cannot disagree: whatever the body
-  # cuts into is what the operations produce.
-  defp rebased_attrs(%BlockProposal{} = proposal, contents) do
+  defp intent_of(%{op: :update} = operation, actor_id) do
     %{
-      conversation_id: proposal.conversation_id,
-      content: Enum.join(contents, "\n\n"),
-      change_summary: proposal.change_summary
+      scope: :block,
+      operation: :update,
+      block_id: operation.block_id,
+      content: operation.content,
+      actor_id: actor_id
     }
   end
 
-  defp revision_with_blocks!(repo, %Document{} = document, revision_id) do
-    document
-    |> Ecto.assoc(:revisions)
-    |> where([revision], revision.id == ^revision_id)
-    |> repo.one!()
-    |> repo.preload(:blocks)
+  defp intent_of(%{op: :insert_after} = operation, actor_id) do
+    %{
+      scope: :block,
+      operation: :insert,
+      block_id: operation.block_id,
+      after_block_id: operation.after_block_id,
+      content: operation.content,
+      run_id: Map.get(operation, :run_id),
+      run_ordinal: Map.get(operation, :run_ordinal),
+      actor_id: actor_id
+    }
+  end
+
+  defp intent_of(%{op: :delete} = operation, actor_id) do
+    %{scope: :block, operation: :delete, block_id: operation.block_id, actor_id: actor_id}
+  end
+
+  defp intent_of(%{op: :move_after} = operation, actor_id) do
+    %{
+      scope: :block,
+      operation: :move,
+      block_id: operation.block_id,
+      after_block_id: operation.after_block_id,
+      run_id: Map.get(operation, :run_id),
+      run_ordinal: Map.get(operation, :run_ordinal),
+      actor_id: actor_id
+    }
   end
 
   @doc """
-  Settles a contended title in favour of one proposal.
+  Saves the checkbox against one proposal, and nothing else.
 
-  The document-level twin of `decide_block/4`: same argument, same outcome, a
-  different slot. Two topics wanting different titles is an ordinary
-  disagreement and picking one is a decision a person makes -- which is why a
-  title is a scope of its own rather than something inferred from a body.
+  Ticking is not adopting and not publishing: it is a person marking what they
+  are thinking of taking, so that closing the screen does not lose it. There is
+  no sequence number and no ordering protocol -- a later save wins over an
+  earlier one, because that is what saving a checkbox means.
+
+  What it will not do is let a tick stand in for a decision nobody made. A
+  proposal cannot be ticked while something else is competing with it and
+  nothing has been adopted, and it cannot be ticked when it could not be applied
+  at all.
   """
   @impl true
-  def decide_title(%Document{} = document, proposal_id, actor_id) do
-    decide(document, :title, nil, proposal_id, actor_id)
+  def stage_proposal(%Document{} = document, proposal_id, staged) when is_boolean(staged) do
+    Repo.transact(fn repo ->
+      locked_document =
+        Document
+        |> where([candidate], candidate.id == ^document.id)
+        |> lock("FOR UPDATE")
+        |> repo.one!()
+
+      revision = latest_revision!(repo, locked_document, preload_blocks?: true)
+
+      with {:ok, proposal} <- fetch_proposal(repo, locked_document, proposal_id, lock?: true),
+           {:ok, described} <- ensure_stageable(repo, locked_document, proposal, revision, staged),
+           {:ok, updated} <- write_stage(repo, proposal, described, staged) do
+        {:ok, describe(repo, locked_document, updated, revision)}
+      end
+    end)
+    |> unwrap_error()
+  end
+
+  # Already out of the pending set, and already unticked with it. Saying so again
+  # is not an error; there is nothing left to change.
+  defp write_stage(_repo, proposal, :settled, _staged), do: {:ok, proposal}
+
+  defp write_stage(repo, proposal, :pending, staged) do
+    proposal |> BlockProposal.staged_changeset(staged) |> repo.update()
+  end
+
+  defp ensure_stageable(_repo, _document, %BlockProposal{status: status}, _revision, false)
+       when status != :live,
+       do: {:ok, :settled}
+
+  defp ensure_stageable(
+         _repo,
+         _document,
+         %BlockProposal{status: status} = proposal,
+         _revision,
+         _staged
+       )
+       when status != :live,
+       do: {:error, {:proposal_not_live, %{proposal_id: proposal.id, status: status}}}
+
+  defp ensure_stageable(_repo, _document, %BlockProposal{}, _revision, false), do: {:ok, :pending}
+
+  defp ensure_stageable(repo, document, %BlockProposal{} = proposal, revision, true) do
+    detail = describe(repo, document, proposal, revision)
+
+    cond do
+      detail.state == :already_applied ->
+        {:error,
+         {:proposal_not_applicable, %{proposal_id: proposal.id, reason: :already_applied}}}
+
+      detail.state == :not_applicable ->
+        {:error, {:proposal_not_applicable, %{proposal_id: proposal.id, reason: detail.reason}}}
+
+      detail.state == :needs_confirmation and not detail.adopted ->
+        {:error, {:needs_reconfirmation, %{proposal_id: proposal.id, reason: detail.reason}}}
+
+      detail.conflicting_proposal_ids != [] and not detail.adopted ->
+        {:error,
+         {:unresolved_contention,
+          %{proposal_id: proposal.id, conflicting_proposal_ids: detail.conflicting_proposal_ids}}}
+
+      true ->
+        {:ok, :pending}
+    end
   end
 
   @doc """
-  Settles two topics' competing rewrites in favour of one.
+  Chooses this candidate over the ones competing with it.
 
-  Committing one would settle it too -- that supersedes every other live
-  proposal on the way through -- but only by changing the document at the same
-  time. Deciding is the same argument without that: it says which rewrite the
-  document is going to take, leaving when to take it to whoever commits.
+  Adopting settles an argument; it does not publish anything and it does not
+  tick anything. What it writes is the revision that was on screen when the
+  choice was made, which is what lets a later read tell a choice that still
+  means something from one made about words that have since changed.
 
-  Note what this is *not* an argument with. A rewrite competes with another
-  rewrite; against a block proposal there is nothing to choose, because the two
-  are not alternatives (see `RintoPMO.Documents.BlockProposal`). Losing block
-  proposals are superseded by the commit, not rejected by a decision here.
+  The candidates it beats stay `live`. They lose their tick and they cannot be
+  ticked while this stands, but nothing about them has been decided: un-adopt
+  this one and any of them can be chosen instead. Only publishing ends them, and
+  only the ones that actually conflict with what was published.
+
+  Refused while another conflicting candidate is adopted. Switching is
+  `unadopt` then `adopt`, in that order, said out loud -- an adopt that silently
+  displaced somebody's earlier choice would be a decision nobody made.
   """
   @impl true
-  def decide_document(%Document{} = document, proposal_id, actor_id) do
-    decide(document, :document, nil, proposal_id, actor_id)
+  def adopt_proposal(%Document{} = document, proposal_id, base_revision_id, actor_id) do
+    Repo.transact(fn repo ->
+      locked_document =
+        Document
+        |> where([candidate], candidate.id == ^document.id)
+        |> lock("FOR UPDATE")
+        |> repo.one!()
+
+      revision = latest_revision!(repo, locked_document, preload_blocks?: true)
+
+      with :ok <- ensure_current(revision, base_revision_id),
+           {:ok, proposal} <- fetch_proposal(repo, locked_document, proposal_id, lock?: true),
+           :ok <- ensure_live(proposal),
+           competitors = conflicting_live(repo, locked_document, proposal),
+           :ok <- ensure_unclaimed(repo, locked_document, proposal, competitors, revision),
+           {:ok, adopted} <- write_adoption(repo, proposal, revision.id),
+           :ok <- unstage_all(repo, competitors, actor_id) do
+        {:ok, describe(repo, locked_document, adopted, revision)}
+      end
+    end)
+    |> unwrap_error()
   end
 
   @doc """
-  Lists the blocks with more than one live proposal, and those proposals.
+  Takes back a choice, leaving every candidate available again.
 
-  Two live proposals on one block *is* the conflict test. No version numbers,
-  no locks: topics write their own slots, so nothing overwrites anything and
-  there is no race to detect.
+  It clears this proposal's adoption and does no more. It does not restore
+  anything: not a rejection somebody made on purpose, not the ticks the losing
+  candidates had before, and certainly not a published revision. Publishing is
+  the point of no return, and the way back from it is a new proposal.
+
+  This proposal's own tick is left where it is. It cannot be published while the
+  argument it is in is open, which the review screen says; putting the tick back
+  by hand is a person's business.
+  """
+  @impl true
+  def unadopt_proposal(%Document{} = document, proposal_id) do
+    Repo.transact(fn repo ->
+      locked_document =
+        Document
+        |> where([candidate], candidate.id == ^document.id)
+        |> lock("FOR UPDATE")
+        |> repo.one!()
+
+      revision = latest_revision!(repo, locked_document, preload_blocks?: true)
+
+      with {:ok, proposal} <- fetch_proposal(repo, locked_document, proposal_id, lock?: true),
+           :ok <- ensure_live(proposal),
+           {:ok, updated} <- write_adoption(repo, proposal, nil) do
+        {:ok, describe(repo, locked_document, updated, revision)}
+      end
+    end)
+    |> unwrap_error()
+  end
+
+  @doc """
+  Says no to a proposal.
+
+  The one way a person turns something down, and it is deliberate rather than
+  incidental: there is no withdraw, no delete and no undo beside it. A rejected
+  proposal leaves the pending set and keeps everything else -- its text, its
+  reason, and every message that ever cited it.
+
+  Not the same thing as `superseded`, which is what happens to a proposal
+  overtaken by a newer version of itself or by a competing change that published
+  first. Nobody decided those.
+  """
+  @impl true
+  def reject_proposal(%Document{} = document, proposal_id, actor_id, reason \\ nil) do
+    Repo.transact(fn repo ->
+      locked_document =
+        Document
+        |> where([candidate], candidate.id == ^document.id)
+        |> lock("FOR UPDATE")
+        |> repo.one!()
+
+      revision = latest_revision!(repo, locked_document, preload_blocks?: true)
+
+      with {:ok, proposal} <- fetch_proposal(repo, locked_document, proposal_id, lock?: true),
+           :ok <- ensure_live(proposal),
+           {:ok, rejected} <-
+             decide_one(repo, proposal, :rejected, actor_id, DateTime.utc_now(), reason: reason) do
+        {:ok, describe(repo, locked_document, rejected, revision)}
+      end
+    end)
+    |> unwrap_error()
+  end
+
+  @doc """
+  Lists the pairs of live proposals that cannot both stand.
+
+  Pairs, not groups. Two rewrites of one paragraph are alternatives, and so are
+  a rewrite and a deletion of it -- but the rewrite and a move of that same
+  paragraph are not, and a group holding all three would ask somebody to give up
+  an edit in order to keep a reordering. Nothing here is transitive: what a
+  person is asked is always "this one or that one".
   """
   @impl true
   def contentions(%Document{} = document) do
-    document
-    |> live_proposals(:block)
-    |> Enum.group_by(& &1.block_id)
-    |> Enum.filter(fn {_block_id, proposals} -> length(proposals) > 1 end)
-    |> Enum.map(fn {block_id, proposals} ->
-      %{block_id: block_id, proposals: Enum.sort_by(proposals, & &1.id)}
-    end)
-    |> Enum.sort_by(& &1.block_id)
+    proposals = Repo |> live_proposals(document) |> Enum.sort_by(& &1.id)
+
+    for left <- proposals,
+        right <- proposals,
+        left.id < right.id,
+        reason = BlockProposal.conflict_reason(left, right) do
+      %{
+        reason: reason,
+        proposal_ids: [left.id, right.id],
+        scope: left.scope,
+        block_id: left.block_id || right.block_id
+      }
+    end
   end
 
   @doc """
-  Lists the document-level scopes more than one topic is arguing over.
+  Reads a document as one topic sees it: the latest revision with that topic's
+  own applicable proposals standing in.
 
-  Deliberately not folded into `contentions/1`. A block contention has a place
-  on the document and is settled per block; these have neither -- two topics
-  wanting different titles, or different rewrites, is one argument about the
-  whole document. Reporting them as contentions on every block they touch would
-  offer the reader a per-block decision that would not resolve anything.
-  """
-  @impl true
-  def scope_contentions(%Document{} = document) do
-    document_proposals = live_proposals(document, :document)
-    title_proposals = live_proposals(document, :title)
-    live_block_ids = document |> live_proposals(:block) |> MapSet.new(& &1.block_id)
+  A derived view and nothing else. It is not a branch, not a draft and not
+  stored anywhere -- ask again a second later and it is computed again from
+  whatever is current. Proposals of this topic's that cannot be applied are not
+  quietly dropped: they come back named, with what stops them, because a topic
+  that cannot see its own blocked work will write the same thing again.
 
-    overlaps =
-      document_proposals
-      |> Enum.reduce(MapSet.new(), fn proposal, ids ->
-        MapSet.union(ids, MapSet.intersection(updated_blocks(proposal), live_block_ids))
-      end)
-      |> Enum.sort()
-
-    document_contention =
-      if length(document_proposals) > 1 or overlaps != [] do
-        [
-          %{
-            scope: :document,
-            proposals: Enum.sort_by(document_proposals, & &1.id),
-            overlaps_block_ids: overlaps
-          }
-        ]
-      else
-        []
-      end
-
-    title_contention =
-      if length(title_proposals) > 1 do
-        [%{scope: :title, proposals: Enum.sort_by(title_proposals, & &1.id)}]
-      else
-        []
-      end
-
-    document_contention ++ title_contention
-  end
-
-  @doc """
-  The whole-document rewrite a topic has standing, if it has one.
-
-  Read alongside `blocks_for_conversation/2` rather than through it: a rewrite is
-  not a per-block overlay, and rendering it as one would have to invent block ids
-  for text that has none yet. A caller holding one of these shows the diff in
-  `block_ops` instead of the block list.
-  """
-  @impl true
-  def document_proposal_for_conversation(%Document{} = document, conversation_id) do
-    live_scoped_proposal(Repo, document, :document, conversation_id)
-  end
-
-  @doc """
-  Reads a document as one topic sees it: the latest revision, with that topic's
-  own proposals standing in, plus the bare fact that others exist.
-
-  The other proposals' text is deliberately withheld. The point is not to let a
-  topic reconcile the versions itself -- that is the human's decision -- but to
+  Other topics' proposals are counted, never shown. The point is not to let a
+  topic reconcile the versions itself -- that is the person's decision -- but to
   stop it building on the assumption that it is alone in the block.
   """
   @impl true
   def blocks_for_conversation(%Document{} = document, conversation_id) do
-    proposals =
-      document
-      |> live_proposals(:block)
-      |> Enum.group_by(& &1.block_id)
-
-    revision = latest_revision!(document, preload_blocks?: true)
-    conversation_blocks(revision, proposals, conversation_id)
+    {:ok, view} = conversation_document_view(document, conversation_id)
+    view.blocks
   end
 
   @doc """
-  Reads the topic's blocks, structural proposal and revision id atomically.
+  Reads the topic's derived blocks and the revision id they were computed from,
+  atomically.
 
   Proposal writers and revision writers lock the document row before changing
-  any of these values. A shared lock therefore keeps the three parts on one
-  snapshot until this read completes, so a client can compare the structural
-  proposal's base with `revision_id` without racing a second latest-revision
-  lookup.
+  any of this. A shared lock therefore keeps both parts on one snapshot until
+  the read completes, so a client cannot pair one revision's text with another
+  revision's id.
   """
   @impl true
   def conversation_document_view(%Document{} = document, conversation_id) do
@@ -1053,152 +918,135 @@ defmodule RintoPMO.Documents do
         |> repo.one!()
 
       revision = latest_revision!(repo, locked_document, preload_blocks?: true)
+      live = live_proposals(repo, locked_document)
+      {mine, others} = Enum.split_with(live, &(&1.conversation_id == conversation_id))
 
-      proposals =
-        repo
-        |> live_proposals(locked_document, :block)
-        |> Enum.group_by(& &1.block_id)
-
-      {:ok,
-       %{
-         revision_id: revision.id,
-         blocks: conversation_blocks(revision, proposals, conversation_id),
-         document_proposal:
-           live_scoped_proposal(repo, locked_document, :document, conversation_id)
-       }}
+      {:ok, working_view(repo, locked_document, revision, mine, others)}
     end)
     |> unwrap_error()
   end
 
-  defp conversation_blocks(revision, proposals, conversation_id) do
+  defp working_view(repo, document, revision, mine, others) do
+    current = ProposalPlan.snapshot(revision)
+    bases = base_snapshots(repo, document, mine)
+
+    {applicable, blocked} =
+      Enum.split_with(mine, fn proposal ->
+        ProposalPlan.state(proposal, bases[proposal.base_revision_id], current) == :applicable
+      end)
+
+    {entries, unapplicable} = apply_working(repo, document, revision, applicable, current)
+
+    %{
+      revision_id: revision.id,
+      blocks: overlay_blocks(entries, applicable, others),
+      title: working_title(revision, applicable),
+      unapplicable:
+        Enum.map(blocked, fn proposal ->
+          %{
+            proposal_id: proposal.id,
+            reason:
+              state_reason(
+                ProposalPlan.state(proposal, bases[proposal.base_revision_id], current)
+              )
+          }
+        end) ++ unapplicable
+    }
+  end
+
+  defp apply_working(repo, document, revision, applicable, current) do
+    body = Enum.filter(applicable, &(&1.scope == :block))
+
+    with {:ok, operations} <-
+           ProposalPlan.operations(body, current, run_siblings(repo, document, body)),
+         {:ok, entries} <-
+           BlockOps.apply(revision.blocks |> Enum.sort_by(& &1.position), operations) do
+      {entries, []}
+    else
+      # A set that cannot be applied as a whole is still a document the topic
+      # has to be shown, so the revision stands and the reason is named.
+      {:error, {code, details}} ->
+        {plain_entries(revision), [Map.put(details, :reason, code)]}
+
+      {:error, code, details} ->
+        {plain_entries(revision), [Map.put(details, :reason, code)]}
+    end
+  end
+
+  defp plain_entries(revision) do
     revision.blocks
     |> Enum.sort_by(& &1.position)
-    |> Enum.map(fn block ->
-      block_proposals = Map.get(proposals, block.block_id, [])
-      {own, others} = Enum.split_with(block_proposals, &(&1.conversation_id == conversation_id))
-      proposal = List.first(own)
+    |> Enum.map(&%{block_id: &1.block_id, actor_id: &1.actor_id, content: &1.content})
+  end
+
+  defp overlay_blocks(entries, mine, others) do
+    authored = Map.new(mine, &{&1.block_id, &1})
+    counted = Enum.frequencies_by(Enum.filter(others, &(&1.scope == :block)), & &1.block_id)
+
+    entries
+    |> Enum.with_index()
+    |> Enum.map(fn {entry, position} ->
+      proposal = Map.get(authored, entry.block_id)
 
       %{
-        block_id: block.block_id,
-        position: block.position,
-        content: if(proposal, do: proposal.content, else: block.content),
+        block_id: entry.block_id,
+        position: position,
+        content: entry.content,
         proposal_id: proposal && proposal.id,
         proposed?: proposal != nil,
-        other_proposals: length(others)
+        # A count, never the text. Reconciling versions is the human's decision;
+        # this exists only so a topic knows it is not alone in the block.
+        other_proposals: Map.get(counted, entry.block_id, 0)
       }
     end)
   end
 
-  @doc """
-  Settles a contended block by rejecting every proposal but one.
-
-  The winner stays `live`: deciding a contention is not committing it. It has
-  merely stopped being contended, and still has to go through
-  `commit_proposals/2` like any other pending change -- which is also why the
-  winner carries no decision stamp yet, leaving `decided_by_actor_id` on the
-  rejected proposals to record who ended the argument and when.
-
-  The only other way out of a contention is to open a topic about it. There is
-  no manual merge: a third version nobody asked for is exactly what this design
-  refuses to produce. See `RintoPMO.Documents.BlockProposal` on why the losers
-  are kept rather than deleted.
-  """
-  @impl true
-  def decide_block(%Document{} = document, block_id, proposal_id, actor_id) do
-    decide(document, :block, block_id, proposal_id, actor_id)
+  defp working_title(revision, applicable) do
+    case Enum.find(applicable, &(&1.scope == :title)) do
+      nil -> revision.title
+      proposal -> proposal.content
+    end
   end
-
-  # One decision, whichever slot holds the argument: the live proposals in that
-  # slot are the candidates, the named one wins and the rest are rejected. A
-  # block's slot is its `block_id`; a document-level scope's slot is the scope
-  # itself, there being only one of each per document.
-  defp decide(%Document{} = document, scope, block_id, proposal_id, actor_id) do
-    Repo.transact(fn repo ->
-      decided_at = DateTime.utc_now()
-
-      candidates =
-        BlockProposal
-        |> where([proposal], proposal.document_id == ^document.id and proposal.status == :live)
-        |> slot(scope, block_id)
-        |> lock("FOR UPDATE")
-        |> repo.all()
-
-      case Enum.split_with(candidates, &(&1.id == proposal_id)) do
-        {[], _rest} ->
-          {:error, {:proposal_not_found, slot_details(scope, block_id, proposal_id)}}
-
-        {[adopted], losers} ->
-          decide_all(repo, adopted, losers, actor_id, decided_at)
-      end
-    end)
-    |> unwrap_error()
-  end
-
-  defp slot(query, :block, block_id) do
-    where(query, [proposal], proposal.scope == :block and proposal.block_id == ^block_id)
-  end
-
-  defp slot(query, scope, nil), do: where(query, [proposal], proposal.scope == ^scope)
-
-  defp slot_details(:block, block_id, proposal_id),
-    do: %{proposal_id: proposal_id, block_id: block_id}
-
-  defp slot_details(scope, nil, proposal_id), do: %{proposal_id: proposal_id, scope: scope}
 
   @doc """
-  Turns the chosen proposals into a revision.
+  Turns the named proposals into a revision.
 
   Three things happen here and they happen together, in one transaction: the
   revision is written, the annotations named as settled are confirmed against
-  it, and the proposals it used become `accepted`. Commit is the only natural
-  moment for an annotation to be confirmed *with a revision* -- there is no
-  other point at which someone has both decided and changed the document -- so
-  a revision written without its confirmations, or confirmations pointing at a
-  revision that failed to write, would both leave the record lying.
+  it, and the proposals it applied become `accepted`. Publishing is the only
+  natural moment for an annotation to be confirmed *with a revision* -- there is
+  no other point at which somebody has both decided and changed the document --
+  so a revision written without its confirmations, or confirmations pointing at
+  a revision that failed to write, would both leave the record lying.
 
-  `attrs` takes `actor_id`, `base_revision_id`, and optionally `block_ids`
-  (defaulting to every uncontended block holding a live proposal),
-  `confirm_annotation_ids`, `source_conversation_id`, `title` and
-  `change_summary`.
+  ## What lands is what was asked for
 
-  A block with an undecided contention cannot be committed, but it does not
-  hold up the rest: selection is per block, so the others go through and that
-  one waits for a decision.
+  `proposal_ids` is required and is the whole of the selection. Nothing is
+  inferred: not the ticks saved on the server, not an uncontested title, not a
+  proposal the selected ones happen to depend on. A person who ticked something
+  and then published something else published what they published, and a save
+  that failed on its way to the server cannot quietly change what a request
+  meant.
 
-  ## Committing a whole-document proposal
+  `base_revision_id` is the ordinary check that the document has not moved under
+  the screen. It is not a review version and not a rebase: when it is stale, the
+  answer is to re-read and look at the new comparison, not to send the same
+  selection again with a fresher id on it.
 
-  `document_proposal_id` commits one instead, and it is named rather than
-  adopted by default: a whole-document proposal settles every block, so letting
-  one land implicitly would discard other topics' work without anyone choosing
-  to. It requires being current: a proposal compiled against an older revision
-  would silently revert whatever landed since, which for a document-wide change
-  means the entire document.
+  ## What it invalidates
 
-  ## Together with block proposals
+  Only what the applied proposals actually beat. A published change supersedes
+  the live proposals that directly conflict with it -- the other rewrites of
+  that paragraph, the deletion of it -- and nothing else. A proposal against a
+  different paragraph is still true and stays live; the move of a paragraph
+  whose text was just settled is still a different question. The set is worked
+  out from the document as it stood before the write, so a candidate cannot slip
+  through by the body having changed underneath.
 
-  `block_ids` may be given alongside it, and then both land in one revision.
-  The scope is not the test -- what the operations actually do is. A block
-  proposal is refused only where the document's operations already settle the
-  same block, by `update` (two answers to what its text is) or `delete` (no
-  block left to update): `conflicting_commit`, carrying the `block_ids` at
-  issue. `insert_after` and `move_after` claim a block's neighbourhood rather
-  than its text and leave every `block_id` alone, so a new section after Block 3
-  commits happily with a rewrite of Block 3.
-
-  The selection is named, never inferred: with a document proposal present, an
-  absent `block_ids` commits the document proposal alone, exactly as before.
-
-  Committing one supersedes the other live *document* proposals, whose base has
-  just moved out from under them, and the live *block* proposals on the blocks
-  its operations settled -- those, and no others. A block nobody's operation
-  updated or deleted still holds the text its proposals were written against.
-  Title proposals are left alone; a title has no anchor to lose, and an
-  uncontested one is adopted here as it would be in any other commit.
-
-  Nothing needs to happen in the other direction. Committing blocks moves the
-  document on, which is what makes a standing document proposal stale, so
-  whichever route lands first invalidates the other without a lock or a priority
-  between them.
+  A selection every member of which has already been applied writes no revision.
+  It says so -- `already_applied` -- rather than creating one identical to its
+  parent, marking anybody as accepted, or superseding the candidates a publish
+  that had actually happened would have beaten.
   """
   @impl true
   def commit_proposals(%Document{} = document, attrs) do
@@ -1207,7 +1055,7 @@ defmodule RintoPMO.Documents do
   end
 
   @doc """
-  Commits several documents at once, in one transaction.
+  Publishes several documents at once, in one transaction.
 
   A discussion that changed a design usually changed more than one document,
   and half of that landing is the worst outcome available: the documents then
@@ -1215,9 +1063,11 @@ defmodule RintoPMO.Documents do
   selection lands or none of it does.
 
   `commits` is a list of `{document, attrs}`, each `attrs` exactly what
-  `commit_proposals/2` takes. `actor_id` and `source_conversation_id` are per
-  entry rather than shared, because they are already per entry there and a
-  second way of saying them would be a second thing to keep in step.
+  `commit_proposals/2` takes -- including its own `proposal_ids`, which are
+  named there for the same reason they are named here. `actor_id` and
+  `source_conversation_id` are per entry rather than shared, because they are
+  already per entry there and a second way of saying them would be a second
+  thing to keep in step.
 
   ## This is not a cross-document commit *record*
 
@@ -1225,8 +1075,7 @@ defmodule RintoPMO.Documents do
   one row per document exactly as it would have, each carrying its own
   `source_conversation_id`, and "what did that discussion change?" stays a
   query. What this adds is atomicity, which is a property of the write rather
-  than an entity -- see `docs/document-working-session.md` on why the noun was
-  refused and the verb was not.
+  than an entity.
 
   ## Order
 
@@ -1237,30 +1086,14 @@ defmodule RintoPMO.Documents do
   in and the lock order is nobody's business.
 
   The same document twice in one batch is refused. It is two ideas about what
-  one commit is, and the second would silently be a commit against a revision
-  the first had just replaced.
+  one commit is, and the second would silently be against a revision the first
+  had just replaced.
   """
   @impl true
   def commit_many(commits) when is_list(commits) do
     with :ok <- ensure_distinct_documents(commits) do
       Repo.transact(fn repo -> commit_each(repo, commits) end)
       |> unwrap_error()
-    end
-  end
-
-  defp commit_within(repo, %Document{} = document, attrs) do
-    locked_document =
-      Document
-      |> where([candidate], candidate.id == ^document.id)
-      |> lock("FOR UPDATE")
-      |> repo.one!()
-
-    parent = latest_revision!(repo, locked_document, preload_blocks?: true)
-    title = title_change(repo, locked_document, attrs)
-
-    case attr(attrs, :document_proposal_id, nil) do
-      nil -> commit_blocks(repo, locked_document, parent, title, attrs)
-      id -> commit_document(repo, locked_document, parent, title, id, attrs)
     end
   end
 
@@ -1283,7 +1116,7 @@ defmodule RintoPMO.Documents do
     |> Enum.sort_by(fn {{document, _attrs}, _asked} -> document.id end)
     |> Enum.reduce_while({:ok, []}, fn {{document, attrs}, asked}, {:ok, done} ->
       case commit_within(repo, document, attrs) do
-        {:ok, revision} -> {:cont, {:ok, [{asked, revision} | done]}}
+        {:ok, result} -> {:cont, {:ok, [{asked, result} | done]}}
         {:error, reason} -> {:halt, {:error, name_document(reason, document)}}
       end
     end)
@@ -1299,231 +1132,6 @@ defmodule RintoPMO.Documents do
     do: {code, Map.put(details, :document_id, document.id)}
 
   defp name_document(reason, _document), do: reason
-
-  defp commit_blocks(repo, document, parent, title, attrs) do
-    by_block = repo |> live_proposals(document, :block) |> Enum.group_by(& &1.block_id)
-
-    with {:ok, block_ids} <- selected_blocks(attrs, by_block, title),
-         :ok <- ensure_no_contention(block_ids, by_block),
-         {:ok, adopted} <- adopted_proposals(block_ids, by_block),
-         :ok <- ensure_block_proposals_fresh(repo, document, parent, adopted),
-         revision_attrs = revision_attrs(attrs, adopted, title),
-         {:ok, revision} <- insert_revision(repo, document, parent, revision_attrs),
-         :ok <- accept_all(repo, adopted ++ adopted_title(title), attr(attrs, :actor_id, nil)),
-         :ok <- confirm_annotations(document, revision, attrs) do
-      {:ok, revision}
-    end
-  end
-
-  defp commit_document(repo, document, parent, title, proposal_id, attrs) do
-    actor_id = attr(attrs, :actor_id, nil)
-    by_block = repo |> live_proposals(document, :block) |> Enum.group_by(& &1.block_id)
-
-    with {:ok, proposal} <- live_document_proposal(repo, document, proposal_id),
-         :ok <- ensure_compiled_against(proposal, parent),
-         {:ok, block_ids} <- named_blocks(attrs),
-         :ok <- ensure_no_contention(block_ids, by_block),
-         {:ok, adopted} <- adopted_proposals(block_ids, by_block),
-         :ok <- ensure_ops_compatible(proposal, adopted),
-         :ok <- ensure_block_proposals_fresh(repo, document, parent, adopted),
-         revision_attrs = document_revision_attrs(attrs, proposal, adopted, title),
-         {:ok, revision} <- insert_revision(repo, document, parent, revision_attrs),
-         :ok <- accept_all(repo, [proposal | adopted] ++ adopted_title(title), actor_id),
-         :ok <- supersede_others(repo, document, proposal, adopted, actor_id),
-         :ok <- confirm_annotations(document, revision, attrs) do
-      {:ok, revision}
-    end
-  end
-
-  # Named, never inferred. A whole-document proposal's operations already reach
-  # every block, so "everything uncontested" -- what an ordinary commit means by
-  # an absent selection -- would be a second, silent claim on the same blocks
-  # made by nobody. Alongside a document proposal a selection is only ever the
-  # blocks the caller listed.
-  defp named_blocks(attrs) do
-    case attr(attrs, :block_ids, nil) do
-      nil -> {:ok, []}
-      block_ids when is_list(block_ids) -> {:ok, block_ids}
-      _other -> {:error, {:invalid_block_ids, %{reason: "block_ids must be an array"}}}
-    end
-  end
-
-  # Which of the selected blocks the document's operations have already settled.
-  #
-  # `update` and `delete` are claims on a block's text or its existence, which
-  # is exactly what a block proposal claims too: one of the two would silently
-  # overrule the other, and after a `delete` the block is not there to update at
-  # all. Those are the conflicts.
-  #
-  # `insert_after` and `move_after` are not. An insertion names a block only as
-  # the place to hang a new one, and a move names it only to change where it
-  # sits; neither touches its text, and neither changes any `block_id` -- so the
-  # update lands on the same block whichever order the two are applied in. A new
-  # chapter after Block 3 and a rewrite of Block 3 are two people answering two
-  # different questions, and this used to refuse both of them.
-  defp ensure_ops_compatible(%BlockProposal{} = proposal, adopted) do
-    selected = MapSet.new(adopted, & &1.block_id)
-
-    case proposal |> settled_blocks() |> MapSet.intersection(selected) |> Enum.sort() do
-      [] -> :ok
-      conflicting -> {:error, {:conflicting_commit, %{block_ids: conflicting}}}
-    end
-  end
-
-  defp settled_blocks(%BlockProposal{block_ops: block_ops}) do
-    block_ops
-    |> List.wrap()
-    |> Enum.flat_map(&settled_block/1)
-    |> MapSet.new()
-  end
-
-  defp updated_blocks(%BlockProposal{block_ops: block_ops}) do
-    block_ops
-    |> List.wrap()
-    |> Enum.flat_map(fn operation ->
-      case {to_string(op_field(operation, :op)), op_field(operation, :block_id)} do
-        {"update", block_id} when is_binary(block_id) -> [block_id]
-        _other -> []
-      end
-    end)
-    |> MapSet.new()
-  end
-
-  # Operations are held as `jsonb` and so come back with string keys and string
-  # values, but one just compiled still has atoms -- `BlockOps` reads either and
-  # so does this. An operation this does not recognise settles nothing here;
-  # `BlockOps.apply/2` refuses the whole list rather than letting it through.
-  defp settled_block(operation) when is_map(operation) do
-    case {to_string(op_field(operation, :op)), op_field(operation, :block_id)} do
-      {op, block_id} when op in ["update", "delete"] and is_binary(block_id) -> [block_id]
-      _other -> []
-    end
-  end
-
-  defp settled_block(_operation), do: []
-
-  defp op_field(operation, key) do
-    case Map.fetch(operation, key) do
-      {:ok, value} -> value
-      :error -> Map.get(operation, Atom.to_string(key))
-    end
-  end
-
-  defp live_document_proposal(repo, document, proposal_id) do
-    BlockProposal
-    |> where([proposal], proposal.document_id == ^document.id)
-    |> where([proposal], proposal.id == ^proposal_id)
-    |> where([proposal], proposal.scope == :document and proposal.status == :live)
-    |> lock("FOR UPDATE")
-    |> repo.one()
-    |> case do
-      nil -> {:error, {:proposal_not_found, %{proposal_id: proposal_id, scope: :document}}}
-      proposal -> {:ok, proposal}
-    end
-  end
-
-  # The one place a proposal's own `base_revision_id` is a conflict test rather
-  # than a record. For a block proposal it could never discriminate -- every
-  # topic's base is the latest revision by construction -- but a whole-document
-  # proposal carries operations for blocks it did not touch, so applying an old
-  # one would revert everything that landed under it. Re-propose to recompile.
-  defp ensure_compiled_against(%BlockProposal{} = proposal, %DocumentRevision{} = parent) do
-    if proposal.base_revision_id == parent.id do
-      :ok
-    else
-      {:error,
-       {:stale_proposal,
-        %{
-          proposal_id: proposal.id,
-          base_revision_id: proposal.base_revision_id,
-          current_revision_id: parent.id
-        }}}
-    end
-  end
-
-  defp ensure_block_proposals_fresh(_repo, _document, _parent, []), do: :ok
-
-  defp ensure_block_proposals_fresh(repo, document, parent, proposals) do
-    base_ids = proposals |> Enum.map(& &1.base_revision_id) |> Enum.uniq()
-
-    bases =
-      document
-      |> Ecto.assoc(:revisions)
-      |> where([revision], revision.id in ^base_ids)
-      |> repo.all()
-      |> repo.preload(:blocks)
-      |> Map.new(&{&1.id, Map.new(&1.blocks, fn block -> {block.block_id, block.content} end)})
-
-    current = Map.new(parent.blocks, &{&1.block_id, &1.content})
-
-    stale =
-      proposals
-      |> Enum.filter(fn proposal ->
-        get_in(bases, [proposal.base_revision_id, proposal.block_id]) !=
-          Map.get(current, proposal.block_id)
-      end)
-      |> Enum.map(& &1.block_id)
-      |> Enum.uniq()
-      |> Enum.sort()
-
-    if stale == [] do
-      :ok
-    else
-      {:error, {:stale_block_proposal, %{block_ids: stale}}}
-    end
-  end
-
-  # What a document commit invalidates, and no more.
-  #
-  # Every other live *document* proposal goes: each one claims the whole
-  # sequence, and was compiled against the revision this just replaced, so
-  # `ensure_compiled_against/2` would refuse it anyway -- superseding says so
-  # now rather than at the next commit.
-  #
-  # A live *block* proposal goes only if the operations settled its block, by
-  # rewriting it or removing it. Those are the ones whose anchor is gone or
-  # whose text has been overruled. A block the operations merely inserted after,
-  # moved, or never named still exists and still holds the text that proposal
-  # was written against, so it stays live -- adding a chapter is not a reason to
-  # throw away everyone else's paragraphs.
-  #
-  # Title proposals are untouched: a title has no anchor to lose.
-  #
-  # Keyed by id rather than relying on `accept_all/3` having already moved the
-  # adopted ones off `:live`, so the two are independent of each other's order.
-  defp supersede_others(repo, document, %BlockProposal{} = adopted, adopted_blocks, actor_id) do
-    settled = settled_blocks(adopted)
-    kept = [adopted.id | Enum.map(adopted_blocks, & &1.id)]
-
-    BlockProposal
-    |> where([proposal], proposal.document_id == ^document.id)
-    |> where([proposal], proposal.status == :live and proposal.scope in [:block, :document])
-    |> where([proposal], proposal.id not in ^kept)
-    |> repo.all()
-    |> Enum.filter(&invalidated?(&1, settled))
-    |> then(&decide_each(repo, &1, :superseded, actor_id, DateTime.utc_now()))
-  end
-
-  defp invalidated?(%BlockProposal{scope: :document}, _settled), do: true
-
-  defp invalidated?(%BlockProposal{scope: :block, block_id: block_id}, settled),
-    do: MapSet.member?(settled, block_id)
-
-  # The structural operations exactly as they were reviewed, then the selected
-  # blocks' text on top. Both orders would produce the same document -- an
-  # update keeps its block's id and its place, and nothing here can settle a
-  # block twice, `ensure_ops_compatible/2` having refused that already -- but
-  # the reviewed list stays first and unaltered, so what a person approved is
-  # what runs.
-  defp document_revision_attrs(attrs, %BlockProposal{} = proposal, adopted, title) do
-    %{
-      block_ops: List.wrap(proposal.block_ops) ++ update_ops(adopted),
-      base_revision_id: attr(attrs, :base_revision_id, nil),
-      source_conversation_id: attr(attrs, :source_conversation_id, nil)
-    }
-    |> maybe_put(:title, title_content(title))
-    |> maybe_put(:change_summary, proposal_change_summary(attrs, [proposal | adopted]))
-  end
 
   defp split_markdown(attrs, author_id) do
     case attr(attrs, :markdown, nil) do
@@ -1753,6 +1361,9 @@ defmodule RintoPMO.Documents do
 
   defp filter_proposals(query, filter) do
     Enum.reduce(filter, query, fn
+      {:id, id}, query ->
+        where(query, [proposal], proposal.id == ^id)
+
       {:status, status}, query ->
         where(query, [proposal], proposal.status == ^status)
 
@@ -1767,115 +1378,351 @@ defmodule RintoPMO.Documents do
     end)
   end
 
-  # Always scoped. Everything downstream of a lookup here groups by `block_id`,
-  # and the document-level scopes carry none -- an unscoped query would collect
-  # them under a `nil` key and hand `nil` to callers as though it were a block.
-  defp live_proposals(%Document{} = document, scope), do: live_proposals(Repo, document, scope)
-
-  defp live_proposals(repo, %Document{} = document, scope) do
+  defp live_proposals(repo, %Document{} = document) do
     document
     |> Ecto.assoc(:proposals)
-    |> where([proposal], proposal.status == :live and proposal.scope == ^scope)
+    |> where([proposal], proposal.status == :live)
     |> repo.all()
   end
 
-  # Rejected early rather than at commit: BlockOps would fail there with an
-  # error about an operation the caller never wrote, long after the mistake.
-  defp ensure_known_block(%DocumentRevision{blocks: blocks}, block_id) do
-    if Enum.any?(blocks, &(&1.block_id == block_id)) do
-      :ok
-    else
-      {:error, {:unknown_block, %{block_id: block_id}}}
+  defp fetch_proposal(repo, %Document{} = document, proposal_id, options) do
+    query = document |> Ecto.assoc(:proposals) |> where([proposal], proposal.id == ^proposal_id)
+    query = if Keyword.get(options, :lock?, false), do: lock(query, "FOR UPDATE"), else: query
+
+    case repo.one(query) do
+      nil -> {:error, {:proposal_not_found, %{proposal_id: proposal_id}}}
+      proposal -> {:ok, proposal}
     end
   end
 
-  defp upsert_proposal(repo, document, latest, actor_id, attrs) do
-    block_id = attr(attrs, :block_id, nil)
-    conversation_id = attr(attrs, :conversation_id, nil)
-    content = attr(attrs, :content, nil)
-    change_summary = attr(attrs, :change_summary, nil)
+  defp ensure_live(%BlockProposal{status: :live}), do: :ok
 
-    case live_proposal(repo, document, block_id, conversation_id) do
+  defp ensure_live(%BlockProposal{} = proposal),
+    do: {:error, {:proposal_not_live, %{proposal_id: proposal.id, status: proposal.status}}}
+
+  defp ensure_current(%DocumentRevision{id: id}, id), do: :ok
+
+  defp ensure_current(%DocumentRevision{id: id}, _other),
+    do: {:error, {:stale_document, %{current_revision_id: id}}}
+
+  # Conflict is a relation, so the answer for a whole set is the pairs it
+  # contains rather than a partition of it. Built once and read many times: a
+  # review screen asks this of every row it draws.
+  defp conflict_map(proposals) do
+    Map.new(proposals, fn proposal ->
+      {proposal.id,
+       for(other <- proposals, BlockProposal.conflict_reason(proposal, other), do: other.id)}
+    end)
+  end
+
+  defp conflicting_live(repo, document, %BlockProposal{} = proposal) do
+    repo
+    |> live_proposals(document)
+    |> Enum.filter(&BlockProposal.conflict_reason(proposal, &1))
+  end
+
+  # Somebody has already chosen among these candidates, and that choice still
+  # refers to what it was made about. Taking it away silently is what `unadopt`
+  # exists to make somebody do out loud.
+  defp ensure_unclaimed(repo, document, proposal, competitors, revision) do
+    snapshots = snapshots(repo, document, adoption_revision_ids(competitors))
+    current = ProposalPlan.snapshot(revision)
+
+    case Enum.find(competitors, &adoption_valid?(&1, current, revision, snapshots)) do
       nil ->
-        %{
-          document_id: document.id,
-          # This path is reached only for a block proposal. The document-level
-          # scopes have their own entry point: they carry no `block_id`, so
-          # `live_proposal/4` could not find their slot to iterate on.
-          scope: :block,
-          block_id: block_id,
-          conversation_id: conversation_id,
-          actor_id: actor_id,
-          content: content,
-          change_summary: change_summary,
-          base_revision_id: latest.id
-        }
-        |> BlockProposal.changeset()
-        |> repo.insert()
+        :ok
 
-      proposal ->
-        proposal
-        |> BlockProposal.content_changeset(%{
-          actor_id: actor_id,
-          content: content,
-          change_summary: change_summary,
-          base_revision_id: latest.id
-        })
-        |> repo.update()
+      claimed ->
+        {:error, {:already_adopted, %{proposal_id: proposal.id, adopted_proposal_id: claimed.id}}}
     end
   end
 
-  defp live_proposal(repo, document, block_id, conversation_id)
-       when is_binary(block_id) and is_binary(conversation_id) do
-    BlockProposal
-    |> where([proposal], proposal.document_id == ^document.id)
-    |> where([proposal], proposal.block_id == ^block_id)
-    |> where([proposal], proposal.conversation_id == ^conversation_id)
-    |> where([proposal], proposal.status == :live)
+  defp write_adoption(repo, %BlockProposal{} = proposal, revision_id) do
+    proposal
+    |> BlockProposal.adoption_changeset(revision_id)
+    |> repo.update()
+  end
+
+  # The candidates a choice just beat lose their tick and keep their life. They
+  # are not decided: un-adopting brings all of them back into play, and only a
+  # publish ends any of them.
+  defp unstage_all(repo, proposals, _actor_id) do
+    proposals
+    |> Enum.filter(& &1.staged)
+    |> Enum.reduce_while(:ok, fn proposal, :ok ->
+      case proposal |> BlockProposal.staged_changeset(false) |> repo.update() do
+        {:ok, _proposal} -> {:cont, :ok}
+        {:error, changeset} -> {:halt, {:error, changeset}}
+      end
+    end)
+  end
+
+  defp describe(repo, document, %BlockProposal{} = proposal, revision) do
+    [detail] = describe_proposals(repo, document, [proposal], revision)
+    detail
+  end
+
+  defp describe_proposals(repo, document, proposals, revision) do
+    current = ProposalPlan.snapshot(revision)
+    conflicts = repo |> live_proposals(document) |> conflict_map()
+
+    snapshots =
+      snapshots(
+        repo,
+        document,
+        Enum.map(proposals, & &1.base_revision_id) ++ adoption_revision_ids(proposals)
+      )
+
+    Enum.map(proposals, fn proposal ->
+      state = ProposalPlan.state(proposal, snapshots[proposal.base_revision_id], current)
+      adopted = adoption_valid?(proposal, current, revision, snapshots)
+
+      %{
+        proposal: proposal,
+        state: state_name(state),
+        reason: state_reason(state),
+        adopted: adopted,
+        # Told apart from "never adopted" because they call for different
+        # things: one is an argument nobody has settled, the other is a
+        # settlement about words that have since changed.
+        adoption_stale: not adopted and not is_nil(proposal.adopted_revision_id),
+        conflicting_proposal_ids: Map.get(conflicts, proposal.id, []),
+        current_revision_id: revision.id
+      }
+    end)
+  end
+
+  defp adoption_revision_ids(proposals) do
+    for %BlockProposal{adopted_revision_id: id} <- proposals, not is_nil(id), do: id
+  end
+
+  # An adoption is worth something only while what was on screen when it was
+  # made still says what it said. Compared at the grain of what this proposal
+  # actually argues about, so an edit three sections away does not send somebody
+  # back to a decision they already took.
+  defp adoption_valid?(%BlockProposal{adopted_revision_id: nil}, _current, _revision, _snapshots),
+    do: false
+
+  defp adoption_valid?(%BlockProposal{adopted_revision_id: id}, _current, %{id: id}, _snapshots),
+    do: true
+
+  defp adoption_valid?(%BlockProposal{} = proposal, current, _revision, snapshots) do
+    case Map.get(snapshots, proposal.adopted_revision_id) do
+      nil ->
+        false
+
+      adopted ->
+        ProposalPlan.relevance(proposal, adopted) == ProposalPlan.relevance(proposal, current)
+    end
+  end
+
+  defp snapshots(repo, %Document{} = document, revision_ids) do
+    case revision_ids |> Enum.reject(&is_nil/1) |> Enum.uniq() do
+      [] ->
+        %{}
+
+      ids ->
+        document
+        |> Ecto.assoc(:revisions)
+        |> where([revision], revision.id in ^ids)
+        |> repo.all()
+        |> repo.preload(:blocks)
+        |> Map.new(&{&1.id, ProposalPlan.snapshot(&1)})
+    end
+  end
+
+  defp state_name(:applicable), do: :applicable
+  defp state_name(:already_applied), do: :already_applied
+  defp state_name({name, _reason}), do: name
+
+  defp state_reason({_name, reason}), do: reason
+  defp state_reason(_state), do: nil
+
+  # Every proposal that belongs to the same written sequence as one of these,
+  # whatever has since become of it. A run's order is only recoverable from its
+  # members, and the members a publish leaves out are exactly the ones it has to
+  # know about.
+  defp run_siblings(repo, %Document{} = document, proposals) do
+    case for %BlockProposal{run_id: id} <- proposals, not is_nil(id), do: id do
+      [] ->
+        %{}
+
+      run_ids ->
+        document
+        |> Ecto.assoc(:proposals)
+        |> where([proposal], proposal.run_id in ^run_ids)
+        |> repo.all()
+        |> Enum.group_by(& &1.run_id)
+    end
+  end
+
+  # The revision whose text the caller actually read. Checked against this
+  # document rather than trusted, and never filled in here: a server that
+  # stamped the latest revision onto a body written against an older one would
+  # turn every stale rewrite into a silent revert.
+  defp fetch_base_revision(repo, %Document{} = document, attrs) do
+    case attr(attrs, :base_revision_id, nil) do
+      nil ->
+        {:error, {:base_revision_required, %{}}}
+
+      value ->
+        with {:ok, id} <- cast_revision_id(value) do
+          read_revision(repo, document, id, value)
+        end
+    end
+  end
+
+  defp read_revision(repo, document, id, named) do
+    document
+    |> Ecto.assoc(:revisions)
+    |> where([revision], revision.id == ^id)
     |> repo.one()
-  end
-
-  # Missing ids fall through to the changeset, which names them properly.
-  defp live_proposal(_repo, _document, _block_id, _conversation_id), do: nil
-
-  # The document-level twin of `upsert_proposal/4`. The slot is keyed by scope
-  # rather than by block, and no `block_id` is written -- the check constraint
-  # and the changeset both refuse one here.
-  defp upsert_scoped_proposal(repo, document, latest, scope, actor_id, attrs) do
-    conversation_id = attr(attrs, :conversation_id, nil)
-    content = attr(attrs, :content, nil)
-
-    case live_scoped_proposal(repo, document, scope, conversation_id) do
-      nil ->
-        %{
-          document_id: document.id,
-          scope: scope,
-          conversation_id: conversation_id,
-          actor_id: actor_id,
-          content: content,
-          base_revision_id: latest.id
-        }
-        |> BlockProposal.changeset()
-        |> repo.insert()
-
-      proposal ->
-        proposal
-        |> BlockProposal.content_changeset(%{actor_id: actor_id, content: content})
-        |> repo.update()
+    |> case do
+      nil -> {:error, {:unknown_revision, %{revision_id: named}}}
+      revision -> {:ok, repo.preload(revision, :blocks)}
     end
   end
 
-  defp live_scoped_proposal(repo, document, scope, conversation_id)
-       when is_binary(conversation_id) do
-    BlockProposal
-    |> where([proposal], proposal.document_id == ^document.id)
+  defp cast_revision_id(value) do
+    case UUIDv7.cast(value) do
+      {:ok, id} -> {:ok, id}
+      :error -> {:error, {:unknown_revision, %{revision_id: value}}}
+    end
+  end
+
+  # What a propose call leaves behind, and what it writes.
+  #
+  # An intent this topic already has standing keeps the row it has, id and all,
+  # so re-running a generation that reached the same answer does not orphan
+  # every message that cited the first one. Anything the call replaces is
+  # superseded before the new rows go in, both because the slot is unique and
+  # because the old one really has been overtaken.
+  defp reconcile_proposals(repo, document, base, actor_id, attrs, wanted, replaces) do
+    decided_at = DateTime.utc_now()
+    conversation_id = attr(attrs, :conversation_id, nil)
+    existing = replaceable_proposals(repo, document, conversation_id, replaces)
+    by_intent = Map.new(existing, &{intent_key(&1), &1})
+
+    reused = for intent <- wanted, proposal = by_intent[intent_key(intent)], do: proposal
+    obsolete = existing -- reused
+
+    with :ok <- decide_each(repo, obsolete, :superseded, actor_id, decided_at) do
+      case write_intents(repo, document, base, actor_id, attrs, wanted, by_intent, obsolete) do
+        {:ok, proposals} -> {:ok, proposals, Enum.map(obsolete, & &1.id)}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp write_intents(repo, document, base, actor_id, attrs, wanted, by_intent, obsolete) do
+    replaced = Map.new(obsolete, &{slot_key(&1), &1})
+
+    wanted
+    |> Enum.reduce_while({:ok, []}, fn intent, {:ok, written} ->
+      case reuse_or_write(repo, document, base, actor_id, attrs, intent, by_intent, replaced) do
+        {:ok, proposal} -> {:cont, {:ok, [proposal | written]}}
+        {:error, changeset} -> {:halt, {:error, changeset}}
+      end
+    end)
+    |> case do
+      {:ok, written} -> {:ok, Enum.reverse(written)}
+      error -> error
+    end
+  end
+
+  defp reuse_or_write(repo, document, base, actor_id, attrs, intent, by_intent, replaced) do
+    case Map.fetch(by_intent, intent_key(intent)) do
+      {:ok, proposal} -> {:ok, proposal}
+      :error -> insert_intent(repo, document, base, actor_id, attrs, intent, replaced)
+    end
+  end
+
+  defp insert_intent(repo, document, base, actor_id, attrs, intent, replaced) do
+    intent
+    |> Map.merge(%{
+      document_id: document.id,
+      conversation_id: attr(attrs, :conversation_id, nil),
+      actor_id: actor_id,
+      base_revision_id: base.id,
+      change_summary: attr(attrs, :change_summary, nil),
+      supersedes_id: replaced |> Map.get(slot_key(intent)) |> then(&(&1 && &1.id))
+    })
+    |> BlockProposal.changeset()
+    |> repo.insert()
+  end
+
+  defp replaceable_proposals(repo, document, conversation_id, {:scope, scope}) do
+    document
+    |> Ecto.assoc(:proposals)
+    |> where([proposal], proposal.status == :live)
+    |> where([proposal], proposal.conversation_id == ^conversation_id)
     |> where([proposal], proposal.scope == ^scope)
-    |> where([proposal], proposal.conversation_id == ^conversation_id)
-    |> where([proposal], proposal.status == :live)
-    |> repo.one()
+    |> lock("FOR UPDATE")
+    |> repo.all()
   end
 
-  defp live_scoped_proposal(_repo, _document, _scope, _conversation_id), do: nil
+  defp replaceable_proposals(repo, document, conversation_id, {:slots, slots}) do
+    block_ids = Enum.map(slots, &elem(&1, 0))
+
+    document
+    |> Ecto.assoc(:proposals)
+    |> where([proposal], proposal.status == :live)
+    |> where([proposal], proposal.conversation_id == ^conversation_id)
+    |> where([proposal], proposal.scope == :block and proposal.block_id in ^block_ids)
+    |> lock("FOR UPDATE")
+    |> repo.all()
+    |> Enum.filter(&({&1.block_id, &1.operation} in slots))
+  end
+
+  # What makes two proposals the same modification. Position metadata is not in
+  # it: a run is how insertions were written down, not what they say.
+  defp intent_key(%BlockProposal{} = proposal) do
+    {proposal.scope, proposal.operation, proposal.block_id, proposal.after_block_id,
+     proposal.content}
+  end
+
+  defp intent_key(intent) when is_map(intent) do
+    {intent.scope, intent.operation, Map.get(intent, :block_id), Map.get(intent, :after_block_id),
+     Map.get(intent, :content)}
+  end
+
+  # The unique slot a topic holds: one rewrite of a block, one move of it, one
+  # title. What a new row in that slot replaces is the row that was in it.
+  defp slot_key(%BlockProposal{scope: :title}), do: {:title, :update}
+  defp slot_key(%BlockProposal{} = proposal), do: {proposal.block_id, proposal.operation}
+
+  defp slot_key(%{scope: :title}), do: {:title, :update}
+  defp slot_key(intent) when is_map(intent), do: {Map.get(intent, :block_id), intent.operation}
+
+  defp proposed_result(repo, document, proposals, superseded) do
+    conflicts = repo |> live_proposals(document) |> conflict_map()
+
+    %{
+      proposals: proposals,
+      summary: proposal_summary(proposals),
+      superseded: superseded,
+      contended: contended_result(proposals, conflicts)
+    }
+  end
+
+  defp contended_result(proposals, conflicts) do
+    for proposal <- proposals,
+        competitors = Map.get(conflicts, proposal.id, []),
+        competitors != [] do
+      %{proposal_id: proposal.id, conflicting_proposal_ids: competitors}
+    end
+  end
+
+  defp proposal_summary(proposals) do
+    Enum.reduce(proposals, %{changed: 0, added: 0, removed: 0, moved: 0}, fn proposal, summary ->
+      case proposal.operation do
+        :update -> Map.update!(summary, :changed, &(&1 + 1))
+        :insert -> Map.update!(summary, :added, &(&1 + 1))
+        :delete -> Map.update!(summary, :removed, &(&1 + 1))
+        :move -> Map.update!(summary, :moved, &(&1 + 1))
+      end
+    end)
+  end
 
   # Who a proposal is by. Not a parameter: see "Who wrote a proposal is not a
   # caller's to say" above.
@@ -1912,11 +1759,8 @@ defmodule RintoPMO.Documents do
   # that is the whole of what this row says. Which persona was configured on
   # the topic at the time is a different question, it is answered by the
   # conversation itself, and resolving it here bought a branch per topic mode
-  # plus a refusal (`assistant_actor_required`) for a topic still choosing its
-  # assistant -- a write path failing on a decision nobody had made yet.
-  #
-  # `assistant_actor_id` is untouched and still decides what to *call*. Signing
-  # and calling were two jobs on one column; this is them coming apart.
+  # plus a refusal for a topic still choosing its assistant -- a write path
+  # failing on a decision nobody had made yet.
   defp author_of(%{id: conversation_id}) do
     case actors().get_default_assistant() do
       nil -> {:error, {:default_assistant_missing, %{conversation_id: conversation_id}}}
@@ -1936,51 +1780,20 @@ defmodule RintoPMO.Documents do
         end
 
       nil ->
-        # No body at all is the changeset's error to name, not a diffing failure.
-        {:ok, :absent}
+        {:error, {:invalid_markdown, %{reason: "content is required"}}}
 
       _not_a_string ->
         {:error, {:invalid_markdown, %{reason: "content must be a string"}}}
     end
   end
 
-  defp compile_operations(_latest, :absent, _actor_id), do: {:ok, []}
-
-  defp compile_operations(%DocumentRevision{} = latest, contents, actor_id) do
-    case BlockDiff.compile(ordered_blocks(latest), contents, actor_id) do
+  # Against the revision the topic read, not against the latest one. Compiling
+  # against a revision nobody looked at would attribute somebody else's
+  # paragraphs to this rewrite and then quietly revert them.
+  defp compile_operations(%DocumentRevision{} = base, contents, actor_id) do
+    case BlockDiff.compile(ordered_blocks(base), contents, actor_id) do
       [] -> {:error, {:no_change_proposed, %{}}}
       operations -> {:ok, operations}
-    end
-  end
-
-  defp upsert_document_proposal(repo, document, latest, operations, actor_id, attrs) do
-    conversation_id = attr(attrs, :conversation_id, nil)
-
-    compiled = %{
-      actor_id: actor_id,
-      content: attr(attrs, :content, nil),
-      block_ops: storable_operations(operations),
-      base_revision_id: latest.id,
-      change_summary: attr(attrs, :change_summary, nil)
-    }
-
-    case live_scoped_proposal(repo, document, :document, conversation_id) do
-      nil ->
-        compiled
-        |> Map.merge(%{
-          document_id: document.id,
-          scope: :document,
-          conversation_id: conversation_id
-        })
-        |> BlockProposal.changeset()
-        |> repo.insert()
-
-      proposal ->
-        # Recompiled against the current latest revision, so a topic revising
-        # its rewrite is also a topic catching up with whatever landed since.
-        proposal
-        |> BlockProposal.content_changeset(compiled)
-        |> repo.update()
     end
   end
 
@@ -1988,206 +1801,241 @@ defmodule RintoPMO.Documents do
     Enum.sort_by(blocks, & &1.position)
   end
 
-  # Stored as `jsonb`, which comes back with string keys and string values
-  # whatever went in. Converting on the way in rather than leaving it to the
-  # database means a proposal just written and one just read hold the same shape,
-  # so nothing downstream has to know which it is holding. `BlockOps` reads
-  # either form; the point is that there is only one.
-  defp storable_operations(operations) do
-    Enum.map(operations, fn operation ->
-      Map.new(operation, fn
-        {key, value} when is_atom(value) and not is_nil(value) ->
-          {Atom.to_string(key), Atom.to_string(value)}
-
-        {key, value} ->
-          {Atom.to_string(key), value}
-      end)
-    end)
+  defp base_snapshots(repo, document, proposals) do
+    snapshots(repo, document, Enum.map(proposals, & &1.base_revision_id))
   end
 
-  defp count_live(repo, document, block_id) do
-    BlockProposal
-    |> where([proposal], proposal.document_id == ^document.id)
-    |> where([proposal], proposal.block_id == ^block_id and proposal.status == :live)
-    |> repo.aggregate(:count)
-  end
-
-  defp count_live_scope(repo, document, scope) do
-    BlockProposal
-    |> where([proposal], proposal.document_id == ^document.id)
-    |> where([proposal], proposal.scope == ^scope and proposal.status == :live)
-    |> repo.aggregate(:count)
-  end
-
-  defp proposed_result([first | _rest] = proposals, summary, superseded, contended) do
-    primary = Enum.find(proposals, first, &(&1.scope == :document))
-
-    live_proposals =
-      contended
-      |> Enum.map(&Map.get(&1, :live_proposals, 1))
-      |> Enum.max(fn -> 1 end)
-
-    %{
-      # Kept for context callers while the REST response changes as one unit.
-      proposal: primary,
-      live_proposals: live_proposals,
-      proposals: proposals,
-      summary: summary,
-      superseded: superseded,
-      contended: contended
-    }
-  end
-
-  defp block_contentions(repo, document, block_id, live_proposals) do
-    direct =
-      if live_proposals > 1 do
-        [%{scope: :block, block_id: block_id, live_proposals: live_proposals}]
-      else
-        []
-      end
-
-    direct ++ legacy_document_overlaps(repo, document, [block_id])
-  end
-
-  defp title_contentions(live_proposals) when live_proposals > 1,
-    do: [%{scope: :title, live_proposals: live_proposals}]
-
-  defp title_contentions(_live_proposals), do: []
-
-  defp proposal_contentions(repo, document, proposals) do
-    block_ids =
-      for %BlockProposal{scope: :block, block_id: block_id} <- proposals, do: block_id
-
-    block_contentions =
-      Enum.flat_map(block_ids, fn block_id ->
-        case count_live(repo, document, block_id) do
-          count when count > 1 ->
-            [%{scope: :block, block_id: block_id, live_proposals: count}]
-
-          _count ->
-            []
-        end
-      end)
-
-    document_contentions =
-      if Enum.any?(proposals, &(&1.scope == :document)) do
-        case count_live_scope(repo, document, :document) do
-          count when count > 1 -> [%{scope: :document, live_proposals: count}]
-          _count -> []
-        end
-      else
-        []
-      end
-
-    block_contentions ++
-      document_contentions ++ legacy_document_overlaps(repo, document, block_ids)
-  end
-
-  defp legacy_document_overlaps(_repo, _document, []), do: []
-
-  defp legacy_document_overlaps(repo, document, block_ids) do
-    selected = MapSet.new(block_ids)
-
-    repo
-    |> live_proposals(document, :document)
-    |> Enum.flat_map(fn proposal ->
-      overlaps =
-        proposal
-        |> updated_blocks()
-        |> MapSet.intersection(selected)
-        |> Enum.sort()
-
-      if overlaps == [] do
-        []
-      else
-        [
-          %{
-            scope: :document,
-            proposal_id: proposal.id,
-            overlaps_block_ids: overlaps,
-            decidable: false
-          }
-        ]
-      end
-    end)
-  end
-
-  defp decide_all(repo, adopted, losers, actor_id, decided_at) do
-    with :ok <- decide_each(repo, losers, :rejected, actor_id, decided_at) do
-      {:ok, adopted}
-    end
-  end
-
-  defp decide_each(repo, proposals, status, actor_id, decided_at) do
+  defp decide_each(repo, proposals, status, actor_id, decided_at, options \\ []) do
     Enum.reduce_while(proposals, :ok, fn proposal, :ok ->
-      case decide_one(repo, proposal, status, actor_id, decided_at) do
+      case decide_one(repo, proposal, status, actor_id, decided_at, options) do
         {:ok, _proposal} -> {:cont, :ok}
         {:error, changeset} -> {:halt, {:error, changeset}}
       end
     end)
   end
 
-  defp decide_one(repo, proposal, status, actor_id, decided_at) do
+  defp decide_one(repo, proposal, status, actor_id, decided_at, options) do
     proposal
-    |> BlockProposal.decision_changeset(status, actor_id, decided_at)
+    |> BlockProposal.decision_changeset(status, actor_id, decided_at, options)
     |> repo.update()
   end
 
-  # Commit
+  # Publishing
 
-  defp selected_blocks(attrs, by_block, title) do
-    case attr(attrs, :block_ids, nil) do
-      nil -> default_selection(by_block, title)
-      [] -> nothing_to_commit_unless(title, [])
-      block_ids when is_list(block_ids) -> {:ok, block_ids}
-      _other -> {:error, {:invalid_block_ids, %{reason: "block_ids must be an array"}}}
+  defp commit_within(repo, %Document{} = document, attrs) do
+    locked_document =
+      Document
+      |> where([candidate], candidate.id == ^document.id)
+      |> lock("FOR UPDATE")
+      |> repo.one!()
+
+    parent = latest_revision!(repo, locked_document, preload_blocks?: true)
+    current = ProposalPlan.snapshot(parent)
+
+    with :ok <- ensure_current(parent, attr(attrs, :base_revision_id, nil)),
+         {:ok, ids} <- selected_ids(attrs),
+         {:ok, selected} <- fetch_selected(repo, locked_document, ids),
+         :ok <- ensure_all_live(selected),
+         :ok <- ensure_selection_compatible(selected),
+         {:ok, applying, satisfied} <-
+           partition_selection(repo, locked_document, selected, parent, current) do
+      publish(repo, locked_document, parent, current, attrs, applying, satisfied)
     end
   end
 
-  # Everything that can go: every block holding exactly one live proposal. A
-  # contended block is left behind rather than holding up the rest, which is
-  # the whole point of selecting per block.
-  defp default_selection(by_block, title) do
-    case for {block_id, [_only]} <- by_block, do: block_id do
-      [] -> nothing_to_commit_unless(title, [])
-      block_ids -> {:ok, Enum.sort(block_ids)}
+  defp selected_ids(attrs) do
+    case attr(attrs, :proposal_ids, nil) do
+      ids when is_list(ids) and ids != [] ->
+        case ids -- Enum.uniq(ids) do
+          [] -> {:ok, ids}
+          [duplicate | _rest] -> {:error, {:duplicate_proposal, %{proposal_id: duplicate}}}
+        end
+
+      [] ->
+        {:error, {:nothing_to_commit, %{}}}
+
+      nil ->
+        {:error, {:nothing_to_commit, %{}}}
+
+      _other ->
+        {:error, {:validation_error, %{proposal_ids: ["must be an array"]}}}
     end
   end
 
-  # A retitling is a change, so a commit carrying one is not empty even with no
-  # block to go with it.
-  defp nothing_to_commit_unless(nil, _block_ids), do: {:error, {:nothing_to_commit, %{}}}
-  defp nothing_to_commit_unless(_title, block_ids), do: {:ok, block_ids}
+  # Scoped to this document, so an id from elsewhere is missing rather than
+  # borrowed. The order asked for is kept: it is the order a person read them
+  # in, and nothing downstream depends on it being anything else.
+  defp fetch_selected(repo, document, ids) do
+    found =
+      document
+      |> Ecto.assoc(:proposals)
+      |> where([proposal], proposal.id in ^ids)
+      |> lock("FOR UPDATE")
+      |> repo.all()
+      |> Map.new(&{&1.id, &1})
 
-  defp ensure_no_contention(block_ids, by_block) do
-    case Enum.filter(block_ids, &(length(Map.get(by_block, &1, [])) > 1)) do
-      [] -> :ok
-      contended -> {:error, {:unresolved_contention, %{block_ids: Enum.sort(contended)}}}
+    case Enum.reject(ids, &Map.has_key?(found, &1)) do
+      [] -> {:ok, Enum.map(ids, &Map.fetch!(found, &1))}
+      missing -> {:error, {:proposal_not_found, %{proposal_ids: missing}}}
     end
   end
 
-  defp adopted_proposals(block_ids, by_block) do
-    block_ids
-    |> Enum.reduce_while({:ok, []}, fn block_id, {:ok, adopted} ->
-      case Map.get(by_block, block_id, []) do
-        [proposal] -> {:cont, {:ok, [proposal | adopted]}}
-        [] -> {:halt, {:error, {:no_live_proposal, %{block_id: block_id}}}}
+  defp ensure_all_live(selected) do
+    case Enum.reject(selected, &(&1.status == :live)) do
+      [] ->
+        :ok
+
+      settled ->
+        {:error,
+         {:proposal_not_live,
+          %{proposal_ids: Enum.map(settled, & &1.id), statuses: Enum.map(settled, & &1.status)}}}
+    end
+  end
+
+  # Two things in one publish that cannot both be true. Refused rather than
+  # ordered: picking one of them is exactly the decision this system leaves to a
+  # person, and doing it here would do it invisibly.
+  defp ensure_selection_compatible(selected) do
+    conflicts =
+      for left <- selected,
+          right <- selected,
+          left.id < right.id,
+          reason = BlockProposal.conflict_reason(left, right) do
+        %{proposal_ids: [left.id, right.id], reason: reason}
+      end
+
+    if conflicts == [] do
+      :ok
+    else
+      {:error, {:conflicting_selection, %{conflicts: conflicts}}}
+    end
+  end
+
+  # What each selected proposal still means against the document as it stands.
+  # A publish either takes the whole selection or refuses: applying the legal
+  # half and reporting success would leave a person believing they had published
+  # something they had not.
+  defp partition_selection(repo, document, selected, parent, current) do
+    bases = base_snapshots(repo, document, selected)
+    adopted = snapshots(repo, document, adoption_revision_ids(selected))
+    snapshots = Map.merge(bases, adopted)
+
+    Enum.reduce_while(selected, {:ok, [], []}, fn proposal, {:ok, applying, satisfied} ->
+      case classify(proposal, snapshots, current, parent) do
+        :apply -> {:cont, {:ok, [proposal | applying], satisfied}}
+        :satisfied -> {:cont, {:ok, applying, [proposal | satisfied]}}
+        {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
     |> case do
-      {:ok, adopted} -> {:ok, Enum.reverse(adopted)}
+      {:ok, applying, satisfied} -> {:ok, Enum.reverse(applying), Enum.reverse(satisfied)}
       error -> error
     end
   end
 
-  defp revision_attrs(attrs, adopted, title) do
+  defp classify(proposal, snapshots, current, parent) do
+    case ProposalPlan.state(proposal, snapshots[proposal.base_revision_id], current) do
+      :applicable ->
+        :apply
+
+      :already_applied ->
+        :satisfied
+
+      {:needs_confirmation, reason} ->
+        if adoption_valid?(proposal, current, parent, snapshots) do
+          :apply
+        else
+          {:error, {:needs_reconfirmation, %{proposal_id: proposal.id, reason: reason}}}
+        end
+
+      {:not_applicable, reason} ->
+        {:error, {:proposal_not_applicable, %{proposal_id: proposal.id, reason: reason}}}
+    end
+  end
+
+  # Nothing left to do, and saying so rather than writing a revision identical
+  # to its parent. Nobody is accepted -- no publish applied these -- and no
+  # competing candidate is superseded, because nothing beat it. What does happen
+  # is that the ticks come off: they are waiting for something that has already
+  # happened.
+  defp publish(repo, document, parent, _current, _attrs, [], satisfied) do
+    with :ok <- clear_marks(repo, satisfied) do
+      {:ok,
+       %{
+         result: :already_applied,
+         revision: nil,
+         current_revision_id: parent.id,
+         document_id: document.id,
+         accepted: [],
+         superseded: [],
+         already_applied: Enum.map(satisfied, & &1.id)
+       }}
+    end
+  end
+
+  defp publish(repo, document, parent, current, attrs, applying, satisfied) do
+    actor_id = attr(attrs, :actor_id, nil)
+    body = Enum.filter(applying, &(&1.scope == :block))
+    # Worked out before the write, against the document the selection was
+    # judged on. Afterwards the body has moved and a candidate that lost would
+    # no longer look like one.
+    beaten = beaten_by(repo, document, applying)
+
+    with {:ok, operations} <-
+           ProposalPlan.operations(body, current, run_siblings(repo, document, body)),
+         revision_attrs = publication_attrs(attrs, applying, operations),
+         {:ok, revision} <- insert_revision(repo, document, parent, revision_attrs),
+         :ok <- accept_all(repo, applying, actor_id, revision.id),
+         :ok <- decide_each(repo, beaten, :superseded, actor_id, DateTime.utc_now()),
+         :ok <- clear_marks(repo, satisfied),
+         :ok <- confirm_annotations(document, revision, attrs) do
+      {:ok,
+       %{
+         result: :published,
+         revision: revision,
+         current_revision_id: revision.id,
+         document_id: document.id,
+         accepted: Enum.map(applying, & &1.id),
+         superseded: Enum.map(beaten, & &1.id),
+         already_applied: Enum.map(satisfied, & &1.id)
+       }}
+    end
+  end
+
+  # Only what the published changes actually beat: the other answers to the
+  # questions they answered. A proposal about a different paragraph is still
+  # true, and a move of a paragraph whose text was just settled is still a
+  # different question.
+  defp beaten_by(repo, document, applying) do
+    published = MapSet.new(applying, & &1.id)
+
+    repo
+    |> live_proposals(document)
+    |> Enum.reject(&MapSet.member?(published, &1.id))
+    |> Enum.filter(fn candidate ->
+      Enum.any?(applying, &BlockProposal.conflict_reason(&1, candidate))
+    end)
+  end
+
+  defp publication_attrs(attrs, applying, operations) do
     %{
-      block_ops: update_ops(adopted),
+      block_ops: operations,
       base_revision_id: attr(attrs, :base_revision_id, nil),
       source_conversation_id: attr(attrs, :source_conversation_id, nil)
     }
-    |> maybe_put(:title, title_content(title))
-    |> maybe_put(:change_summary, proposal_change_summary(attrs, adopted))
+    |> maybe_put(:title, published_title(applying))
+    |> maybe_put(:change_summary, proposal_change_summary(attrs, applying))
+  end
+
+  # A title changes when a title proposal was published, and never otherwise.
+  # There is no field on the request that means "and also call it this": typing
+  # a title is writing a revision, which is a different thing a person does
+  # somewhere else.
+  defp published_title(applying) do
+    case Enum.find(applying, &(&1.scope == :title)) do
+      nil -> nil
+      proposal -> proposal.content
+    end
   end
 
   defp proposal_change_summary(attrs, proposals) do
@@ -2206,55 +2054,34 @@ defmodule RintoPMO.Documents do
     end
   end
 
-  # The one shape of outcome a block proposal has. Credited to the proposer
-  # rather than to whoever is committing: a committed block still belongs to the
-  # AI that wrote it.
-  defp update_ops(adopted) do
-    Enum.map(adopted, fn proposal ->
-      %{
-        op: :update,
-        block_id: proposal.block_id,
-        actor_id: proposal.actor_id,
-        content: proposal.content
-      }
-    end)
-  end
-
-  # What settles this revision's title, if anything at all.
-  #
-  # A proposal is adopted the way a block's is: exactly one live one is
-  # uncontested and goes, more than one is an argument and is left behind rather
-  # than holding up the rest of the commit.
-  #
-  # A title in `attrs` is somebody typing one. It wins, and it settles nothing --
-  # a person choosing their own words is not a decision about anybody's proposal.
-  defp title_change(repo, document, attrs) do
-    case attr(attrs, :title, nil) do
-      nil ->
-        case live_proposals(repo, document, :title) do
-          [only] -> {:adopted, only}
-          _none_or_contended -> nil
-        end
-
-      typed ->
-        {:typed, typed}
-    end
-  end
-
-  defp title_content(nil), do: nil
-  defp title_content({:typed, title}), do: title
-  defp title_content({:adopted, %BlockProposal{content: content}}), do: content
-
-  defp adopted_title({:adopted, proposal}), do: [proposal]
-  defp adopted_title(_typed_or_absent), do: []
-
   # `title` is absent rather than nil when unset, because the revision
   # changeset reads its absence as "keep the parent's".
   defp maybe_put(attrs, _key, nil), do: attrs
   defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)
 
-  defp accept_all(repo, adopted, actor_id) do
-    decide_each(repo, adopted, :accepted, actor_id, DateTime.utc_now())
+  defp accept_all(repo, applying, actor_id, revision_id) do
+    decide_each(repo, applying, :accepted, actor_id, DateTime.utc_now(),
+      accepted_revision_id: revision_id
+    )
+  end
+
+  # A proposal that got what it wanted without this publish applying it. It is
+  # still live and still readable; what it stops being is something waiting to
+  # be taken.
+  defp clear_marks(repo, proposals) do
+    proposals
+    |> Enum.filter(&(&1.staged or not is_nil(&1.adopted_revision_id)))
+    |> Enum.reduce_while(:ok, fn proposal, :ok ->
+      changeset =
+        proposal
+        |> BlockProposal.staged_changeset(false)
+        |> Ecto.Changeset.put_change(:adopted_revision_id, nil)
+
+      case repo.update(changeset) do
+        {:ok, _proposal} -> {:cont, :ok}
+        {:error, changeset} -> {:halt, {:error, changeset}}
+      end
+    end)
   end
 
   defp confirm_annotations(document, revision, attrs) do

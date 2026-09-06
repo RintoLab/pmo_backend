@@ -20,6 +20,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     # never yours to move.
     task_not_yours: {403, "The task is assigned to someone else."},
     not_found: {404, "The requested resource was not found."},
+    # An id that names nothing, or names something in another document. A 404
+    # rather than a validation error: the request is well formed and the thing
+    # it asks for is simply not there.
+    proposal_not_found: {404, "The proposal does not belong to this document."},
     image_too_large: {413, "The image exceeds the size accepted for inline use."},
     unsupported_image: {415, "The file is not an image format that can be sent to a model."},
     stale_document: {409, "The document has changed since the provided base revision."},
@@ -30,7 +34,8 @@ defmodule RintoPMOWeb.ErrorJSON do
     dependency_cycle: {409, "The task dependency would create a cycle."},
     # A contention is a question for a person, not a failure to retry, so it is
     # a conflict rather than a validation error.
-    unresolved_contention: {409, "The block has competing proposals that nobody has decided."},
+    unresolved_contention:
+      {409, "Something else claims this change too, and nobody has chosen between them."},
     # Never resolved by retrying: a session parked on a question is waiting on
     # a person, and is never evicted to make room.
     session_limit_reached:
@@ -38,11 +43,8 @@ defmodule RintoPMOWeb.ErrorJSON do
     codex_auth_not_pending: {409, "There is no pending OpenAI Codex authorization to cancel."},
     validation_error: {422, "Request validation failed."},
     unknown_block: {422, "The block is not part of the document's latest revision."},
-    no_live_proposal: {422, "The block has no proposal to commit."},
-    nothing_to_commit: {422, "Nothing has a proposal ready to commit."},
-    invalid_block_ids: {422, "The selected blocks are invalid."},
-    proposal_not_found: {422, "The proposal is not live in that slot."},
-    invalid_scope: {422, "The proposal scope is not one this endpoint accepts."},
+    nothing_to_commit: {422, "A publish has to name the proposals it publishes."},
+    invalid_input_kind: {422, "The propose input is not a kind this endpoint accepts."},
     annotation_not_found: {422, "The annotation does not belong to this document."},
     conversation_not_found: {422, "The topic the proposal names does not exist."},
     assistant_actor_required:
@@ -64,19 +66,37 @@ defmodule RintoPMOWeb.ErrorJSON do
     default_project_missing:
       {422, "The default project does not exist. Run `mix rinto.actors.setup_human`."},
     no_change_proposed: {422, "The proposed body is the document that already exists."},
-    stale_proposal:
-      {409, "The whole-document proposal was written against an older revision. Propose again."},
-    stale_block_proposal:
-      {409, "A block proposal's base text has changed since it was proposed."},
-    # The document proposal and a selected block proposal both claim the same
-    # block. `details.block_ids` names which, so the screen can ask about those
-    # blocks rather than about the whole commit.
-    conflicting_commit:
-      {422,
-       "The whole-document proposal already rewrites or removes blocks the selection " <>
-         "also changes."},
-    rebase_conflict:
-      {409, "The proposal cannot be carried across what landed under it without a decision."},
+    # Already decided, one way or another. A conflict rather than a validation
+    # error: the request was well formed and would have been fine a moment ago.
+    proposal_not_live: {409, "The proposal has already been accepted, rejected or superseded."},
+    # Somebody has already chosen among these candidates and that choice still
+    # refers to what it was made about. Taking it away is `unadopt`, said out
+    # loud, rather than something an adopt does on its way past.
+    already_adopted: {409, "Another candidate for this change is already adopted."},
+    # The words this proposal was written against have changed. Not a failure to
+    # retry: the answer is to look at the new comparison and choose again.
+    needs_reconfirmation:
+      {409, "The text this proposal was written against has changed. Adopt it again to confirm."},
+    # Nothing to apply it to, or nothing left for it to do. `details.reason`
+    # says which, because "delete a block that is already gone" and "update a
+    # block that no longer exists" call for different next steps.
+    proposal_not_applicable:
+      {422, "The proposal cannot be applied to the document as it stands."},
+    duplicate_proposal: {422, "A proposal is named more than once in this publish."},
+    # Two selected proposals that cannot both be true. Refused rather than
+    # ordered: picking one of them is the decision this system leaves to a
+    # person, and doing it here would do it invisibly.
+    conflicting_selection: {422, "Two of the selected proposals claim the same thing."},
+    # A selected change needs something the selection leaves out -- a move whose
+    # destination this same publish removes.
+    unresolved_dependency:
+      {422, "A selected proposal depends on something this publish does not include."},
+    move_cycle: {422, "The selected moves each want to follow the other."},
+    # Never inferred. A body written against a revision nobody named could be
+    # anything, and stamping the latest one onto it would turn a stale rewrite
+    # into a silent revert.
+    base_revision_required: {422, "The revision this was written against has to be named."},
+    unknown_revision: {422, "The named revision does not belong to this document."},
     invalid_estimate: {422, "The task estimate is invalid."},
     invalid_difficulty: {422, "The task difficulty is invalid."},
     invalid_actual: {422, "The recorded actual duration is invalid."},

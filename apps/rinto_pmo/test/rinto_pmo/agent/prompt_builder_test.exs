@@ -310,7 +310,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
   end
 
   describe "build/3 with a proposal ref" do
-    test "renders the proposed text and names its topic without expanding it" do
+    test "renders both sides of the change and names its topic without expanding it" do
       conversation = insert(:conversation, title: "Tighten §3")
       document = document_with_blocks(["Original"])
       [block] = document.latest_revision.blocks
@@ -319,6 +319,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
         insert(:block_proposal,
           document: document,
           conversation: conversation,
+          base_revision: document.latest_revision,
           block_id: block.block_id,
           content: "Rewritten paragraph.",
           status: :live
@@ -331,6 +332,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
         proposal
       end)
 
+      stub(DocumentsMock, :get_revision!, fn _document, _id -> document.latest_revision end)
       expect(ConversationsMock, :get_conversation!, fn _id -> conversation end)
 
       assert {:ok, %{message: message}} =
@@ -339,6 +341,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                ])
 
       assert message =~ ~s(<proposal ref="1" id="#{proposal.id}")
+      assert message =~ ~s(operation="update")
       # The paragraph it is about, as a label rather than an id: the label lines
       # it up with `[block:b1]` in the document, and no real id belongs in a
       # prompt.
@@ -348,9 +351,59 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
       # The topic is a label. Expanding it would be a conversation reference by
       # another name, and the whole point is that this expansion terminates.
       assert message =~ ~s(conversation="Tighten §3")
-      assert message =~ "Rewritten paragraph."
+      # Both sides. Only the new text would leave a topic arguing about a
+      # paragraph it cannot see, and the document does not answer it either --
+      # what this proposal answered is what the paragraph said *then*.
+      assert message =~ "<old>\nOriginal\n</old>"
+      assert message =~ "<new>\nRewritten paragraph.\n</new>"
+      # The base and the current revision agree, so there is nothing else to say.
+      refute message =~ "<current"
       refute message =~ "<turn"
-      refute message =~ "Original"
+    end
+
+    test "names the current text as its own thing when it has moved on" do
+      conversation = insert(:conversation)
+      document = document_with_blocks(["Original"])
+      [block] = document.latest_revision.blocks
+      base = document.latest_revision
+
+      # A person rewrites the paragraph after the proposal was written.
+      current = insert_revision_after(base, document: document, title: "Doc")
+
+      current_block =
+        insert(:document_block,
+          revision: current,
+          block_id: block.block_id,
+          content: "Rewritten by a person",
+          position: 0
+        )
+
+      document = %{document | latest_revision: %{current | blocks: [current_block]}}
+
+      proposal =
+        insert(:block_proposal,
+          document: document,
+          conversation: conversation,
+          base_revision: base,
+          block_id: block.block_id,
+          content: "Rewritten by a model"
+        )
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+      expect(DocumentsMock, :get_proposal!, fn _document, _id -> proposal end)
+      stub(DocumentsMock, :get_revision!, fn _document, _id -> Repo.preload(base, :blocks) end)
+      stub(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("what now?", [
+                 %{"type" => "proposal", "id" => proposal.id, "document_id" => document.id}
+               ])
+
+      # `old` stays the words this was written against. Overwriting it with the
+      # current text would rewrite the question a message was asked about.
+      assert message =~ "<old>\nOriginal\n</old>"
+      assert message =~ "<new>\nRewritten by a model\n</new>"
+      assert message =~ "<current>\nRewritten by a person\n</current>"
     end
 
     test "renders a rejected proposal, which is useful context in an adjudication" do
@@ -359,6 +412,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
 
       expect(DocumentsMock, :get_document!, fn _id -> document end)
       expect(DocumentsMock, :get_proposal!, fn _document, _id -> proposal end)
+      stub(DocumentsMock, :get_revision!, fn _document, _id -> proposal.base_revision end)
       expect(ConversationsMock, :get_conversation!, fn _id -> proposal.conversation end)
 
       assert {:ok, %{message: message}} =
@@ -646,7 +700,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
   # own work against it, and would rewrite from the base -- discarding what it had
   # already put up for review.
   describe "build/3 replay of a topic's own proposals" do
-    test "hands back a legacy whole-document rewrite through its operations" do
+    test "hands back a rewrite as the separate changes it was recorded as" do
       conversation = insert(:conversation)
       document = document_with_blocks(["The current text"])
       [block] = document.latest_revision.blocks
@@ -655,12 +709,9 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
         insert(:block_proposal,
           document: document,
           conversation: conversation,
-          scope: :document,
-          block_id: nil,
-          content: "## Rewritten\n\nMy version",
-          block_ops: [
-            %{"op" => "update", "block_id" => block.block_id, "content" => "My version"}
-          ]
+          base_revision: document.latest_revision,
+          block_id: block.block_id,
+          content: "My version"
         )
 
       expect(ConversationsMock, :recent_messages, fn _conversation, _limit -> [] end)
@@ -670,54 +721,68 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
       # the topic itself.
       expect(DocumentsMock, :get_document!, fn _id -> document end)
       expect(DocumentsMock, :get_proposal!, fn ^document, _id -> proposal end)
+      stub(DocumentsMock, :get_revision!, fn _document, _id -> document.latest_revision end)
       stub(ConversationsMock, :get_conversation!, fn _id -> conversation end)
 
       assert {:ok, %{message: message}} =
                PromptBuilder.build("carry on", [], replay: conversation)
 
-      assert message =~ ~s(<proposal ref="1" id="#{proposal.id}" scope="document" status="live")
-      assert message =~ "update block:b1"
-      assert message =~ "My version"
-      # No block to name on a whole-document rewrite, so the attribute is absent
-      # rather than empty.
-      refute message =~ ~s(block_id="")
+      assert message =~
+               ~s(<proposal ref="1" id="#{proposal.id}" scope="block" operation="update" status="live")
+
+      assert message =~ "<old>\nThe current text\n</old>"
+      assert message =~ "<new>\nMy version\n</new>"
     end
 
-    test "renders structural intent without presenting its content snapshot as current" do
+    test "says what a deletion and an insertion each have on the other side" do
       conversation = insert(:conversation)
       document = document_with_blocks(["Keep", "Remove"])
       [first, second] = Enum.sort_by(document.latest_revision.blocks, & &1.position)
 
-      proposal =
+      insertion =
         insert(:block_proposal,
           document: document,
           conversation: conversation,
-          scope: :document,
-          block_id: nil,
-          content: "OUTDATED WHOLE BODY SNAPSHOT",
-          block_ops: [
-            %{
-              "op" => "insert_after",
-              "after_block_id" => first.block_id,
-              "content" => "## Added\n\nNew section"
-            },
-            %{"op" => "delete", "block_id" => second.block_id}
-          ]
+          base_revision: document.latest_revision,
+          operation: :insert,
+          block_id: UUIDv7.generate(),
+          after_block_id: first.block_id,
+          content: "## Added\n\nNew section"
+        )
+
+      deletion =
+        insert(:block_proposal,
+          document: document,
+          conversation: conversation,
+          base_revision: document.latest_revision,
+          operation: :delete,
+          block_id: second.block_id,
+          content: nil
         )
 
       expect(ConversationsMock, :recent_messages, fn _conversation, _limit -> [] end)
-      expect(DocumentsMock, :live_conversation_proposals, fn _id -> [proposal] end)
-      expect(DocumentsMock, :get_document!, fn _id -> document end)
-      expect(DocumentsMock, :get_proposal!, fn ^document, _id -> proposal end)
+      expect(DocumentsMock, :live_conversation_proposals, fn _id -> [insertion, deletion] end)
+      stub(DocumentsMock, :get_document!, fn _id -> document end)
+
+      stub(DocumentsMock, :get_proposal!, fn ^document, id ->
+        Enum.find([insertion, deletion], &(&1.id == id))
+      end)
+
+      stub(DocumentsMock, :get_revision!, fn _document, _id -> document.latest_revision end)
       stub(ConversationsMock, :get_conversation!, fn _id -> conversation end)
 
       assert {:ok, %{message: message}} =
                PromptBuilder.build("carry on", [], replay: conversation)
 
-      assert message =~ "insert after:b1"
-      assert message =~ "delete block:b2"
+      # An insertion had nothing before it, which is a different fact from a
+      # basis that can no longer be read.
+      assert message =~ ~s(operation="insert")
+      assert message =~ "<old>\n(no such block yet)\n</old>"
       assert message =~ "New section"
-      refute message =~ "OUTDATED WHOLE BODY SNAPSHOT"
+
+      assert message =~ ~s(operation="delete")
+      assert message =~ "<old>\nRemove\n</old>"
+      assert message =~ "<new>\n(block removed)\n</new>"
     end
 
     test "puts what it proposed after the document it proposed it for" do
@@ -728,6 +793,8 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
         insert(:block_proposal,
           document: document,
           conversation: conversation,
+          base_revision: document.latest_revision,
+          block_id: hd(document.latest_revision.blocks).block_id,
           content: "Tighter"
         )
 
@@ -746,6 +813,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
       expect(DocumentsMock, :live_conversation_proposals, fn _id -> [proposal] end)
       stub(DocumentsMock, :get_document!, fn _id -> document end)
       expect(DocumentsMock, :get_proposal!, fn ^document, _id -> proposal end)
+      stub(DocumentsMock, :get_revision!, fn _document, _id -> document.latest_revision end)
       stub(ConversationsMock, :get_conversation!, fn _id -> conversation end)
 
       assert {:ok, %{message: message}} =

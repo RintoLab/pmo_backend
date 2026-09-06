@@ -64,30 +64,34 @@ defmodule RintoPMO.Documents.SessionTest do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["Original"])
       start_session!(document)
 
-      actor = insert(:actor)
+      base = latest_revision_id(document)
       first = insert(:conversation)
       second = insert(:conversation)
 
-      assert {:ok, %{live_proposals: 1}} =
-               Session.propose(document.id, block.block_id, first.id, actor.id, "Version A")
+      assert {:ok, %{proposals: [a], contended: []}} =
+               Session.propose(document.id, block.block_id, first.id, base, "Version A")
 
-      assert {:ok, %{live_proposals: 2}} =
-               Session.propose(document.id, block.block_id, second.id, actor.id, "Version B")
+      assert {:ok, %{proposals: [b], contended: [%{proposal_id: contended}]}} =
+               Session.propose(document.id, block.block_id, second.id, base, "Version B")
 
-      assert {:ok, [%{block_id: contended}]} = Session.contentions(document.id)
-      assert contended == block.block_id
+      assert contended == b.id
+
+      assert {:ok, [%{proposal_ids: ids, reason: :competing_text}]} =
+               Session.contentions(document.id)
+
+      assert Enum.sort(ids) == Enum.sort([a.id, b.id])
     end
 
     test "each topic reads its own proposal and only the count of others" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["Original"])
       start_session!(document)
 
-      actor = insert(:actor)
+      base = latest_revision_id(document)
       mine = insert(:conversation)
       theirs = insert(:conversation)
 
-      {:ok, _} = Session.propose(document.id, block.block_id, mine.id, actor.id, "Mine")
-      {:ok, _} = Session.propose(document.id, block.block_id, theirs.id, actor.id, "Theirs")
+      {:ok, _} = Session.propose(document.id, block.block_id, mine.id, base, "Mine")
+      {:ok, _} = Session.propose(document.id, block.block_id, theirs.id, base, "Theirs")
 
       assert {:ok, [seen]} = Session.get_blocks(document.id, mine.id)
       assert seen.content == "Mine"
@@ -100,11 +104,16 @@ defmodule RintoPMO.Documents.SessionTest do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["Original"])
       pid = start_session!(document)
 
-      actor = insert(:actor)
       conversation = insert(:conversation)
 
-      {:ok, %{proposal: proposal}} =
-        Session.propose(document.id, block.block_id, conversation.id, actor.id, "Survives")
+      {:ok, %{proposals: [proposal]}} =
+        Session.propose(
+          document.id,
+          block.block_id,
+          conversation.id,
+          latest_revision_id(document),
+          "Survives"
+        )
 
       ref = Process.monitor(pid)
       Process.exit(pid, :kill)
@@ -130,7 +139,7 @@ defmodule RintoPMO.Documents.SessionTest do
         Documents.propose_block(document, %{
           block_id: block.block_id,
           conversation_id: conversation.id,
-          actor_id: insert(:actor).id,
+          base_revision_id: latest_revision_id(document),
           content: "Written directly"
         })
 
@@ -142,42 +151,39 @@ defmodule RintoPMO.Documents.SessionTest do
   end
 
   describe "deciding and committing" do
-    test "decides a contention then commits the survivor" do
+    test "adopts one candidate, then publishes it" do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["Original"])
       start_session!(document)
 
       actor = insert(:actor)
+      base = latest_revision_id(document)
 
-      {:ok, %{proposal: keeper}} =
-        Session.propose(document.id, block.block_id, insert(:conversation).id, actor.id, "Kept")
+      {:ok, %{proposals: [keeper]}} =
+        Session.propose(document.id, block.block_id, insert(:conversation).id, base, "Kept")
 
-      {:ok, %{proposal: loser}} =
-        Session.propose(
-          document.id,
-          block.block_id,
-          insert(:conversation).id,
-          actor.id,
-          "Dropped"
-        )
+      {:ok, %{proposals: [loser]}} =
+        Session.propose(document.id, block.block_id, insert(:conversation).id, base, "Dropped")
 
-      assert {:error, :unresolved_contention, _details} =
+      assert {:error, :conflicting_selection, _details} =
                Session.commit(document.id, %{
                  actor_id: actor.id,
-                 base_revision_id: latest_revision_id(document),
-                 block_ids: [block.block_id]
+                 base_revision_id: base,
+                 proposal_ids: [keeper.id, loser.id]
                })
 
-      assert {:ok, _adopted} =
-               Session.decide(document.id, block.block_id, keeper.id, actor.id)
+      assert {:ok, _adopted} = Session.adopt(document.id, keeper.id, base, actor.id)
 
-      assert {:ok, revision} =
+      assert {:ok, %{revision: revision}} =
                Session.commit(document.id, %{
                  actor_id: actor.id,
-                 base_revision_id: latest_revision_id(document)
+                 base_revision_id: base,
+                 proposal_ids: [keeper.id]
                })
 
       assert [%{content: "Kept"}] = Documents.get_revision!(document, revision.id).blocks
-      assert Repo.get!(BlockProposal, loser.id).status == :rejected
+      # Beaten by what was published, rather than rejected by the choice that
+      # picked its rival. Nobody said no to it.
+      assert Repo.get!(BlockProposal, loser.id).status == :superseded
       assert Repo.get!(BlockProposal, keeper.id).status == :accepted
     end
 
@@ -187,13 +193,16 @@ defmodule RintoPMO.Documents.SessionTest do
 
       actor = insert(:actor)
       conversation = insert(:conversation)
+      base = latest_revision_id(document)
 
-      {:ok, _} = Session.propose(document.id, block.block_id, conversation.id, actor.id, "New")
+      {:ok, %{proposals: [first]}} =
+        Session.propose(document.id, block.block_id, conversation.id, base, "New")
 
-      {:ok, revision} =
+      {:ok, %{revision: revision}} =
         Session.commit(document.id, %{
           actor_id: actor.id,
-          base_revision_id: latest_revision_id(document)
+          base_revision_id: base,
+          proposal_ids: [first.id]
         })
 
       # Reads follow the commit because nothing is held between calls. Were
@@ -203,13 +212,14 @@ defmodule RintoPMO.Documents.SessionTest do
       assert seen.content == "New"
       refute seen.proposed?
 
-      assert {:ok, _next} =
-               Session.propose(document.id, block.block_id, conversation.id, actor.id, "Again")
+      assert {:ok, %{proposals: [next]}} =
+               Session.propose(document.id, block.block_id, conversation.id, revision.id, "Again")
 
-      assert {:ok, _second_revision} =
+      assert {:ok, _second_publication} =
                Session.commit(document.id, %{
                  actor_id: actor.id,
-                 base_revision_id: revision.id
+                 base_revision_id: revision.id,
+                 proposal_ids: [next.id]
                })
     end
 
@@ -217,12 +227,12 @@ defmodule RintoPMO.Documents.SessionTest do
       %{document: document, blocks: [block | _rest]} = document_with_blocks(["Original"])
       start_session!(document)
 
-      {:ok, %{proposal: proposal}} =
+      {:ok, %{proposals: [proposal]}} =
         Session.propose(
           document.id,
           block.block_id,
           insert(:conversation).id,
-          insert(:actor).id,
+          latest_revision_id(document),
           "Kept in the database"
         )
 

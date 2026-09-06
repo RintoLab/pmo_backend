@@ -3,7 +3,10 @@ defmodule RintoPMO.Documents.BlockDiffTest do
 
   alias RintoPMO.Documents.BlockDiff
   alias RintoPMO.Documents.BlockOps
+  alias RintoPMO.Documents.BlockProposal
   alias RintoPMO.Documents.DocumentBlock
+  alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Documents.ProposalPlan
 
   doctest BlockDiff
 
@@ -80,13 +83,13 @@ defmodule RintoPMO.Documents.BlockDiffTest do
 
     # One gap losing blocks and another gaining them, so all three kinds appear
     # at once and their relative order is visible.
-    test "content changes are ordered ahead of removals and additions" do
+    test "content changes lead, and removals come last" do
       parent = blocks(["Keep", "Cut one", "Cut two", "Anchor", "Edit"])
 
       operations = BlockDiff.compile(parent, ["Keep", "Anchor", "Edited", "New"], "a")
 
-      assert Enum.map(operations, & &1.op) == [:update, :delete, :delete, :insert_after]
-      assert {:ok, entries} = BlockOps.apply(parent, operations)
+      assert Enum.map(operations, & &1.op) == [:update, :insert_after, :delete, :delete]
+      assert {:ok, entries} = apply_as_published(parent, operations)
       assert Enum.map(entries, & &1.content) == ["Keep", "Anchor", "Edited", "New"]
     end
 
@@ -103,17 +106,35 @@ defmodule RintoPMO.Documents.BlockDiffTest do
       assert Enum.map(entries, & &1.block_id) == ["b0", "b1"]
     end
 
-    # A reorder is a delete and an insert: telling a move from a coincidence
-    # needs a similarity measure, and guessing wrong rewrites the wrong
-    # paragraph's history. The id is the documented cost.
-    test "a moved block does not keep its id" do
+    # One removal and one addition carrying the same text is a block that moved,
+    # and nothing else it could be. It keeps its id, and everything anchored to
+    # it -- annotations, other topics' proposals, its history -- comes with it.
+    test "an unambiguously moved block keeps its id" do
       parent = blocks(["One", "Two"])
 
-      operations = BlockDiff.compile(parent, ["Two", "One"], "a")
+      assert [%{op: :move_after} = operation] = BlockDiff.compile(parent, ["Two", "One"], "a")
+      assert operation.block_id == "b0"
+      assert operation.after_block_id == "b1"
 
-      assert {:ok, entries} = BlockOps.apply(parent, operations)
+      assert {:ok, entries} = apply_as_published(parent, [operation])
       assert Enum.map(entries, & &1.content) == ["Two", "One"]
-      assert Enum.map(entries, & &1.block_id) != ["b1", "b0"]
+      assert Enum.map(entries, & &1.block_id) == ["b1", "b0"]
+    end
+
+    # Two paragraphs saying the same thing, shuffled around each other. Which
+    # one became which is not a question the text can answer, and attaching an
+    # id to the wrong words is worse than issuing a new one.
+    test "an ambiguous move stays a removal and an addition" do
+      parent = blocks(["Alpha", "Beta"])
+
+      operations = BlockDiff.compile(parent, ["Beta", "Alpha", "Alpha"], "a")
+
+      # "Alpha" leaves one place and arrives in two. Which arrival is the block
+      # that left is not something the text can say, so neither of them inherits
+      # its id.
+      refute Enum.any?(operations, &(&1.op == :move_after))
+      assert {:ok, entries} = apply_as_published(parent, operations)
+      assert Enum.map(entries, & &1.content) == ["Beta", "Alpha", "Alpha"]
     end
 
     test "every untouched block keeps its id through an edit in the middle" do
@@ -252,7 +273,7 @@ defmodule RintoPMO.Documents.BlockDiffTest do
         parent = blocks(source)
         operations = BlockDiff.compile(parent, target, "actor")
 
-        assert {:ok, entries} = BlockOps.apply(parent, operations),
+        assert {:ok, entries} = apply_as_published(parent, operations),
                "#{inspect(source)} -> #{inspect(target)} produced #{inspect(operations)}"
 
         assert Enum.map(entries, & &1.content) == target,
@@ -275,7 +296,7 @@ defmodule RintoPMO.Documents.BlockDiffTest do
       for source <- @sources, target <- targets() do
         parent = blocks(source)
         operations = BlockDiff.compile(parent, target, "actor")
-        assert {:ok, entries} = BlockOps.apply(parent, operations)
+        assert {:ok, entries} = apply_as_published(parent, operations)
 
         kept = Enum.filter(entries, &(&1.block_id in Enum.map(parent, fn b -> b.block_id end)))
 
@@ -302,6 +323,59 @@ defmodule RintoPMO.Documents.BlockDiffTest do
 
   defp lists_of(alphabet, length) do
     for head <- alphabet, tail <- lists_of(alphabet, length - 1), do: [head | tail]
+  end
+
+  # What the propose path does with these operations, and then what publishing
+  # all of them does. A compiled operation is an *intent*, not something to run
+  # in order: several insertions into one gap all name that gap, and which of
+  # them a person takes decides what the rest end up after. `ProposalPlan`
+  # settles that, so the round trip has to go through it -- applying the raw list
+  # would be testing something nothing does.
+  defp apply_as_published(parent, operations) do
+    proposals = Enum.map(operations, &proposal_of/1)
+    runs = proposals |> Enum.reject(&is_nil(&1.run_id)) |> Enum.group_by(& &1.run_id)
+    snapshot = ProposalPlan.snapshot(%DocumentRevision{blocks: numbered(parent), title: nil})
+
+    with {:ok, ordered} <- ProposalPlan.operations(proposals, snapshot, runs) do
+      BlockOps.apply(parent, ordered)
+    end
+  end
+
+  defp numbered(blocks) do
+    blocks |> Enum.with_index() |> Enum.map(fn {block, index} -> %{block | position: index} end)
+  end
+
+  defp proposal_of(%{op: :update} = operation) do
+    proposal(operation, :update, content: operation.content)
+  end
+
+  defp proposal_of(%{op: :insert_after} = operation) do
+    proposal(operation, :insert,
+      content: operation.content,
+      after_block_id: operation.after_block_id
+    )
+  end
+
+  defp proposal_of(%{op: :delete} = operation), do: proposal(operation, :delete, [])
+
+  defp proposal_of(%{op: :move_after} = operation) do
+    proposal(operation, :move, after_block_id: operation.after_block_id)
+  end
+
+  defp proposal(operation, name, fields) do
+    struct!(
+      %BlockProposal{
+        id: operation[:block_id] || operation.block_id,
+        scope: :block,
+        operation: name,
+        block_id: operation.block_id,
+        actor_id: Map.get(operation, :actor_id),
+        run_id: Map.get(operation, :run_id),
+        run_ordinal: Map.get(operation, :run_ordinal),
+        status: :live
+      },
+      fields
+    )
   end
 
   defp blocks(contents) do

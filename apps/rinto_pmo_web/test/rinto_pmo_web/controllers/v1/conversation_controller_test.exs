@@ -260,13 +260,23 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
     proposal_id = proposal.id
     document_id = document.id
 
+    detail = %{
+      proposal: proposal,
+      state: :applicable,
+      reason: nil,
+      adopted: false,
+      adoption_stale: false,
+      conflicting_proposal_ids: [],
+      current_revision_id: revision.id
+    }
+
     expect(ConversationsMock, :get_conversation!, fn _id -> conversation end)
 
     expect(DocumentsMock, :conversation_working_set, fn _id ->
       [
         %{
           document: %{document | latest_revision: revision},
-          proposals: [%{proposal: proposal, contended: true}]
+          proposals: [%{proposal: detail, contended: true}]
         }
       ]
     end)
@@ -282,7 +292,16 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
                    "id" => ^document_id,
                    "latest_revision" => %{"title" => "Deployment"}
                  },
-                 "proposals" => [%{"id" => ^proposal_id, "contended" => true}]
+                 "proposals" => [
+                   %{
+                     "id" => ^proposal_id,
+                     "contended" => true,
+                     "state" => "applicable",
+                     "adopted" => false,
+                     "adoption_stale" => false,
+                     "conflicting_proposal_ids" => []
+                   }
+                 ]
                }
              ]
            } = json_response(conn, 200)["data"]

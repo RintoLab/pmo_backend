@@ -82,7 +82,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
   | `annotation` | `id` + `document_id` | `<annotation>` and its replies |
   | `project` | `slug` | `<project>` and an index of its documents |
   | `attachment` | `id` | `<attachment>` marker plus an inline image |
-  | `proposal` | `id` + `document_id` | `<proposal>` holding the proposed block text |
+  | `proposal` | `id` + `document_id` | `<proposal>` holding both sides of one local change |
 
   Projects are keyed by `slug` because that is how they are addressed
   everywhere else here; annotations and proposals need `document_id` because
@@ -118,8 +118,8 @@ defmodule RintoPMO.Agent.PromptBuilder do
   it, and never follows a pointer to another entity.** Other entities appear as
   attributes -- an id, a title -- which are labels, not doorways. A document
   renders its blocks but not its annotations; an annotation renders its replies
-  but not its document; a proposal renders its text but neither its document
-  nor the topic that made it.
+  but not its document; a proposal renders both sides of its own change but
+  neither its document nor the topic that made it.
 
   That rule is what keeps every expansion a leaf. There is one shape that
   cannot obey it -- a conversation, whose messages carry references of their
@@ -614,73 +614,153 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   defp turn_refs(%Message{}), do: nil
 
+  # A proposal is one local change, and what a reader needs is both sides of it:
+  # the words it was written against and the words it wants. Rendering only the
+  # new text left a topic arguing about a paragraph it could not see, and reading
+  # the document separately does not help -- the document has moved on, and what
+  # this proposal answered is what it said *then*.
+  #
+  # So `old` is always the original basis and never the current text. Where the
+  # two have since parted company, the current text is named as well, as its own
+  # thing. Overwriting `old` with it would rewrite the question a message was
+  # asked about.
   defp render_proposal(%Document{} = document, %BlockProposal{} = proposal, handle) do
+    base = proposal_base(document, proposal)
+
     attributes =
       [
         {"ref", handle},
         {"id", proposal.id},
         {"scope", proposal.scope},
+        {"operation", proposal.operation},
         {"status", proposal.status}
       ] ++
         optional_attribute("block", block_label(document, proposal.block_id)) ++
+        optional_attribute("after", anchor_label(document, proposal)) ++
         optional_attribute("conversation", proposal_topic(proposal))
 
-    element("proposal", attributes, proposal_body(document, proposal))
+    element("proposal", attributes, proposal_body(document, proposal, base))
   end
 
-  defp proposal_body(_document, %BlockProposal{scope: scope, content: content})
-       when scope in [:block, :title],
-       do: content
-
-  defp proposal_body(document, %BlockProposal{scope: :document, block_ops: operations})
-       when is_list(operations) do
-    operations
-    |> Enum.with_index(1)
-    |> Enum.map_join("\n\n", fn {operation, index} ->
-      render_proposal_operation(document, operation, index)
-    end)
+  defp proposal_body(document, %BlockProposal{} = proposal, base) do
+    [
+      element("old", [], old_side(proposal, base)),
+      element("new", [], new_side(proposal)),
+      current_side(document, proposal, base)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
   end
 
-  # Rows created before operation snapshots were required remain readable, but
-  # their whole body is named as the propose-time snapshot it is.
-  defp proposal_body(_document, %BlockProposal{scope: :document, content: content}) do
-    element("snapshot", [{"at", "propose-time"}], content)
-  end
+  defp old_side(%BlockProposal{scope: :title}, :missing), do: unreadable_base()
+  defp old_side(%BlockProposal{scope: :title}, base), do: proposal_text(base.title)
 
-  defp render_proposal_operation(document, operation, index) do
-    case operation_value(operation, :op) do
-      name when name in [:update, "update"] ->
-        block = operation_block(document, operation_value(operation, :block_id))
-        "[operation:#{index} update block:#{block}]\n#{operation_value(operation, :content)}"
+  # An insertion had nothing before it, which is a different fact from a basis
+  # that can no longer be read. Collapsing the two would let a model treat a lost
+  # revision as evidence that a paragraph never existed.
+  defp old_side(%BlockProposal{operation: :insert}, _base), do: "(no such block yet)"
 
-      name when name in [:insert_after, "insert_after"] ->
-        anchor = operation_anchor(document, operation_value(operation, :after_block_id))
-        "[operation:#{index} insert after:#{anchor}]\n#{operation_value(operation, :content)}"
+  defp old_side(%BlockProposal{}, :missing), do: unreadable_base()
 
-      name when name in [:delete, "delete"] ->
-        block = operation_block(document, operation_value(operation, :block_id))
-        "[operation:#{index} delete block:#{block}]"
-
-      name when name in [:move_after, "move_after"] ->
-        block = operation_block(document, operation_value(operation, :block_id))
-        anchor = operation_anchor(document, operation_value(operation, :after_block_id))
-        "[operation:#{index} move block:#{block} after:#{anchor}]"
-
-      name ->
-        "[operation:#{index} unsupported:#{inspect(name)}]"
+  defp old_side(%BlockProposal{} = proposal, base) do
+    case base_content(base, proposal.block_id) do
+      nil -> unreadable_base()
+      content -> proposal_text(content)
     end
   end
 
-  defp operation_value(operation, key) do
-    Map.get(operation, key, Map.get(operation, Atom.to_string(key)))
+  defp new_side(%BlockProposal{operation: :delete}), do: "(block removed)"
+
+  defp new_side(%BlockProposal{operation: :move} = proposal),
+    do:
+      "(same text, moved after #{(proposal.after_block_id && "the named block") || "the start of the document"})"
+
+  defp new_side(%BlockProposal{content: content}), do: proposal_text(content)
+
+  # Only where the document has actually moved under this proposal, and only the
+  # part of it this proposal is about. A note on every reference would be noise;
+  # silence where the words have changed would be a trap.
+  defp current_side(document, %BlockProposal{scope: :title}, base) do
+    with %DocumentRevision{title: title} <- current_revision(document),
+         true <- base == :missing or base.title != title do
+      element("current", [], proposal_text(title))
+    else
+      _unchanged -> nil
+    end
   end
 
-  defp operation_block(document, block_id) do
-    block_label(document, block_id) || block_id || "missing"
+  defp current_side(document, %BlockProposal{operation: operation} = proposal, base)
+       when operation in [:update, :delete] do
+    revision = current_revision(document)
+
+    case revision && current_content(revision, proposal.block_id) do
+      nil when not is_nil(revision) ->
+        element("current", [{"state", "removed"}], "(the block is no longer in the document)")
+
+      nil ->
+        nil
+
+      said ->
+        if base != :missing and said == base_content(base, proposal.block_id) do
+          nil
+        else
+          element("current", [], proposal_text(said))
+        end
+    end
   end
 
-  defp operation_anchor(_document, nil), do: "document-start"
-  defp operation_anchor(document, block_id), do: operation_block(document, block_id)
+  defp current_side(document, %BlockProposal{operation: :move} = proposal, _base) do
+    case block_label(document, proposal.block_id) do
+      nil ->
+        element("current", [{"state", "removed"}], "(the block is no longer in the document)")
+
+      _label ->
+        nil
+    end
+  end
+
+  defp current_side(_document, %BlockProposal{}, _base), do: nil
+
+  defp unreadable_base, do: "(the revision this was written against can no longer be read)"
+
+  # Long enough to argue about, short enough not to crowd out the conversation.
+  # The whole text stays readable by id, which is what a reference is for.
+  defp proposal_text(nil), do: ""
+
+  defp proposal_text(content) do
+    limit = setting(:max_document_chars)
+
+    if String.length(content) > limit do
+      String.slice(content, 0, limit) <>
+        "\n\n(truncated -- read the proposal by id for all of it)"
+    else
+      content
+    end
+  end
+
+  defp proposal_base(%Document{}, %BlockProposal{base_revision_id: nil}), do: :missing
+
+  defp proposal_base(%Document{} = document, %BlockProposal{} = proposal) do
+    documents().get_revision!(document, proposal.base_revision_id)
+  rescue
+    Ecto.NoResultsError -> :missing
+  end
+
+  defp base_content(%DocumentRevision{} = revision, block_id) do
+    revision |> ordered_blocks() |> Enum.find_value(&(&1.block_id == block_id && &1.content))
+  end
+
+  defp current_revision(%Document{latest_revision: %DocumentRevision{} = revision}), do: revision
+  defp current_revision(%Document{}), do: nil
+
+  defp current_content(%DocumentRevision{} = revision, block_id) do
+    revision |> ordered_blocks() |> Enum.find_value(&(&1.block_id == block_id && &1.content))
+  end
+
+  defp anchor_label(_document, %BlockProposal{after_block_id: nil}), do: nil
+
+  defp anchor_label(document, %BlockProposal{after_block_id: block_id}),
+    do: block_label(document, block_id)
 
   # The source topic appears as its title -- a label, like `document_id` on an
   # annotation. Expanding the topic itself is exactly what a proposal reference

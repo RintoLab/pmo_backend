@@ -22,13 +22,30 @@ defmodule RintoPMO.Documents.BlockDiff do
     * genuinely new -- `insert_after`
     * genuinely gone -- `delete`
 
-  ## What it does not do
+  ## Moves, only where the identity is not a guess
 
-  A block that moved is expressed as a delete and an insert, so it comes back
-  with a new id. `move_after` exists in `BlockOps` and would preserve it, but
-  telling a move from a coincidence needs a similarity measure rather than the
-  equality this uses, and guessing wrong silently rewrites the wrong paragraph's
-  history. Reordering is rarer than editing; this is the documented cost.
+  A block whose text is unchanged but whose place is not comes out of the
+  matching as a delete and an insert. Where that pair is unambiguous -- exactly
+  one removal and exactly one addition carrying that text -- the two are folded
+  back into a `move_after`, and the block keeps its id, its annotations and its
+  history.
+
+  Where it is ambiguous -- the same paragraph twice, or text that was reworded
+  on its way across -- the delete and the insert stand. Telling those apart
+  needs a similarity measure rather than the equality this uses, and guessing
+  wrong silently rewrites the wrong paragraph's history. A reviewer sees a
+  removal and an addition, which is what actually happened as far as anything
+  can tell.
+
+  ## Insertions come with their ids, and with their order
+
+  Every insertion allocates the `block_id` it is going to have, so the paragraph
+  a person reviews is the paragraph that lands rather than one that appears at
+  commit time. Several insertions into one gap are one **run**: they share
+  `run_id` and are numbered by `run_ordinal` in the order they were written, so
+  taking the first and the third still leaves them in that order. The run is
+  emitted back to front, each member anchored on the same block, which is the
+  order a plain sequential apply needs.
 
   ## Matching
 
@@ -66,8 +83,9 @@ defmodule RintoPMO.Documents.BlockDiff do
 
       iex> alias RintoPMO.Documents.{BlockDiff, DocumentBlock}
       iex> blocks = [%DocumentBlock{block_id: "a", content: "One"}]
-      iex> BlockDiff.compile(blocks, ["One", "Two"], "actor")
-      [%{op: :insert_after, after_block_id: "a", actor_id: "actor", content: "Two"}]
+      iex> [operation] = BlockDiff.compile(blocks, ["One", "Two"], "actor")
+      iex> {operation.op, operation.after_block_id, operation.content}
+      {:insert_after, "a", "Two"}
   """
   @spec compile([DocumentBlock.t()], [String.t()], UUIDv7.t()) :: [operation()]
   def compile(blocks, contents, actor_id) when is_list(blocks) and is_list(contents) do
@@ -76,7 +94,80 @@ defmodule RintoPMO.Documents.BlockDiff do
     old
     |> segments(contents)
     |> Enum.flat_map(&reconcile(&1, actor_id))
+    |> fold_moves(Map.new(old))
     |> order()
+  end
+
+  # A removal and an addition carrying the same text are one block that moved,
+  # but only where nothing else could be meant: one removal saying it and one
+  # addition saying it. Two identical paragraphs shifting around each other have
+  # no answer, and inventing one attaches an id -- and everything hanging off
+  # it -- to the wrong words.
+  defp fold_moves(operations, old_by_id) do
+    removed =
+      unique_by_content(
+        for %{op: :delete, block_id: block_id} <- operations,
+            do: {Map.get(old_by_id, block_id), block_id}
+      )
+
+    added =
+      unique_by_content(
+        for %{op: :insert_after} = insertion <- operations,
+            do: {insertion.content, insertion}
+      )
+
+    moved =
+      for {content, block_id} <- removed,
+          insertion = added[content],
+          do: {content, block_id, insertion}
+
+    if moved == [] do
+      operations
+    else
+      apply_moves(operations, moved)
+    end
+  end
+
+  defp apply_moves(operations, moved) do
+    dropped_deletes = MapSet.new(moved, fn {_content, block_id, _insertion} -> block_id end)
+
+    dropped_inserts =
+      MapSet.new(moved, fn {_content, _block_id, insertion} -> insertion.block_id end)
+
+    # The move takes the insertion's place in its run. Where the rest of that run
+    # goes depends on it: a block written second in a gap sits after the block
+    # written first, and that stays true when the first turns out to be a
+    # paragraph that moved rather than one that appeared.
+    moves =
+      for {_content, block_id, insertion} <- moved,
+          insertion.after_block_id != block_id do
+        %{op: :move_after, block_id: block_id, after_block_id: insertion.after_block_id}
+        |> carry_run(insertion)
+      end
+
+    kept =
+      Enum.reject(operations, fn
+        %{op: :delete, block_id: block_id} -> MapSet.member?(dropped_deletes, block_id)
+        %{op: :insert_after, block_id: block_id} -> MapSet.member?(dropped_inserts, block_id)
+        _other -> false
+      end)
+
+    kept ++ moves
+  end
+
+  defp carry_run(operation, %{run_id: run_id, run_ordinal: ordinal}),
+    do: Map.merge(operation, %{run_id: run_id, run_ordinal: ordinal})
+
+  defp carry_run(operation, _lone_insertion), do: operation
+
+  defp unique_by_content(pairs) do
+    pairs
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.flat_map(fn
+      {content, [only]} -> [{content, only}]
+      {_content, _ambiguous} -> []
+    end)
+    |> Map.new()
   end
 
   # Cuts both sequences at the anchors into `{old_gap, new_gap, preceding}` runs,
@@ -173,19 +264,44 @@ defmodule RintoPMO.Documents.BlockDiff do
     end
   end
 
-  # Emitted in reverse because `insert_after` puts its block immediately after
-  # the anchor, and a new block's id is generated inside `BlockOps` and so cannot
-  # be an anchor itself. Inserting C, then B, then A after one anchor leaves
-  # A, B, C -- the right order, from a single known anchor.
-  defp inserts(contents, after_block_id, actor_id) do
-    for content <- Enum.reverse(contents) do
+  # Emitted back to front because `insert_after` puts its block immediately after
+  # the anchor: inserting C, then B, then A after one anchor leaves A, B, C --
+  # the right order, from a single known anchor.
+  #
+  # `run_ordinal` is the order they were *written*, which is not that order and
+  # is the one that matters later: a person publishing the first and the third
+  # of three has to get them the right way round without the second, and the
+  # anchor alone cannot say. A lone insertion is not a run; there is no sequence
+  # to remember.
+  defp inserts([_only] = contents, after_block_id, actor_id) do
+    for content <- contents do
       %{
         op: :insert_after,
+        block_id: UUIDv7.generate(),
         after_block_id: after_block_id,
         actor_id: actor_id,
         content: content
       }
     end
+  end
+
+  defp inserts(contents, after_block_id, actor_id) do
+    run_id = UUIDv7.generate()
+
+    contents
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.map(fn {content, ordinal} ->
+      %{
+        op: :insert_after,
+        block_id: UUIDv7.generate(),
+        after_block_id: after_block_id,
+        actor_id: actor_id,
+        content: content,
+        run_id: run_id,
+        run_ordinal: ordinal
+      }
+    end)
   end
 
   # Maximum-weight ordered matching, with the pair sequence as a total tie
@@ -274,14 +390,22 @@ defmodule RintoPMO.Documents.BlockDiff do
 
   defp gram_count(grams), do: grams |> Map.values() |> Enum.sum()
 
-  # Content changes before removals before additions. Updates and deletes name
-  # blocks that exist in the parent, so they are safe in any order; an insert's
-  # anchor is always a paired block, which no delete in the list touches.
+  # Text, then reorderings, then additions, then removals.
+  #
+  # An anchor names where something sits in the document the operations produce,
+  # not where it sat before. So a block has to reach its new place before
+  # anything is hung off it: an insertion after a block that is about to move
+  # would otherwise be left behind where that block used to be. Nothing needs
+  # the other order -- a move's anchor is always a block that already exists.
+  #
+  # Removals come last so that an insertion or a move anchored on a block this
+  # same list deletes still lands where it was meant to.
   defp order(operations) do
     Enum.sort_by(operations, fn
       %{op: :update} -> 0
-      %{op: :delete} -> 1
+      %{op: :move_after} -> 1
       %{op: :insert_after} -> 2
+      %{op: :delete} -> 3
     end)
   end
 

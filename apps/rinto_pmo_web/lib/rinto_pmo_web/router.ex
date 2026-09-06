@@ -162,13 +162,15 @@ defmodule RintoPMOWeb.Router do
 
       # An agent writes through proposals, never straight to a revision: a
       # revision is what a person agreed to.
-      resources "/proposals", BlockProposalController, only: [:index, :show, :create]
+      resources "/proposals", BlockProposalController, only: [:index, :show, :create, :update]
 
-      post "/proposals/:id/decide", BlockProposalController, :decide
-
-      # Carrying a whole-document proposal across what landed under it, rather
-      # than throwing it away and asking the model again.
-      post "/proposals/:id/rebase", BlockProposalController, :rebase
+      # Four verbs, and deliberately not one. Ticking a box is not a decision,
+      # choosing between two versions is not publishing, and saying no is
+      # something a person means rather than something that happens to a
+      # proposal on its way past. `PATCH /proposals/:id` is the checkbox.
+      post "/proposals/:id/adopt", BlockProposalController, :adopt
+      post "/proposals/:id/unadopt", BlockProposalController, :unadopt
+      post "/proposals/:id/reject", BlockProposalController, :reject
       get "/contentions", BlockProposalController, :contentions
 
       # The document as one topic sees it: its own proposals standing in, and

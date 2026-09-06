@@ -176,8 +176,10 @@ defmodule RintoPMO.Factory do
       conversation: build(:conversation),
       actor: build(:actor),
       scope: :block,
+      operation: :update,
       block_id: UUIDv7.generate(),
       content: sequence(:block_proposal_content, &"Proposed text #{&1}"),
+      staged: false,
       status: :live
     }
   end

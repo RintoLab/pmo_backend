@@ -12,8 +12,9 @@ defmodule RintoPMOWeb.V1.CommitController do
   landing is the worst outcome available -- the documents then disagree, and
   nothing records which half is the new answer.
 
-  Each entry is what `POST /documents/{id}/commit` takes, plus the
-  `document_id` naming what it is against. Nothing new is stored: this writes
+  Each entry is what `POST /documents/{id}/commit` takes -- including its own
+  `proposal_ids`, named there for the same reason they are named here -- plus
+  the `document_id` saying what it is against. Nothing new is stored: this writes
   one revision per document exactly as the single-document call would, and
   there is no batch record. It is a verb, not a noun.
 
@@ -26,11 +27,11 @@ defmodule RintoPMOWeb.V1.CommitController do
   """
   def create(conn, params) do
     with {:ok, entries} <- entries(params, ActorToken.current_actor!(conn).id),
-         {:ok, revisions} <- Utils.module(:documents).commit_many(entries) do
+         {:ok, publications} <- Utils.module(:documents).commit_many(entries) do
       conn
       |> put_status(:created)
       |> put_view(json: RintoPMOWeb.V1.DocumentRevisionJSON)
-      |> render(:index, revisions: revisions)
+      |> render(:published_many, publications: publications)
     end
   end
 

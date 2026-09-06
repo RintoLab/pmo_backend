@@ -12,6 +12,8 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {401, "This installation has no human actor. Run `mix rinto.actors.setup_human`.", %{}},
     task_not_yours: {403, "The task is assigned to someone else.", %{assignee_id: "actor-1"}},
     not_found: {404, "The requested resource was not found.", %{}},
+    proposal_not_found:
+      {404, "The proposal does not belong to this document.", %{proposal_ids: ["proposal-1"]}},
     image_too_large:
       {413, "The image exceeds the size accepted for inline use.",
        %{byte_size: 9_000_000, limit: 4_500_000}},
@@ -29,21 +31,15 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     dependency_cycle:
       {409, "The task dependency would create a cycle.", %{cycle: ["task-1", "task-2"]}},
     unresolved_contention:
-      {409, "The block has competing proposals that nobody has decided.",
-       %{block_ids: ["block-1"]}},
+      {409, "Something else claims this change too, and nobody has chosen between them.",
+       %{proposal_id: "proposal-1", conflicting_proposal_ids: ["proposal-2"]}},
     validation_error: {422, "Request validation failed.", %{name: ["can't be blank"]}},
     unknown_block:
       {422, "The block is not part of the document's latest revision.", %{block_id: "block-1"}},
-    no_live_proposal: {422, "The block has no proposal to commit.", %{block_id: "block-1"}},
-    nothing_to_commit: {422, "Nothing has a proposal ready to commit.", %{}},
-    invalid_block_ids:
-      {422, "The selected blocks are invalid.", %{reason: "block_ids must be an array"}},
-    proposal_not_found:
-      {422, "The proposal is not live in that slot.",
-       %{proposal_id: "proposal-1", block_id: "block-1"}},
-    invalid_scope:
-      {422, "The proposal scope is not one this endpoint accepts.",
-       %{scope: "wormhole", allowed: ["block", "title"]}},
+    nothing_to_commit: {422, "A publish has to name the proposals it publishes.", %{}},
+    invalid_input_kind:
+      {422, "The propose input is not a kind this endpoint accepts.",
+       %{kind: "wormhole", allowed: ["document", "block", "title"]}},
     annotation_not_found:
       {422, "The annotation does not belong to this document.", %{annotation_id: "annotation-1"}},
     conversation_not_found:
@@ -69,19 +65,32 @@ defmodule RintoPMOWeb.ErrorJSONTest do
     invalid_markdown:
       {422, "The Markdown body could not be parsed.", %{markdown: ["is invalid"]}},
     no_change_proposed: {422, "The proposed body is the document that already exists.", %{}},
-    stale_proposal:
-      {409, "The whole-document proposal was written against an older revision. Propose again.",
-       %{proposal_id: "proposal-1", base_revision_id: "rev-1", current_revision_id: "rev-2"}},
-    stale_block_proposal:
-      {409, "A block proposal's base text has changed since it was proposed.",
-       %{block_ids: ["block-1"]}},
-    conflicting_commit:
-      {422,
-       "The whole-document proposal already rewrites or removes blocks the selection " <>
-         "also changes.", %{block_ids: ["block-1"]}},
-    rebase_conflict:
-      {409, "The proposal cannot be carried across what landed under it without a decision.",
-       %{reason: "diverged", block_ids: ["block-1"]}},
+    proposal_not_live:
+      {409, "The proposal has already been accepted, rejected or superseded.",
+       %{proposal_ids: ["proposal-1"], statuses: ["accepted"]}},
+    already_adopted:
+      {409, "Another candidate for this change is already adopted.",
+       %{proposal_id: "proposal-1", adopted_proposal_id: "proposal-2"}},
+    needs_reconfirmation:
+      {409, "The text this proposal was written against has changed. Adopt it again to confirm.",
+       %{proposal_id: "proposal-1", reason: "content_diverged"}},
+    proposal_not_applicable:
+      {422, "The proposal cannot be applied to the document as it stands.",
+       %{proposal_id: "proposal-1", reason: "target_deleted"}},
+    duplicate_proposal:
+      {422, "A proposal is named more than once in this publish.", %{proposal_id: "proposal-1"}},
+    conflicting_selection:
+      {422, "Two of the selected proposals claim the same thing.",
+       %{conflicts: [%{proposal_ids: ["proposal-1", "proposal-2"], reason: "competing_text"}]}},
+    unresolved_dependency:
+      {422, "A selected proposal depends on something this publish does not include.",
+       %{proposal_ids: ["proposal-1"]}},
+    move_cycle:
+      {422, "The selected moves each want to follow the other.",
+       %{proposal_ids: ["proposal-1", "proposal-2"]}},
+    base_revision_required: {422, "The revision this was written against has to be named.", %{}},
+    unknown_revision:
+      {422, "The named revision does not belong to this document.", %{revision_id: "rev-1"}},
     invalid_estimate:
       {422, "The task estimate is invalid.", %{field: "likely", reason: "must be ordered"}},
     invalid_difficulty:

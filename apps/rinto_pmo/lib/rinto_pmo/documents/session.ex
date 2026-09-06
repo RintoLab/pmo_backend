@@ -63,18 +63,21 @@ defmodule RintoPMO.Documents.Session do
   end
 
   @doc """
-  Records what a topic wants a block to say, replacing that topic's previous
-  proposal on the block if it had one.
+  Records what a topic wants a block to say.
 
-  Answers with the number of live proposals now on the block, so a topic
-  learns straight away that it is not alone there.
+  `base_revision_id` is the revision whose text the topic read. It travels with
+  the proposal rather than being looked up here: a base filled in on the way
+  past would say the topic had read something it never saw.
+
+  Answers with what was written and every argument it walked into, so a topic
+  learns straight away that it is not alone in the block.
   """
   @spec propose(UUIDv7.t(), UUIDv7.t(), UUIDv7.t(), UUIDv7.t(), String.t()) ::
           {:ok, Documents.Behaviour.proposed()}
           | {:error, Ecto.Changeset.t()}
           | {:error, atom(), map()}
-  def propose(document_id, block_id, conversation_id, actor_id, content) do
-    call(document_id, {:propose, block_id, conversation_id, actor_id, content})
+  def propose(document_id, block_id, conversation_id, base_revision_id, content) do
+    call(document_id, {:propose, block_id, conversation_id, base_revision_id, content})
   end
 
   @doc """
@@ -88,21 +91,24 @@ defmodule RintoPMO.Documents.Session do
   end
 
   @doc """
-  Lists the blocks carrying more than one live proposal.
+  Lists the pairs of live proposals that cannot both stand.
   """
   @spec contentions(UUIDv7.t()) ::
           {:ok, [Documents.Behaviour.contention()]} | {:error, :not_found}
   def contentions(document_id), do: call(document_id, :contentions)
 
   @doc """
-  Settles a contended block in favour of one proposal.
+  Chooses one candidate over the ones competing with it.
+
+  Settling the argument, not publishing the change: the winner stays live and
+  still has to be published, and the candidates it beat stay live too.
   """
-  @spec decide(UUIDv7.t(), UUIDv7.t(), UUIDv7.t(), UUIDv7.t()) ::
-          {:ok, Documents.BlockProposal.t()}
+  @spec adopt(UUIDv7.t(), UUIDv7.t(), UUIDv7.t(), UUIDv7.t()) ::
+          {:ok, Documents.Behaviour.proposal_detail()}
           | {:error, Ecto.Changeset.t()}
           | {:error, atom(), map()}
-  def decide(document_id, block_id, proposal_id, actor_id) do
-    call(document_id, {:decide, block_id, proposal_id, actor_id})
+  def adopt(document_id, proposal_id, base_revision_id, actor_id) do
+    call(document_id, {:adopt, proposal_id, base_revision_id, actor_id})
   end
 
   @doc """
@@ -154,12 +160,12 @@ defmodule RintoPMO.Documents.Session do
   end
 
   @impl true
-  def handle_call({:propose, block_id, conversation_id, actor_id, content}, _from, state) do
+  def handle_call({:propose, block_id, conversation_id, base_revision_id, content}, _from, state) do
     result =
       Documents.propose_block(state.document, %{
         block_id: block_id,
         conversation_id: conversation_id,
-        actor_id: actor_id,
+        base_revision_id: base_revision_id,
         content: content
       })
 
@@ -174,8 +180,9 @@ defmodule RintoPMO.Documents.Session do
     {:reply, {:ok, Documents.contentions(state.document)}, state}
   end
 
-  def handle_call({:decide, block_id, proposal_id, actor_id}, _from, state) do
-    {:reply, Documents.decide_block(state.document, block_id, proposal_id, actor_id), state}
+  def handle_call({:adopt, proposal_id, base_revision_id, actor_id}, _from, state) do
+    {:reply, Documents.adopt_proposal(state.document, proposal_id, base_revision_id, actor_id),
+     state}
   end
 
   def handle_call({:commit, attrs}, _from, state) do
