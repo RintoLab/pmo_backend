@@ -25,7 +25,7 @@ info:
 
     The token also supplies human attribution. `POST /attachments`,
     `POST /conversations`, `POST /tasks/{id}/claim` and
-    `POST /documents/{id}/proposals/{id}/decide` credit the token holder and
+    `POST /documents/{id}/proposals/{id}/adopt` credit the token holder and
     ignore any `actor_id` in the body. Endpoints naming *another* actor --
     `POST /tasks/{id}/assign`, an assistant switch, and anything an AI can
     author -- still take one, because they are about somebody other than the
@@ -57,10 +57,23 @@ tags:
     description: Document annotations and flat follow-up replies (not review workflow, not AI chat logs).
   - name: Proposals
     description: >
-      Proposed block changes and the decisions taken about them. An agent
-      writes here rather than straight to a revision, because a revision is
-      what a person agreed to. Two live proposals on one block is a contention:
-      a question for a human, never a merge.
+      Proposed changes and what a person does with them. An agent writes here
+      rather than straight to a revision, because a revision is what a person
+      agreed to.
+
+
+      One proposal is one local change -- a block rewritten, inserted, deleted
+      or moved, or the title. Whole-body Markdown is an input format that comes
+      back as several of them, because a rewrite that tightens two paragraphs
+      and drops a third is three things a person will have three opinions
+      about.
+
+
+      Four verbs, deliberately not one. `PATCH` saves a checkbox, `adopt`
+      settles which of several competing candidates a person wants, `reject`
+      says no, and `POST /commit` publishes exactly what it was given. Two
+      proposals claiming the same thing is a question for a human, never a
+      merge.
   - name: Schedule
     description: >
       What each week holds and what did not fit. An iteration is a week and is
@@ -1026,7 +1039,7 @@ paths:
     post:
       tags: [Proposals]
       operationId: commitDocuments
-      summary: Commit several documents at once, in one transaction
+      summary: Publish several documents at once, in one transaction
       description: >-
         The endpoint behind one review screen and one button. A discussion that
         changed a design usually changed more than one document, and half of
@@ -1043,8 +1056,10 @@ paths:
         is a property of the write rather than an entity.
 
 
-        What to commit comes from `GET /conversations/{id}/proposals`, which is
-        the same set grouped by document.
+        What to publish comes from `GET /conversations/{id}/proposals`, which is
+        the same set grouped by document. Each entry names its own
+        `proposal_ids`, for the same reason the single-document call does:
+        nothing about a publish is inferred.
 
 
         Revisions come back in the order they were asked for. Documents are
@@ -1067,7 +1082,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DocumentRevisionListResponse"
+                $ref: "#/components/schemas/PublicationListResponse"
         "400":
           description: "`commits` is missing, empty, or an entry names no document"
           content:
@@ -1078,8 +1093,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: >
-            An entry's base revision is stale, or a selected block has a
-            contention nobody has decided. Nothing was written.
+            An entry's base revision is stale, or one of its proposals has been
+            decided or needs confirming. Nothing was written.
           content:
             application/json:
               schema:
@@ -1783,26 +1798,42 @@ paths:
     post:
       tags: [Proposals]
       operationId: commitDocument
-      summary: Turn the chosen proposals into a revision
+      summary: Publish the named proposals as a revision
       description: >
         One call, three things, one transaction: the revision is written, the
         annotations named in `confirm_annotation_ids` are confirmed against it,
-        and the proposals it used become `accepted`. Commit is the only moment
-        at which somebody has both decided and changed the document, so it is
-        the only natural place to confirm an annotation *with a revision* --
-        and a revision written without its confirmations, or confirmations
-        pointing at a revision that failed to write, would each leave the
-        record lying.
+        and the proposals it applied become `accepted`. Publishing is the only
+        moment at which somebody has both decided and changed the document, so
+        it is the only natural place to confirm an annotation *with a revision*
+        -- and a revision written without its confirmations, or confirmations
+        pointing at a revision that failed to write, would each leave the record
+        lying.
 
 
-        Omit `block_ids` to take every block holding exactly one live proposal.
-        A block with an undecided contention is refused, but only that block:
-        the rest of the selection goes through.
+        `proposal_ids` is required and is the whole of the selection. Nothing is
+        inferred: not the `staged` flags saved on the server, not an uncontested
+        title, not a proposal a selected one happens to sit beside. A person who
+        ticked something and then published something else published what they
+        published, and a `PATCH` that never reached the server cannot quietly
+        change what this request meant.
 
 
-        A commit spanning several documents is several revisions, one per
-        document. There is no cross-document commit record; `source_conversation_id`
-        makes "what did that discussion change?" a query instead.
+        `base_revision_id` is the ordinary check that the document has not moved
+        under the screen. It is not a review version and not a rebase: when it
+        is stale, re-read `GET /proposals`, look at the new comparison, and
+        choose again.
+
+
+        What it invalidates is only what the applied proposals actually beat --
+        the other rewrites of that paragraph, the deletion of it -- worked out
+        against the document as it stood before the write. A proposal about a
+        different paragraph stays live.
+
+
+        A publish spanning several documents is several revisions, one per
+        document. There is no cross-document commit record;
+        `source_conversation_id` makes "what did that discussion change?" a
+        query instead.
       requestBody:
         required: true
         content:
@@ -1810,35 +1841,73 @@ paths:
             schema:
               $ref: "#/components/schemas/CommitInput"
       responses:
+        "200":
+          description: >
+            Every selected proposal had already been applied, so nothing was
+            written. `data` is `null` -- a revision identical to its parent is
+            not what "nothing to do" looks like -- and nobody is marked
+            `accepted`, because no publish applied them. `meta.result` is
+            `already_applied`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicationResponse"
         "201":
           description: Revision created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DocumentRevisionResponse"
+                $ref: "#/components/schemas/PublicationResponse"
         "404":
-          $ref: "#/components/responses/NotFound"
+          description: >
+            The document, or one of the named proposals, does not exist here.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
         "409":
           description: >
-            The base revision is stale, or a selected block has a contention
-            nobody has decided.
+            `stale_document` when the body has moved since `base_revision_id`;
+            `proposal_not_live` when something in the selection has already been
+            decided; `needs_reconfirmation` when the words a proposal was
+            written against have changed and nobody has adopted it since.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
         "422":
-          $ref: "#/components/responses/ValidationError"
+          description: >
+            `nothing_to_commit` for an empty selection, `duplicate_proposal`,
+            `conflicting_selection` when two of them claim the same thing,
+            `proposal_not_applicable`, `unresolved_dependency` or `move_cycle`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /documents/{document_id}/proposals:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
     get:
       tags: [Proposals]
       operationId: listProposals
-      summary: List a document's proposals
+      summary: List a document's proposals and what each still means
       description: >
         Includes decided ones. Nothing is ever deleted -- "why A and not B" is
         the record this system exists to keep -- so filter by `status` to see
         only what is still standing.
+
+
+        Every row carries the comparison against the document as it now stands:
+        `state`, `adopted`, `adoption_stale` and `conflicting_proposal_ids` are
+        computed on every read rather than stored, because the answers change
+        when the document does. `meta.current_revision_id` is the revision the
+        whole list was compared against, from the same snapshot -- pair one
+        revision's diff with another revision's id and a publish goes against
+        the wrong thing.
+
+
+        Reading writes nothing. It does not adopt, does not refresh what an
+        earlier choice was made against, and does not tidy anything up.
       parameters:
         - name: status
           in: query
@@ -1871,13 +1940,32 @@ paths:
           $ref: "#/components/responses/NotFound"
     post:
       tags: [Proposals]
-      operationId: proposeBlock
-      summary: Record what a topic wants a block to say
+      operationId: proposeChanges
+      summary: Record what a topic read and rewrote, as the changes it is made of
       description: >
-        A topic already holding a live proposal on the block has it rewritten
-        in place rather than gaining a second one: five rounds of "tighten
-        this" are one intent iterating. `status` and the decision fields are
-        ignored if sent -- a proposal moves only by being decided or committed.
+        `input.kind` says what was written, not what is stored. `document` is
+        whole-body Markdown and is the ordinary case; it comes back as several
+        proposals -- an update here, an insertion there, a deletion, a move --
+        because that is what it actually is, and because a person will want to
+        take some of them and not others. **There is no proposal representing
+        "the rewrite".**
+
+
+        `input.base_revision_id` is the revision the topic actually read. It is
+        required and is never filled in server-side: stamping the latest
+        revision onto a body written against an older one would turn a stale
+        rewrite into a silent revert of everything that landed in between.
+
+
+        A topic re-proposing exactly what it already has standing keeps that
+        proposal, id and all. Anything else is a different modification: a new
+        row, and the one it replaces becomes `superseded`. Ids are never
+        rewritten, because a message citing one has to keep saying what it said.
+
+
+        `status`, `staged`, `actor_id` and the decision fields are ignored if
+        sent. Who a proposal is by comes from the topic, and its state comes
+        from what people do to it.
       requestBody:
         required: true
         content:
@@ -1887,8 +1975,8 @@ paths:
       responses:
         "201":
           description: >
-            The proposal, with the number of live proposals now on that block.
-            Two or more means the topic has walked into a contention.
+            The rows this request wrote, what they add up to, anything they
+            replaced, and every argument they walked into.
           content:
             application/json:
               schema:
@@ -1896,7 +1984,15 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
-          $ref: "#/components/responses/ValidationError"
+          description: >
+            `invalid_input_kind`, `base_revision_required`, `unknown_revision`,
+            `unknown_block`, `invalid_markdown`, or `no_change_proposed` when
+            the body is the document that already exists. Proposing nothing is
+            not a way of withdrawing what was proposed before; that is `reject`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /documents/{document_id}/proposals/{id}:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -1904,7 +2000,11 @@ paths:
     get:
       tags: [Proposals]
       operationId: getProposal
-      summary: Get one proposal
+      summary: Get one proposal, with what it still means
+      description: >
+        Readable whatever became of it. A proposal that was accepted, rejected
+        or superseded still opens, still holds the text it was written with, and
+        is still what every message citing its id points at.
       responses:
         "200":
           description: Proposal
@@ -1914,29 +2014,105 @@ paths:
                 $ref: "#/components/schemas/BlockProposalResponse"
         "404":
           $ref: "#/components/responses/NotFound"
-  /documents/{document_id}/proposals/{id}/decide:
+    patch:
+      tags: [Proposals]
+      operationId: stageProposal
+      summary: Save the checkbox, and only the checkbox
+      description: >
+        `{"staged": true}` or `{"staged": false}` -- what the caller says is what
+        is stored. **Not a toggle**: two saves of the same value leave the same
+        state, which is what makes a retry harmless. There is no sequence number
+        and no ordering protocol; a later save wins, because that is what saving
+        a checkbox means.
+
+
+        It settles no argument and decides nothing about what a publish
+        contains. `POST /commit` names its proposals outright, so a tick that
+        never reached the server costs a person a tick and never a wrong
+        revision.
+
+
+        The payload cannot be rewritten here. A proposal id names one
+        modification forever; changing your mind is a new proposal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProposalStageInput"
+      responses:
+        "200":
+          description: The proposal, with its checkbox as it now stands
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockProposalResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            `proposal_not_live` when it has already been decided, or
+            `unresolved_contention` when something else claims this change too
+            and nobody has adopted either. Ticking is not a way around a
+            decision nobody made. Un-ticking a decided proposal is not an error:
+            there is nothing left to change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          description: >
+            `proposal_not_applicable` -- it could not be applied to the document
+            as it stands, so ticking it would promise something that cannot
+            happen.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+  /documents/{document_id}/proposals/{id}/adopt:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
       - $ref: "#/components/parameters/BlockProposalId"
     post:
       tags: [Proposals]
-      operationId: decideProposal
-      summary: Settle a contended block in favour of this proposal
+      operationId: adoptProposal
+      summary: Choose this candidate over the ones competing with it
       description: >
-        Every other live proposal on the block becomes `rejected`. This one
-        stays `live`: deciding a contention is not committing it, and it still
-        has to go through commit like any other pending change.
+        Adopting settles an argument. It does not publish anything and it does
+        not tick anything.
 
 
-        The only other way out of a contention is to open a topic about it.
-        There is no manual merge -- a third version nobody asked for is exactly
-        what this refuses to produce.
+        `base_revision_id` is what the person was looking at when they chose,
+        and it is stored with the choice: that is what lets a later read tell a
+        decision that still refers to something from one made about words that
+        have since changed. When only an unrelated paragraph moves, the choice
+        stands; when the paragraph this proposal argues about changes, the read
+        comes back `adopted: false, adoption_stale: true` and it has to be made
+        again.
 
 
-        Who decided is the token holder and cannot be sent. Deciding is the one
-        thing in this system only a person does, and `decided_by_actor_id` is
-        the record of which person -- a body able to name somebody else would
-        let an agent stamp its own change as agreed to.
+        The candidates it beats stay `live` and merely lose their `staged` flag.
+        Nothing about them has been decided -- un-adopt this one and any of them
+        can be chosen instead. Only publishing ends them, and only the ones that
+        actually conflict with what was published.
+
+
+        Refused while another conflicting candidate is adopted. Switching is
+        `unadopt` then `adopt`, in that order and said out loud: an adopt that
+        silently displaced somebody's earlier choice would be a decision nobody
+        made.
+
+
+        Who chose is the token holder and cannot be sent. Choosing is the one
+        thing in this system only a person does, and a body able to name
+        somebody else would let an agent record a person as having agreed to its
+        own change.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProposalAdoptInput"
       responses:
         "200":
           description: The adopted proposal, still live
@@ -1948,52 +2124,35 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-  /documents/{document_id}/proposals/{id}/rebase:
+        "409":
+          description: >
+            `stale_document` when `base_revision_id` is no longer current,
+            `proposal_not_live`, or `already_adopted` naming the candidate that
+            holds the choice.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+  /documents/{document_id}/proposals/{id}/unadopt:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
       - $ref: "#/components/parameters/BlockProposalId"
     post:
       tags: [Proposals]
-      operationId: rebaseProposal
-      summary: Carry a whole-document proposal across what landed under it
+      operationId: unadoptProposal
+      summary: Take back a choice, leaving every candidate available again
       description: >
-        A whole-document proposal carries operations for blocks it did not
-        touch, so once something else commits, applying it would revert that.
-        `commit` refuses such a proposal with `409 stale_proposal`, and this is
-        the way forward: a three-way merge of the revision the proposal was
-        written against, what the proposal wants, and the revision that is now
-        current.
+        Clears this proposal's adoption and does no more. It restores nothing:
+        not a rejection somebody meant, not the `staged` flags the losing
+        candidates had before, and not a published revision. Publishing is the
+        point of no return, and the way back from it is a new proposal.
 
 
-        Asking the model to write it again is the wrong recovery. It costs
-        another round trip and throws away the review a person already did.
-
-
-        Per block: only the proposal changed it, use the proposal's; only
-        somebody else did, use theirs; both made the same change, use it; both
-        made different changes, conflict. A block the proposal deletes but
-        somebody else edited is also a conflict -- deleting it would silently
-        discard that edit. Blocks the proposal adds are kept.
-
-
-        Idempotent. A proposal already sitting on the current revision comes
-        back unchanged, so a caller may ask without first working out whether
-        it needs to. The proposal keeps its `id` and its original proposer:
-        carrying a proposal across a revision is a merge, not somebody writing
-        again.
-
-
-        Whole-document scope only. A block proposal's base is the latest
-        revision by construction, so there is nothing for this to do -- asking
-        for one answers `422 proposal_not_found`.
+        No revision parameter: this decides nothing, so there is nothing for it
+        to be decided against.
       responses:
         "200":
-          description: >
-            The same proposal, with `base_revision_id` moved to the current
-            revision and `content` / `block_ops` holding the merged result. It
-            can be committed as it stands.
+          description: The proposal, no longer adopted
           content:
             application/json:
               schema:
@@ -2001,27 +2160,49 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: >
-            `rebase_conflict`. Nothing was changed -- the proposal still stands
-            where it was. `details.reason` is `diverged`, with `details.block_ids`
-            naming the blocks written differently on both sides; the granularity
-            is the block, the same as an ordinary contention, so a client can
-            reuse that presentation and a person makes the same kind of
-            decision. `reason` is `restructured` when blocks were added, removed
-            or reordered underneath (only a direct `POST /revisions` can do
-            that), and `details.added` / `details.removed` give the id
-            differences. A restructure does not merge; that one needs a fresh
-            proposal.
+          description: "`proposal_not_live`: it has already been decided."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
-        "422":
-          description: >
-            `proposal_not_found` when no live whole-document proposal has that
-            id, or `no_change_proposed` when the merge finds nothing left to do
-            -- somebody else already made the change this proposal wanted, and
-            it can be dropped.
+  /documents/{document_id}/proposals/{id}/reject:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+      - $ref: "#/components/parameters/BlockProposalId"
+    post:
+      tags: [Proposals]
+      operationId: rejectProposal
+      summary: Say no to a proposal
+      description: >
+        The one way to turn something down: there is no withdraw, no delete and
+        no undo beside it. The row stays, with its text, its optional `reason`
+        and every message that ever cited it.
+
+
+        Not the same as `superseded`, which is what happens to a proposal
+        overtaken by a newer version of itself or by a competing change that
+        published first. Nobody decided those, and un-adopting does not bring a
+        rejection back.
+
+
+        Who said no is the token holder and cannot be sent.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProposalRejectInput"
+      responses:
+        "200":
+          description: The rejected proposal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockProposalResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`proposal_not_live`: it has already been decided."
           content:
             application/json:
               schema:
@@ -2032,13 +2213,21 @@ paths:
     get:
       tags: [Proposals]
       operationId: listContentions
-      summary: List the blocks carrying more than one live proposal
+      summary: List the pairs of live proposals that cannot both stand
       description: >
-        A contention has a place -- it is on a block -- so unlike a topic it
-        can be marked on the document itself.
+        Pairs, not groups. Two rewrites of one paragraph are alternatives, and
+        so are a rewrite and a deletion of it -- but a rewrite and a *move* of
+        that same paragraph are not, and a group holding all three would ask
+        somebody to give up an edit in order to keep a reordering. Nothing here
+        is transitive: what a person is asked is always "this one or that one".
+
+
+        A title argument is an ordinary entry with `scope: title`. There is no
+        separate list for document-level arguments, because there are no
+        document-level proposals.
       responses:
         "200":
-          description: Contended blocks and their competing proposals
+          description: The pairs, and what each is arguing about
           content:
             application/json:
               schema:
@@ -2236,11 +2425,11 @@ paths:
         document.
 
 
-        Each proposal carries `contended`: somebody else's live proposal stands
-        in the same slot, so this one cannot be committed until a person
-        decides between them. The other version's text is deliberately not
-        here -- that is `GET /documents/{id}/contentions`, and comparing two
-        bodies is a different screen.
+        Each proposal carries `contended`: something else claims the same
+        change, so this one cannot be published until a person adopts one of
+        them. The other version's text is deliberately not here -- that is
+        `GET /documents/{id}/contentions`, and comparing two bodies is a
+        different screen.
 
 
         Only what is still live. A rejected proposal is the record of why
@@ -6729,17 +6918,36 @@ components:
         [
           id,
           document_id,
+          scope,
+          operation,
           block_id,
+          after_block_id,
+          run_id,
+          run_ordinal,
           conversation_id,
           actor_id,
           content,
           base_revision_id,
+          staged,
           status,
+          accepted_revision_id,
+          supersedes_id,
           decided_by_actor_id,
           decided_at,
+          decided_reason,
           inserted_at,
-          updated_at
+          updated_at,
+          state,
+          reason,
+          adopted,
+          adoption_stale,
+          conflicting_proposal_ids
         ]
+      description: >
+        One proposed local change. `scope`, `operation`, `block_id`,
+        `after_block_id`, `content` and `base_revision_id` are the fixed payload
+        -- written once and never rewritten, because a message citing this id
+        has to keep saying what it said. Everything else is state that moves.
       properties:
         id:
           type: string
@@ -6747,38 +6955,102 @@ components:
         document_id:
           type: string
           format: uuid
+        scope:
+          type: string
+          enum: [block, title]
+          description: >
+            A title lives on the revision and is never read out of the body, so
+            no Markdown can carry one. It is not otherwise special: titles
+            compete with each other, are adopted and published like any other
+            candidate, and none of them has to win.
+        operation:
+          type: string
+          enum: [update, insert, delete, move]
+          description: >
+            What this change does. A `title` proposal is always `update`.
         block_id:
           type: string
           format: uuid
+          nullable: true
+          description: >
+            The block this is about; `null` for a title. An `insert` names the
+            block it is going to *create*, allocated at propose time -- so the
+            paragraph somebody reviews, cites in a topic and then publishes is
+            one block throughout.
+        after_block_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Where an `insert` or a `move` goes: immediately after this block, or
+            at the head of the document when `null`. Absent for `update` and
+            `delete`.
+        run_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Several insertions written into one gap by one propose call are one
+            run. They all name the gap rather than each other, so taking the
+            first and the third has to mean something -- and `run_ordinal` is
+            what keeps them in the order they were written when it does.
+        run_ordinal:
+          type: integer
+          minimum: 0
+          nullable: true
         conversation_id:
           type: string
           format: uuid
           nullable: true
           description: >
-            The topic that made it. A proposal's identity is (block,
-            conversation); this is nullable only so that losing a topic does
-            not take the proposal with it.
+            The topic that made it. A proposal's slot is (block, operation,
+            conversation); this is nullable only so that losing a topic does not
+            take the proposal with it.
         actor_id:
           type: string
           format: uuid
           description: >
-            Who wrote the proposed text. The committed block is attributed to
+            Who wrote the proposed text. The published block is attributed to
             this actor, not to whoever approved it.
         content:
           type: string
+          nullable: true
+          description: >
+            Present for `update` and `insert`. A `delete` or a `move` carries
+            none: text on either would be a second, unreviewed opinion about
+            what the block says.
         base_revision_id:
           type: string
           format: uuid
           description: >
-            The revision this was written against. Recorded, but not a conflict
-            test: a working copy is loaded per document from the latest
-            revision, so every topic's base is identical by construction.
+            The revision the topic actually read. Not a version to be bumped and
+            not a rebase: it says what this change is a change *from*, which is
+            what every comparison downstream is computed against.
+        staged:
+          type: boolean
+          description: >
+            The checkbox, and nothing else. It settles no argument and decides
+            nothing about what a publish contains.
         status:
           type: string
           enum: [live, accepted, rejected, superseded]
           description: >
-            `live` is standing but uncommitted, `accepted` landed in a
-            revision, `rejected` lost a contention. Rows are never deleted.
+            `live` is standing, `accepted` landed in a revision, `rejected` is
+            somebody saying no, `superseded` is being overtaken -- by a newer
+            version of the same intent, or by a competing change that published
+            first. Rows are never deleted.
+        accepted_revision_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The revision that actually applied it.
+        supersedes_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The earlier proposal this one replaced, where a later intent rewrote
+            exactly one earlier one.
         decided_by_actor_id:
           type: string
           format: uuid
@@ -6787,12 +7059,65 @@ components:
           type: string
           format: date-time
           nullable: true
+        decided_reason:
+          type: string
+          nullable: true
+          description: Why somebody said no, when they said.
         inserted_at:
           type: string
           format: date-time
         updated_at:
           type: string
           format: date-time
+        state:
+          type: string
+          enum: [applicable, already_applied, needs_confirmation, not_applicable]
+          description: >
+            What this still means against the document as it now stands.
+            Computed on every read rather than stored: the answer changes when
+            the document does, and a stored one would go quietly wrong.
+
+
+            `already_applied` is satisfied rather than accepted -- somebody
+            else's change did it, and publishing it writes nothing.
+            `needs_confirmation` means the words it was written against have
+            changed and it needs adopting against what they say today.
+        reason:
+          type: string
+          nullable: true
+          enum:
+            [
+              content_diverged,
+              title_diverged,
+              target_rewritten,
+              target_deleted,
+              anchor_missing,
+              base_unreadable,
+            ]
+          description: Why, for the two states that are not simply yes or no.
+        adopted:
+          type: boolean
+          description: >
+            Somebody chose this candidate over the ones competing with it, and
+            that choice still refers to what it was made about. Derived, not
+            stored: an unrelated paragraph changing leaves it standing, and a
+            change to the words this argues about does not.
+        adoption_stale:
+          type: boolean
+          description: >
+            It was adopted, and the words it was adopted about have since
+            changed. Told apart from never having been adopted because they call
+            for different things: one is an argument nobody settled, the other
+            is a settlement to make again.
+        conflicting_proposal_ids:
+          type: array
+          description: >
+            The live proposals that cannot stand alongside this one. Pairwise
+            and never transitive -- a rewrite and a move of one paragraph are
+            not alternatives even when both argue with a deletion of it.
+          items:
+            type: string
+            format: uuid
       additionalProperties: false
     BlockProposalResponse:
       type: object
@@ -6800,15 +7125,35 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/BlockProposal"
+        meta:
+          type: object
+          required: [current_revision_id]
+          properties:
+            current_revision_id:
+              type: string
+              format: uuid
+          additionalProperties: false
       additionalProperties: false
     BlockProposalListResponse:
       type: object
-      required: [data]
+      required: [data, meta]
       properties:
         data:
           type: array
           items:
             $ref: "#/components/schemas/BlockProposal"
+        meta:
+          type: object
+          required: [current_revision_id]
+          properties:
+            current_revision_id:
+              type: string
+              format: uuid
+              description: >
+                The revision every row was compared against, from the same
+                snapshot. Pair one revision's comparison with another
+                revision's id and a publish goes against the wrong thing.
+          additionalProperties: false
       additionalProperties: false
     WorkingSetResponse:
       type: object
@@ -6857,40 +7202,38 @@ components:
             contended:
               type: boolean
               description: >-
-                Another topic has a live proposal in the same slot -- the same
-                block, or the same document-wide scope. This one cannot be
-                committed until somebody decides between them. The other
-                version's text is not here; that is
-                `GET /documents/{document_id}/contentions`.
+                Something else claims this change too. The rival text is not
+                here; that is `GET /documents/{document_id}/contentions`.
     ProposedResponse:
       type: object
       required: [data, summary, superseded, contended]
       properties:
         data:
           type: array
-          description: All proposal rows written by this request.
+          description: >
+            All proposal rows this request wrote. A whole-body rewrite comes
+            back as several: there is no row meaning "the rewrite".
           items:
             $ref: "#/components/schemas/BlockProposal"
         summary:
           $ref: "#/components/schemas/ProposalOperationSummary"
         superseded:
           type: array
-          description: Proposal ids removed from this topic's live body set by this request.
+          description: >
+            Proposals this request replaced -- this topic's own earlier intent
+            in the range it rewrote, and nothing of anybody else's.
           items:
             type: string
             format: uuid
         contended:
           type: array
-          description: >
-            Every slot this request found contended. Legacy document proposals
-            that update one of these blocks are reported as non-decidable
-            overlaps instead of block candidates.
+          description: Every argument these proposals walked into.
           items:
             $ref: "#/components/schemas/ProposalContentionSummary"
       additionalProperties: false
     ProposalOperationSummary:
       type: object
-      required: [changed, added, removed]
+      required: [changed, added, removed, moved]
       properties:
         changed:
           type: integer
@@ -6901,103 +7244,142 @@ components:
         removed:
           type: integer
           minimum: 0
+        moved:
+          type: integer
+          minimum: 0
       additionalProperties: false
     ProposalContentionSummary:
       type: object
-      required: [scope]
+      required: [proposal_id, conflicting_proposal_ids]
       properties:
-        scope:
-          type: string
-          enum: [block, document, title]
-        block_id:
-          type: string
-          format: uuid
-        live_proposals:
-          type: integer
-          minimum: 2
         proposal_id:
           type: string
           format: uuid
-        overlaps_block_ids:
+        conflicting_proposal_ids:
           type: array
+          minItems: 1
           items:
             type: string
             format: uuid
-        decidable:
-          type: boolean
-          description: False for a cross-scope legacy overlap.
       additionalProperties: false
     BlockProposalCreateInput:
       type: object
-      required: [block_id, conversation_id, content]
+      required: [conversation_id, input]
       properties:
-        block_id:
-          type: string
-          format: uuid
-          description: Must be a block of the document's latest revision.
         conversation_id:
           type: string
           format: uuid
           description: >
-            The topic proposing, and the whole of who the proposal is by: its
-            assistant, or the `default` actor when the topic is a plain chat.
-        actor_id:
+            The topic proposing, and the whole of who the proposal is by: the
+            stand-in AI actor. Proposing is how an AI writes.
+        change_summary:
           type: string
-          format: uuid
-          description: >
-            Ignored, and dropped rather than refused so a client that has
-            always sent it keeps working. Proposing is how an AI writes, and
-            which AI is derived from the topic.
+          nullable: true
+          description: What the proposer says it changed, carried into the revision.
+        input:
+          $ref: "#/components/schemas/ProposalInput"
+      additionalProperties: false
+    ProposalInput:
+      type: object
+      required: [kind, base_revision_id]
+      description: >
+        What the topic read and wrote. An input format, not a stored shape: a
+        `document` input becomes several proposals and no row holds the whole of
+        it.
+      properties:
+        kind:
+          type: string
+          enum: [document, block, title]
         content:
           type: string
           minLength: 1
-      additionalProperties: false
-    Contention:
-      type: object
-      required: [block_id, proposals]
-      properties:
+          description: >
+            Whole-body Markdown for `document`, the block's new text for
+            `block`, the new title for `title`.
+        base_revision_id:
+          type: string
+          format: uuid
+          description: >
+            The revision whose text was actually read. Required, and never
+            filled in server-side: stamping the latest revision onto a body
+            written against an older one would turn a stale rewrite into a
+            silent revert.
         block_id:
           type: string
           format: uuid
-        proposals:
+          description: >
+            Which block, for a `block` input. Ignored otherwise.
+      additionalProperties: false
+    ProposalStageInput:
+      type: object
+      required: [staged]
+      properties:
+        staged:
+          type: boolean
+          description: >
+            What to store. Not a toggle -- two saves of the same value leave the
+            same state.
+      additionalProperties: false
+    ProposalAdoptInput:
+      type: object
+      required: [base_revision_id]
+      properties:
+        base_revision_id:
+          type: string
+          format: uuid
+          description: >
+            What was on screen when the choice was made. Stored with it, so a
+            later read can tell a choice that still refers to something from one
+            made about words that have since changed.
+      additionalProperties: false
+    ProposalRejectInput:
+      type: object
+      properties:
+        reason:
+          type: string
+          nullable: true
+          description: Why, kept with the row for whoever reads it later.
+      additionalProperties: false
+    Contention:
+      type: object
+      required: [reason, proposal_ids, scope, block_id]
+      description: >
+        One pair of live proposals that cannot both stand. A pair rather than a
+        group: conflict is a relation, and nothing about it is transitive.
+      properties:
+        reason:
+          type: string
+          enum:
+            [
+              competing_text,
+              competing_deletion,
+              competing_position,
+              competing_insertion,
+              competing_title,
+            ]
+        proposal_ids:
           type: array
           minItems: 2
+          maxItems: 2
           items:
-            $ref: "#/components/schemas/BlockProposal"
+            type: string
+            format: uuid
+        scope:
+          type: string
+          enum: [block, title]
+        block_id:
+          type: string
+          format: uuid
+          nullable: true
       additionalProperties: false
     ContentionListResponse:
       type: object
-      required: [data, document_scopes]
+      required: [data]
       properties:
         data:
           type: array
           items:
             $ref: "#/components/schemas/Contention"
-        document_scopes:
-          type: array
-          items:
-            $ref: "#/components/schemas/DocumentScopeContention"
-      additionalProperties: false
-    DocumentScopeContention:
-      type: object
-      required: [scope, proposals]
-      properties:
-        scope:
-          type: string
-          enum: [document, title]
-        proposals:
-          type: array
-          minItems: 1
-          items:
-            $ref: "#/components/schemas/BlockProposal"
-        overlaps_block_ids:
-          type: array
-          description: >
-            Blocks also changed by live block proposals while a legacy
-            document proposal still contains update operations.
-          items:
-            type: string
-            format: uuid
       additionalProperties: false
     ConversationBlock:
       type: object
@@ -7011,7 +7393,7 @@ components:
           minimum: 0
         content:
           type: string
-          description: This topic's proposed text where it has one, otherwise the committed text.
+          description: This topic's proposed text where it has one, otherwise the published text.
         proposal_id:
           type: string
           format: uuid
@@ -7027,84 +7409,160 @@ components:
       additionalProperties: false
     ConversationBlockListResponse:
       type: object
-      required: [revision_id, data, document_proposal]
+      required: [revision_id, title, data, unapplicable]
+      description: >
+        A derived view: the latest revision with this topic's own applicable
+        proposals laid over it. Not a branch, not a draft, not stored anywhere.
       properties:
         revision_id:
           type: string
           format: uuid
-          description: >
-            The revision from the same snapshot as `data` and
-            `document_proposal`. A document proposal whose base differs from
-            this value must be rebased before it is rendered as current intent.
+          description: The revision `data` was derived from, from the same snapshot.
+        title:
+          type: string
+          nullable: true
+          description: This topic's proposed title where it has one, otherwise the current one.
         data:
           type: array
           items:
             $ref: "#/components/schemas/ConversationBlock"
-        document_proposal:
+        unapplicable:
+          type: array
+          description: >
+            This topic's own proposals that could not be laid over the document,
+            and what stopped each of them. Dropped silently, they would be
+            written again from scratch on the next turn.
+          items:
+            type: object
+            properties:
+              proposal_id:
+                type: string
+                format: uuid
+              reason:
+                type: string
+      additionalProperties: false
+    PublicationResponse:
+      type: object
+      required: [data, meta]
+      description: >
+        What one publish did. `data` is the revision it wrote, or `null` when
+        every selected proposal had already been applied.
+      properties:
+        data:
           allOf:
-            - $ref: "#/components/schemas/BlockProposal"
+            - $ref: "#/components/schemas/DocumentRevision"
           nullable: true
+        meta:
+          $ref: "#/components/schemas/PublicationMeta"
+      additionalProperties: false
+    PublicationMeta:
+      type: object
+      required:
+        [
+          result,
+          document_id,
+          current_revision_id,
+          accepted_proposal_ids,
+          superseded_proposal_ids,
+          already_applied_proposal_ids
+        ]
+      description: >
+        What happened to each proposal. "It worked" is not enough to redraw a
+        review screen with: a candidate that lost has to disappear from it, and
+        one that turned out to be already applied has to stop asking to be
+        taken.
+      properties:
+        result:
+          type: string
+          enum: [published, already_applied]
+        document_id:
+          type: string
+          format: uuid
+        current_revision_id:
+          type: string
+          format: uuid
+        accepted_proposal_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        superseded_proposal_ids:
+          type: array
+          description: >
+            Beaten by something this publish applied, and only by that. A
+            proposal about a different paragraph is still true and still
+            standing.
+          items:
+            type: string
+            format: uuid
+        already_applied_proposal_ids:
+          type: array
+          description: >
+            Already true before this ran. Not accepted -- no publish applied
+            them -- and nothing was superseded on their account.
+          items:
+            type: string
+            format: uuid
+      additionalProperties: false
+    PublicationListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/DocumentRevision"
+            nullable: true
+        meta:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicationMeta"
       additionalProperties: false
     CommitInput:
       type: object
-      required: [base_revision_id]
+      required: [base_revision_id, proposal_ids]
       properties:
         actor_id:
           type: string
           format: uuid
           description: >
-            Ignored. Who is committing is the token's actor, recorded on the
+            Ignored. Who is publishing is the token's actor, recorded on the
             accepted proposals -- the same rule
-            `POST /documents/{id}/proposals/{id}/decide` follows, and for the
+            `POST /documents/{id}/proposals/{id}/adopt` follows, and for the
             same reason: a body able to name somebody else would let an agent
-            record a person as having agreed to its own change. In a batch
-            commit every entry is the one caller, so an entry naming its own is
-            overwritten too.
+            record a person as having agreed to its own change. In a batch every
+            entry is the one caller, so an entry naming its own is overwritten
+            too.
         base_revision_id:
           type: string
           format: uuid
-          description: The revision this commit was prepared against; a stale one is a 409.
-        block_ids:
-          type: array
           description: >
-            Which blocks to commit. Omit to take every block holding exactly
-            one live proposal -- except alongside `document_proposal_id`, where
-            omitting it commits the document proposal alone and nothing is
-            inferred. Each selected proposal is compared with the same block
-            in its own base revision; changed base text is reported as
-            `stale_block_proposal` with the affected ids.
+            The revision this was prepared against; a stale one is a `409`. An
+            ordinary concurrency check, not a review version and not a rebase.
+        proposal_ids:
+          type: array
+          minItems: 1
+          description: >
+            Exactly what to publish. Required, and the whole of the selection --
+            nothing is inferred, not the `staged` flags saved on the server, not
+            an uncontested title, not a proposal a selected one sits beside. A
+            title is one of these ids like anything else; there is no separate
+            field that changes it.
+
+
+            Duplicates, ids from another document, decided proposals and pairs
+            that claim the same thing are all refused. A proposal that turns out
+            to have been applied already is reported in
+            `meta.already_applied_proposal_ids` rather than written twice.
           items:
             type: string
             format: uuid
-        document_proposal_id:
-          type: string
-          format: uuid
-          description: >
-            Also commit a structural document proposal, in the same revision.
-            It is named rather than adopted by default and must be compiled
-            against the current revision (`stale_proposal`). Legacy document
-            proposals that contain update operations remain committable during
-            the compatibility period.
-
-
-            It may be combined with `block_ids`: the document's structural
-            operations and the selected blocks' new text land together. A block
-            is refused only where the document proposal already rewrites
-            (`update`) or removes (`delete`) it -- `conflicting_commit`, whose
-            `details.block_ids` names them. An `insert_after` or `move_after`
-            naming a block claims where it sits, not what it says, so a new
-            section after a block commits with a rewrite of that same block.
-
-
-            Committing one supersedes the other live document proposals, and
-            the live block proposals on the blocks its operations updated or
-            deleted. Proposals on blocks it left alone stay live; title
-            proposals are untouched.
         confirm_annotation_ids:
           type: array
           description: >
-            Annotations this commit settles. Each is confirmed with
-            `confirmed_by_revision_id` pointing at the new revision. One commit
+            Annotations this publish settles. Each is confirmed with
+            `confirmed_by_revision_id` pointing at the new revision. One publish
             may touch three annotations and settle two, so these are named
             rather than inferred from what the revision changed.
           items:
@@ -7114,10 +7572,6 @@ components:
           type: string
           format: uuid
           nullable: true
-        title:
-          type: string
-          minLength: 1
-          description: Defaults to the parent revision's title.
         change_summary:
           type: string
           nullable: true
