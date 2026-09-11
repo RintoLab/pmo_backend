@@ -1,6 +1,6 @@
 [package]
 name = "rinto-pmo"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Rinto PMO command line client"
 
