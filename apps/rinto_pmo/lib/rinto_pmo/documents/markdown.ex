@@ -31,9 +31,11 @@ defmodule RintoPMO.Documents.Markdown do
   code block, or an HTML block is content and does not cut. The block bodies are
   then rendered back from the AST, which means they are normalised Markdown
   rather than the author's exact bytes: bullets become `-`, tables get padded
-  delimiter rows, ambiguous characters get escaped. That is accepted -- the
-  content is Markdown, not text that happens to look like it, and normalising
-  once at the door beats storing near-identical spellings of the same block.
+  delimiter rows. Escapes a re-parse would not need are stripped, so a form
+  CommonMark itself does not treat as emphasis -- `**验收：**发布` -- keeps its
+  asterisks instead of coming back as `\\*\\*`. That is accepted -- the content
+  is Markdown, not text that happens to look like it, and normalising once at
+  the door beats storing near-identical spellings of the same block.
 
   One artifact is worth knowing about: a list immediately followed by a code
   block or another list comes back with an `<!-- end list -->` between them.
@@ -65,7 +67,14 @@ defmodule RintoPMO.Documents.Markdown do
       # Without this a code block that carries no language degrades into an
       # indented one, which reads as a different thing to anyone who opens the
       # block to edit it.
-      prefer_fenced: true
+      prefer_fenced: true,
+      # CommonMark's flanking rules do not treat `**验收：**发布` as emphasis:
+      # the closing `**` sits after punctuation and before a letter, so it is
+      # not right-flanking. The renderer would otherwise escape those asterisks,
+      # and a client that *does* honour that form as bold would then see
+      # literals. Dropping escapes a re-parse does not need leaves the author's
+      # `**` in place.
+      experimental_minimize_commonmark: true
     ]
   ]
 

@@ -67,11 +67,10 @@ defmodule RintoPMO.Documents.MarkdownTest do
       assert block =~ "## nested"
     end
 
-    # It stays one block, and the leading hash comes back escaped -- the
-    # rendered document is unchanged, the bytes are not. That is the deal
-    # round-tripping through the AST makes.
+    # It stays one block: a hash with no space is not a heading, so the
+    # renderer can leave the bytes alone.
     test "a hash run with no space is not a heading" do
-      assert {:ok, ["\\#notaheading"]} = Markdown.split("#notaheading")
+      assert {:ok, ["#notaheading"]} = Markdown.split("#notaheading")
     end
 
     test "blank input produces no blocks" do
@@ -122,6 +121,35 @@ defmodule RintoPMO.Documents.MarkdownTest do
 
       assert {:ok, [block]} = Markdown.split("## One\n\n#{long}")
       assert block == "## One\n\n#{long}"
+    end
+
+    # CommonMark does not parse `**验收：**发布` as strong: the closing
+    # delimiter is preceded by punctuation and followed by a letter, so it
+    # is not right-flanking. Escaping the asterisks would still show them
+    # as literals, and would also stop a renderer that *does* honour that
+    # form from seeing bold. Leave the author's `**` in place.
+    test "does not escape bold that CommonMark will not parse as emphasis" do
+      assert {:ok, ["- **验收：**发布成功"]} =
+               Markdown.split("- **验收：**发布成功")
+
+      assert {:ok, ["- **版本验收：**修改"]} =
+               Markdown.split("- **版本验收：**修改")
+
+      assert {:ok, ["- **边界：**不包含云"]} =
+               Markdown.split("- **边界：**不包含云")
+
+      assert {:ok, ["- **依赖：**MVP-01"]} =
+               Markdown.split("- **依赖：**MVP-01")
+    end
+
+    test "keeps bold that CommonMark does parse" do
+      assert {:ok, ["- **验收：** 发布成功"]} =
+               Markdown.split("- **验收：** 发布成功")
+
+      assert {:ok, ["- **验收**：发布成功"]} =
+               Markdown.split("- **验收**：发布成功")
+
+      assert {:ok, ["**验收**发布"]} = Markdown.split("**验收**发布")
     end
   end
 end
