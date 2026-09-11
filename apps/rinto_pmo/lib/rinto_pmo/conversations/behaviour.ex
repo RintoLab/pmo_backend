@@ -20,12 +20,16 @@ defmodule RintoPMO.Conversations.Behaviour do
               {:ok, Conversation.t()} | {:error, Ecto.Changeset.t()}
   @callback update_conversation(Conversation.t(), map()) ::
               {:ok, Conversation.t()} | {:error, Ecto.Changeset.t()}
+  @callback archive_conversation(Conversation.t()) ::
+              {:ok, Conversation.t()} | {:error, Ecto.Changeset.t()}
 
   @callback list_messages(Conversation.t(), message_opts()) :: [Message.t()]
   @callback recent_messages(Conversation.t(), pos_integer()) :: [Message.t()]
   @callback get_message!(Conversation.t(), UUIDv7.t()) :: Message.t()
   @callback append_message(Conversation.t(), map()) ::
-              {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
+              {:ok, Message.t()}
+              | {:error, Ecto.Changeset.t()}
+              | {:error, :conversation_archived}
 
   @callback attach_session(Conversation.t(), String.t()) ::
               {:ok, Conversation.t()} | {:error, Ecto.Changeset.t()}

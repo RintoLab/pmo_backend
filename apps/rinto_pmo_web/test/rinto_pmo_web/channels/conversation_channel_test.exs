@@ -223,6 +223,16 @@ defmodule RintoPMOWeb.ConversationChannelTest do
       assert_reply ref, :error, %{reason: "assistant_actor_required"}, 5_000
     end
 
+    test "an archived topic is not heated" do
+      conversation = conversation!()
+      {:ok, archived} = Conversations.archive_conversation(conversation)
+      socket = join!(archived)
+
+      ref = push(socket, "prompt", %{"message" => "hello"})
+      assert_reply ref, :error, %{reason: "conversation_archived"}, 5_000
+      refute Conversations.get_conversation!(conversation.id).pi_session_id
+    end
+
     test "a plain chat starts without an AI actor" do
       conversation =
         insert(:conversation,

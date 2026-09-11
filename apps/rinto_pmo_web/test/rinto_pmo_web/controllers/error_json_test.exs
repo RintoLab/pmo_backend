@@ -44,6 +44,7 @@ defmodule RintoPMOWeb.ErrorJSONTest do
       {422, "The annotation does not belong to this document.", %{annotation_id: "annotation-1"}},
     conversation_not_found:
       {422, "The topic the proposal names does not exist.", %{conversation_id: "topic-1"}},
+    conversation_archived: {409, "The topic has been archived.", %{conversation_id: "topic-1"}},
     assistant_actor_required:
       {422, "The topic has no assistant configured, so nothing in it can propose.",
        %{conversation_id: "topic-1"}},

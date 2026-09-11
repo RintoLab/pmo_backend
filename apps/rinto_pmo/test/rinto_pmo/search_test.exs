@@ -5,6 +5,8 @@ defmodule RintoPMO.SearchTest do
 
   alias RintoPMO.AIMock
   alias RintoPMO.Annotations
+  alias RintoPMO.Conversations
+  alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Documents
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.References
@@ -173,6 +175,29 @@ defmodule RintoPMO.SearchTest do
       expect(AIMock, :embed_query, fn _query -> {:ok, vector()} end)
 
       assert {:ok, []} = Search.search("部署", type: "block")
+    end
+  end
+
+  describe "archived conversations" do
+    test "are left out unless asked for" do
+      conversation = insert(:conversation, title: "部署流程讨论")
+
+      Conversation
+      |> where([row], row.id == ^conversation.id)
+      |> Repo.update_all(set: [embedding: Pgvector.new(vector())])
+
+      expect_pipeline()
+      assert {:ok, [found]} = Search.search("部署", type: "conversation")
+      refute found.archived
+
+      {:ok, _archived} = Conversations.archive_conversation(conversation)
+
+      expect(AIMock, :embed_query, fn _query -> {:ok, vector()} end)
+      assert {:ok, []} = Search.search("部署", type: "conversation")
+
+      expect_pipeline()
+      assert {:ok, [archived]} = Search.search("部署", type: "conversation", include_archived: true)
+      assert archived.archived
     end
   end
 

@@ -59,11 +59,27 @@ defmodule RintoPMOWeb.V1.ConversationController do
     do: ~w(mode assistant_actor_id provider model thinking_level)
 
   @doc """
+  Archives a topic: cools it, then takes it off every list.
+
+  The row stays. A conversation is the only thing that can answer why a
+  passage reads the way it does, so it is kept permanently and merely stops
+  being presented. Idempotent, and the same HTTP shape documents and projects
+  use for the same idea.
+  """
+  def delete(conn, %{"id" => id}) do
+    context = conversations_context()
+    conversation = context.get_conversation!(id)
+
+    with {:ok, conversation} <- Sessions.cool(conversation),
+         {:ok, _conversation} <- context.archive_conversation(conversation) do
+      send_resp(conn, :no_content, "")
+    end
+  end
+
+  @doc """
   Cools a topic: closes its pi process and keeps everything it said.
 
-  There is no delete. A conversation is the only thing that can answer why a
-  passage reads the way it does, so it is kept permanently and merely stops
-  costing a process.
+  This is not archive. The topic stays in the list, just without a process.
   """
   def close(conn, %{"id" => id}) do
     context = conversations_context()

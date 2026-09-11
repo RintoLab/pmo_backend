@@ -23,7 +23,8 @@ defmodule RintoPMO.Conversations do
   there is no message update and no message delete; conversations themselves
   are kept permanently, since they are the only thing that can answer "why was
   this paragraph changed to say that", and the only basis for reviving a cold
-  topic.
+  topic. Putting one away is archive, not delete: the row stays, it leaves the
+  list, and `DELETE /conversations/{id}` is the call that does it.
   """
 
   use RintoPMO, :context
@@ -32,6 +33,7 @@ defmodule RintoPMO.Conversations do
   alias RintoPMO.Conversations.Conversation
   alias RintoPMO.Conversations.Message
   alias RintoPMO.Conversations.MessageRef
+  alias RintoPMO.Conversations.Notifier
   alias RintoPMO.Conversations.Titles
   alias RintoPMO.Links
   alias RintoPMO.Utils
@@ -39,15 +41,17 @@ defmodule RintoPMO.Conversations do
   @behaviour Behaviour
 
   @doc """
-  Lists conversations, most recently created first.
+  Lists conversations that have not been archived, most recently created first.
 
   `filter` takes an optional `:actor_id` and an optional `:document_id`, which
   combine as AND. `:document_id` is a derived filter over `message_refs` -- see
-  `filter_by_document/2` -- not a column on the conversation.
+  `filter_by_document/2` -- not a column on the conversation. Archived topics
+  are still fetchable by id; they just do not belong in this list.
   """
   @impl true
   def list_conversations(filter) when is_map(filter) do
     Conversation
+    |> where([conversation], is_nil(conversation.archived_at))
     |> filter_conversations(filter)
     |> order_by([conversation], desc: conversation.id)
     |> Repo.all()
@@ -83,6 +87,29 @@ defmodule RintoPMO.Conversations do
     conversation
     |> Conversation.update_changeset(attrs)
     |> Repo.update()
+  end
+
+  @doc """
+  Idempotently archives a topic rather than deleting it.
+
+  The row stays: it is still the record of what was said, and `get_conversation!/1`
+  still finds it. It leaves every list, and a further turn is refused. Cooling
+  the process is the caller's job -- HTTP DELETE does that first, the same way
+  close does -- so this function can stay a row change.
+  """
+  @impl true
+  def archive_conversation(%Conversation{} = conversation) do
+    conversation
+    |> Conversation.archive_changeset()
+    |> Repo.update()
+    |> case do
+      {:ok, archived} = ok ->
+        Notifier.broadcast_updated(archived)
+        ok
+
+      error ->
+        error
+    end
   end
 
   @doc """
@@ -152,6 +179,9 @@ defmodule RintoPMO.Conversations do
   A user message on a still-unnamed topic queues
   `RintoPMO.Conversations.Titles` to name it. Nothing waits for that, and
   nothing here fails if it cannot be queued.
+
+  An archived topic refuses a further turn: putting it away means the
+  discussion is over, not that it continues out of sight.
   """
   @impl true
   def append_message(%Conversation{} = conversation, attrs) do
@@ -167,21 +197,10 @@ defmodule RintoPMO.Conversations do
         |> lock("FOR UPDATE")
         |> repo.one!()
 
-      position = next_message_position(repo, locked.id)
-
-      attrs =
-        attrs
-        |> drop_keys(["refs", "conversation_id", "position"])
-        |> Map.merge(%{conversation_id: locked.id, position: position})
-
-      with {:ok, message} <- attrs |> Message.changeset() |> repo.insert(),
-           {:ok, stored_refs} <- insert_refs(repo, message, refs) do
-        # The `reference#N` pointers a mention UI writes are not `rinto://`, so
-        # they are passed over here; what this picks up is a URI written into
-        # the prose itself, which is the only way a message can name something
-        # its client's mention UI had no entry for.
-        Links.sync(repo, "message", message.id, message.content)
-        {:ok, %{message | refs: stored_refs}}
+      if locked.archived_at do
+        {:error, :conversation_archived}
+      else
+        append_locked_message(repo, locked, attrs, refs)
       end
     end)
     |> tap(&name_topic(conversation, &1))
@@ -240,11 +259,13 @@ defmodule RintoPMO.Conversations do
 
   This is the derived many-to-many the design leans on instead of a join
   table: "which topics discussed this annotation?" is answered from
-  `message_refs`, using its `(ref_type, ref_id)` index.
+  `message_refs`, using its `(ref_type, ref_id)` index. Archived topics are
+  omitted, the same way they leave the global list.
   """
   @impl true
   def list_conversations_for_ref(ref_type, ref_id) when is_binary(ref_type) do
     Conversation
+    |> where([conversation], is_nil(conversation.archived_at))
     |> join(:inner, [conversation], message in assoc(conversation, :messages))
     |> join(:inner, [_conversation, message], ref in assoc(message, :refs))
     |> where([_conversation, _message, ref], ref.ref_type == ^ref_type and ref.ref_id == ^ref_id)
@@ -388,6 +409,25 @@ defmodule RintoPMO.Conversations do
         ref.ref_document_id == ^document_id
     )
     |> distinct(true)
+  end
+
+  defp append_locked_message(repo, locked, attrs, refs) do
+    position = next_message_position(repo, locked.id)
+
+    attrs =
+      attrs
+      |> drop_keys(["refs", "conversation_id", "position"])
+      |> Map.merge(%{conversation_id: locked.id, position: position})
+
+    with {:ok, message} <- attrs |> Message.changeset() |> repo.insert(),
+         {:ok, stored_refs} <- insert_refs(repo, message, refs) do
+      # The `reference#N` pointers a mention UI writes are not `rinto://`, so
+      # they are passed over here; what this picks up is a URI written into
+      # the prose itself, which is the only way a message can name something
+      # its client's mention UI had no entry for.
+      Links.sync(repo, "message", message.id, message.content)
+      {:ok, %{message | refs: stored_refs}}
+    end
   end
 
   defp next_message_position(repo, conversation_id) do

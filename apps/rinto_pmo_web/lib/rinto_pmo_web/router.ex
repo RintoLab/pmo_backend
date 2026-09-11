@@ -207,7 +207,8 @@ defmodule RintoPMOWeb.Router do
 
     # Not nested under documents: a topic can span several documents, or none,
     # so it belongs to no document's URL space.
-    resources "/conversations", ConversationController, only: [:index, :show, :create, :update] do
+    resources "/conversations", ConversationController,
+      only: [:index, :show, :create, :update, :delete] do
       # Append and read only -- a conversation records what happened.
       resources "/messages", MessageController, only: [:index, :show, :create]
 
@@ -218,7 +219,8 @@ defmodule RintoPMOWeb.Router do
       get "/proposals", ConversationController, :proposals
     end
 
-    # Cooling is not deleting: the process goes, every message stays. There is
+    # Cooling is not archiving: the process goes, every message stays, and the
+    # topic stays in the list. Archiving is DELETE, which cools first. There is
     # no matching "open" -- you cannot talk to a cold topic, so sending a
     # message is what heats one.
     post "/conversations/:id/close", ConversationController, :close

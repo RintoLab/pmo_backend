@@ -2276,9 +2276,10 @@ paths:
     get:
       tags: [Conversations]
       operationId: listConversations
-      summary: List topics
+      summary: List non-archived topics
       description: >
-        Newest first. Filters combine as AND.
+        Newest first. Filters combine as AND. Archived topics are omitted;
+        `GET /conversations/{id}` still finds them.
       parameters:
         - name: actor_id
           in: query
@@ -2345,7 +2346,7 @@ paths:
     get:
       tags: [Conversations]
       operationId: getConversation
-      summary: Get a topic
+      summary: Get an active or archived topic
       description: Messages are not included; read them from the messages collection.
       responses:
         "200":
@@ -2361,9 +2362,10 @@ paths:
       operationId: updateConversation
       summary: Rename a topic
       description: >
-        Only the title is mutable. There is no delete -- a topic is kept
-        permanently. Naming a topic here marks it as named by a person, which
-        stops the automatic namer from ever replacing it.
+        Only the title is mutable. Archiving is `DELETE /conversations/{id}` --
+        a topic is kept permanently and merely leaves the list. Naming a topic
+        here marks it as named by a person, which stops the automatic namer
+        from ever replacing it.
       requestBody:
         $ref: "#/components/requestBodies/ConversationUpdate"
       responses:
@@ -2395,6 +2397,20 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Conversations]
+      operationId: archiveConversation
+      summary: Archive a topic
+      description: >
+        Idempotently archives the topic. The row is not physically deleted and
+        cannot be restored: `GET /conversations/{id}` still finds it, and it
+        leaves every list. A hot topic is cooled first, so archiving also frees
+        its process slot. A further turn is refused with `conversation_archived`.
+      responses:
+        "204":
+          description: Conversation archived
+        "404":
+          $ref: "#/components/responses/NotFound"
   /conversations/{id}/close:
     parameters:
       - $ref: "#/components/parameters/ConversationId"
@@ -2404,9 +2420,9 @@ paths:
       summary: Cool a topic
       description: >
         Closes the pi process carrying the topic and clears `pi_session_id`.
-        Nothing is lost: every message stays, and the topic can be revived from
-        them. This is also what happens when a topic is evicted to free a
-        process slot.
+        Nothing is lost: every message stays, the topic stays in the list, and
+        it can be revived from them. This is also what happens when a topic is
+        evicted to free a process slot. Archiving is `DELETE`, not close.
       responses:
         "200":
           description: Conversation cooled
@@ -2503,7 +2519,8 @@ paths:
         Assigns the next monotonic position. `content` must be the raw text,
         never a prelude expanded from the references -- replay re-expands them
         against the documents as they stand then, rather than feeding back an
-        old snapshot.
+        old snapshot. An archived topic refuses a further turn with
+        `conversation_archived`.
       requestBody:
         required: true
         content:
@@ -2519,6 +2536,12 @@ paths:
                 $ref: "#/components/schemas/MessageResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conversation_archived` -- the topic has been put away."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
         "422":
           $ref: "#/components/responses/ValidationError"
   /conversations/{conversation_id}/messages/{id}:
@@ -7636,7 +7659,7 @@ components:
           thinking_level,
           hot,
           replay_pending,
-
+          archived_at,
           inserted_at,
           updated_at
         ]
@@ -7714,6 +7737,13 @@ components:
             A fresh agent process was started and the next message still owes
             it the recent turns. Entirely server-side; exposed only because it
             explains why one reply may take longer than the rest.
+        archived_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            When the topic was archived. Null means it is still in the list.
+            Set by `DELETE /conversations/{id}`, not writable through PATCH.
         inserted_at:
           type: string
           format: date-time

@@ -13,8 +13,14 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
 
     conn = get(conn, ~p"/api/v1/conversations")
 
-    assert [%{"id" => ^conversation_id, "title" => "Tighten §3", "hot" => false}] =
-             json_response(conn, 200)["data"]
+    assert [
+             %{
+               "id" => ^conversation_id,
+               "title" => "Tighten §3",
+               "hot" => false,
+               "archived_at" => nil
+             }
+           ] = json_response(conn, 200)["data"]
   end
 
   test "GET conversations filters by actor", %{conn: conn} do
@@ -86,7 +92,25 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
 
     conn = get(conn, ~p"/api/v1/conversations/#{conversation.id}")
 
-    assert %{"id" => ^conversation_id} = json_response(conn, 200)["data"]
+    assert %{"id" => ^conversation_id, "archived_at" => nil} = json_response(conn, 200)["data"]
+  end
+
+  test "GET conversations/:id still returns an archived topic", %{conn: conn} do
+    archived_at = DateTime.utc_now()
+    conversation = insert(:conversation, archived_at: archived_at)
+    conversation_id = conversation.id
+
+    expect(ConversationsMock, :get_conversation!, fn id ->
+      assert id == conversation.id
+      conversation
+    end)
+
+    conn = get(conn, ~p"/api/v1/conversations/#{conversation.id}")
+
+    assert %{"id" => ^conversation_id, "archived_at" => encoded} =
+             json_response(conn, 200)["data"]
+
+    assert is_binary(encoded)
   end
 
   test "a topic hangs off no document", %{conn: conn} do
@@ -326,9 +350,18 @@ defmodule RintoPMOWeb.V1.ConversationControllerTest do
     assert post(conn, "/api/v1/conversations/#{conversation.id}/open", %{}).status == 404
   end
 
-  test "there is no delete route for a conversation", %{conn: conn} do
-    conversation = insert(:conversation)
+  test "DELETE conversations/:id archives the topic and returns 204", %{conn: conn} do
+    conversation = insert(:conversation, pi_session_id: nil)
+    cooled = %{conversation | pi_session_id: nil}
+    archived = %{cooled | archived_at: DateTime.utc_now()}
 
-    assert delete(conn, "/api/v1/conversations/#{conversation.id}").status == 404
+    expect(ConversationsMock, :get_conversation!, fn _id -> conversation end)
+    expect(ConversationsMock, :detach_session, fn ^conversation -> {:ok, cooled} end)
+
+    expect(ConversationsMock, :archive_conversation, fn ^cooled -> {:ok, archived} end)
+
+    conn = delete(conn, ~p"/api/v1/conversations/#{conversation.id}")
+
+    assert response(conn, 204) == ""
   end
 end

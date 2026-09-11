@@ -308,6 +308,18 @@ defmodule RintoPMO.Conversations.SessionsTest do
       assert same.pi_session_id == hot.pi_session_id
     end
 
+    test "an archived topic is not revived", %{tmp_dir: tmp_dir} do
+      set_limit(4)
+
+      conversation = insert(:conversation, assistant_actor: build(:actor, kind: :ai))
+      {:ok, archived} = Conversations.archive_conversation(conversation)
+
+      assert {:error, :conversation_archived} =
+               Sessions.ensure_hot(archived, session_opts: idle_pi(tmp_dir))
+
+      refute Sessions.hot?(Conversations.get_conversation!(conversation.id))
+    end
+
     test "a topic whose process died reads as cold", %{tmp_dir: tmp_dir} do
       set_limit(4)
 

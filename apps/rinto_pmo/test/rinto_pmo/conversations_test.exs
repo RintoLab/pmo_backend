@@ -109,6 +109,30 @@ defmodule RintoPMO.ConversationsTest do
       assert ids(Conversations.list_conversations(%{actor_id: actor.id})) ==
                MapSet.new([mine.id])
     end
+
+    test "archives a topic idempotently and drops it from the list" do
+      conversation = insert(:conversation, title: "Done")
+
+      assert {:ok, archived} = Conversations.archive_conversation(conversation)
+      assert %DateTime{} = archived.archived_at
+      assert {:ok, archived_again} = Conversations.archive_conversation(archived)
+      assert archived_again.archived_at == archived.archived_at
+      assert Conversations.list_conversations(%{}) == []
+      assert Conversations.get_conversation!(conversation.id).archived_at == archived.archived_at
+    end
+
+    test "refuses a further turn on an archived topic" do
+      actor = insert(:actor)
+      conversation = insert(:conversation)
+      {:ok, archived} = Conversations.archive_conversation(conversation)
+
+      assert {:error, :conversation_archived} =
+               Conversations.append_message(archived, %{
+                 actor_id: actor.id,
+                 role: :user,
+                 content: "one more thing"
+               })
+    end
   end
 
   # A conversation belongs to no document, so this is derived entirely from the
@@ -545,6 +569,27 @@ defmodule RintoPMO.ConversationsTest do
 
       assert [found] = Conversations.list_conversations_for_ref("annotation", annotation.id)
       assert found.id == conversation.id
+    end
+
+    test "leaves an archived topic out" do
+      document = insert(:document)
+      annotation = insert(:annotation, document: document)
+      actor = insert(:actor)
+      conversation = insert(:conversation)
+
+      {:ok, _message} =
+        Conversations.append_message(conversation, %{
+          actor_id: actor.id,
+          role: :user,
+          content: "Discussing it",
+          refs: [
+            %{"type" => "annotation", "id" => annotation.id, "document_id" => document.id}
+          ]
+        })
+
+      {:ok, _archived} = Conversations.archive_conversation(conversation)
+
+      assert Conversations.list_conversations_for_ref("annotation", annotation.id) == []
     end
   end
 

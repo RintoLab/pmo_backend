@@ -172,6 +172,18 @@ defmodule RintoPMOWeb.V1.MessageControllerTest do
              json_response(conn, 422)
   end
 
+  test "POST messages refuses an archived topic", %{conn: conn, conversation: conversation} do
+    params = %{"role" => "user", "content" => "one more thing"}
+
+    expect(ConversationsMock, :append_message, fn ^conversation, _attrs ->
+      {:error, :conversation_archived}
+    end)
+
+    conn = post(conn, ~p"/api/v1/conversations/#{conversation.id}/messages", params)
+
+    assert %{"error" => "conversation_archived"} = json_response(conn, 409)
+  end
+
   test "GET messages/:id returns one turn", %{conn: conn, conversation: conversation} do
     message = insert(:message, conversation: conversation, refs: [])
     message_id = message.id

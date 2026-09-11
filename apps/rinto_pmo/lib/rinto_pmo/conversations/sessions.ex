@@ -72,10 +72,19 @@ defmodule RintoPMO.Conversations.Sessions do
           {:ok, Conversation.t(), state()}
           | {:error, :session_limit_reached}
           | {:error, :assistant_actor_required}
+          | {:error, :conversation_archived}
           | {:error, Ecto.Changeset.t()}
           | {:error, atom(), map()}
   def ensure_hot(%Conversation{} = conversation, opts \\ []) do
+    # Reloaded: a channel can hold a snapshot from before the topic was put
+    # away, and heating from that would spend a process on a discussion that
+    # has ended.
+    conversation = conversations().get_conversation!(conversation.id)
+
     cond do
+      not is_nil(conversation.archived_at) ->
+        {:error, :conversation_archived}
+
       hot?(conversation) ->
         {:ok, conversation, :hot}
 

@@ -58,6 +58,10 @@ defmodule RintoPMO.Conversations.Conversation do
     field :provider, :string
     field :model, :string
     field :thinking_level, :string
+    # Null means the topic is still in the list. Set by archive, never by a
+    # caller: putting a topic away is `DELETE /conversations/{id}`, the same
+    # shape documents and projects use, and not a field anybody patches.
+    field :archived_at, :utc_datetime_usec
 
     # Null means "needs embedding". Never cast from a caller: it is written
     # by the worker that computes it, and voided by whichever changeset rewrites
@@ -132,6 +136,13 @@ defmodule RintoPMO.Conversations.Conversation do
     |> put_change(:replay_pending, pi_session_id != nil)
     |> unique_constraint(:pi_session_id)
   end
+
+  @doc false
+  def archive_changeset(%__MODULE__{archived_at: nil} = conversation) do
+    change(conversation, archived_at: DateTime.utc_now())
+  end
+
+  def archive_changeset(%__MODULE__{} = conversation), do: change(conversation)
 
   defp put_title_source(changeset, false), do: changeset
 

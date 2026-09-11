@@ -47,6 +47,8 @@ defmodule RintoPMOWeb.ErrorJSON do
     invalid_input_kind: {422, "The propose input is not a kind this endpoint accepts."},
     annotation_not_found: {422, "The annotation does not belong to this document."},
     conversation_not_found: {422, "The topic the proposal names does not exist."},
+    # Put away, not missing. GET still finds it; a further turn does not.
+    conversation_archived: {409, "The topic has been archived."},
     assistant_actor_required:
       {422, "The topic has no assistant configured, so nothing in it can propose."},
     # The plain-chat half of the same question: the topic is configured, but

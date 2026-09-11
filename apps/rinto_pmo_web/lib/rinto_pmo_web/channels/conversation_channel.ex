@@ -56,11 +56,10 @@ defmodule RintoPMOWeb.ConversationChannel do
     * `"ui_request"` -- the agent is waiting on a human
     * `"ui_resolved"` -- `%{"ui_id" => id}`, that question is answered
     * `"conversation_updated"` -- `%{"data" => conversation}`, the topic's own
-      row changed. Today that means it has just been named (see
-      `RintoPMO.Conversations.Titles`), which happens in the background and may
-      well land after the answer to the message that triggered it. The payload
-      is the same shape `GET /conversations/{id}` returns, so a client renders
-      it the same way
+      row changed. That is a title arriving (see `RintoPMO.Conversations.Titles`)
+      or the topic being archived. A title may well land after the answer to
+      the message that triggered it. The payload is the same shape
+      `GET /conversations/{id}` returns, so a client renders it the same way
     * `"exit"` -- the agent process ended. The channel stays; prompt again to
       start a new one
 
@@ -103,15 +102,17 @@ defmodule RintoPMOWeb.ConversationChannel do
     {:noreply, socket}
   end
 
-  # Only the naming columns are taken from the broadcast. The rest of that row
-  # is a snapshot from whenever the writer read it, while this channel has
-  # watched the session it holds come and go.
+  # Only the row columns a background writer changes are taken from the
+  # broadcast. The rest is a snapshot from whenever the writer read it, while
+  # this channel has watched the session it holds come and go. `archived_at`
+  # is one of those row columns: putting a topic away happens off this socket.
   def handle_info({:conversation_updated, updated}, socket) do
     conversation = %{
       socket.assigns.conversation
       | title: updated.title,
         title_source: updated.title_source,
-        title_generated_at: updated.title_generated_at
+        title_generated_at: updated.title_generated_at,
+        archived_at: updated.archived_at
     }
 
     socket = assign(socket, :conversation, conversation)

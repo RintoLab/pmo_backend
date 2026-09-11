@@ -33,6 +33,7 @@ defmodule RintoPMOWeb.V1.ConversationJSON do
       # claim and this is the check of it.
       hot: Sessions.hot?(conversation),
       replay_pending: conversation.replay_pending,
+      archived_at: conversation.archived_at,
       inserted_at: conversation.inserted_at,
       updated_at: conversation.updated_at
     }

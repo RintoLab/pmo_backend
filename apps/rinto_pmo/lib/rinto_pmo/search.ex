@@ -332,11 +332,19 @@ defmodule RintoPMO.Search do
   defp candidates("conversation", vector, opts) do
     Conversation
     |> nearest(vector, opts, :none)
+    |> then(fn query ->
+      if Keyword.get(opts, :include_archived, false) do
+        query
+      else
+        where(query, [row], is_nil(row.archived_at))
+      end
+    end)
     |> select([row], %{
       key: row.id,
       text: row.title,
       title: row.title,
-      distance: fragment("? <=> ?", row.embedding, ^vector)
+      distance: fragment("? <=> ?", row.embedding, ^vector),
+      archived: not is_nil(row.archived_at)
     })
     |> Repo.all()
     |> Enum.map(&candidate(&1, "conversation"))
