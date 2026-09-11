@@ -110,10 +110,15 @@ defmodule RintoPMO.Tasks.Task do
   are calibrated against. It does not sum, so a cover stores none and reports
   none; what it does report is how many work descendants still have no rating.
 
-  ## Actual duration is recorded, not derived
+  ## Actual duration defaults to the execution clock
 
-  `actual_minutes` is how long the work took. `started_at` to `completed_at`
-  is wall time and counts the night, which is not a calibration sample.
+  `actual_minutes` is how long the work took. Completing a task derives it
+  from `started_at` when nobody has already recorded a value, which matches
+  the ordinary agent path where start and complete bracket one execution.
+  A caller can report a more accurate value in the completion request or by
+  editing the task afterwards, and an existing value is never overwritten by
+  the automatic calculation.
+
   Minutes, like the estimate, so a cover can sum them. Cleared on reopen, the
   same way `completed_at` is: the finish never held.
 
@@ -196,9 +201,9 @@ defmodule RintoPMO.Tasks.Task do
     # A cover stores none: difficulty does not sum.
     field :difficulty, :integer
 
-    # How long the work actually took, in minutes. Recorded rather than derived
-    # from the clocks, and cleared on reopen. A cover stores none and sums on
-    # read, the same way as the estimate.
+    # How long the work actually took, in minutes. Derived from the task's
+    # execution clock on completion unless a value was recorded explicitly.
+    # A cover stores none and sums on read, the same way as the estimate.
     field :actual_minutes, :integer
 
     # How many work descendants under a cover carry no estimate. A count of
@@ -444,13 +449,17 @@ defmodule RintoPMO.Tasks.Task do
     do: change(chset, status: :in_progress, started_at: now())
 
   defp apply_event(chset, :complete, attrs) do
-    # `actual_minutes` is accepted here so finishing and recording how long it
-    # took can be one act. Absent means leave whatever was already stored --
-    # somebody may have PATCHed it earlier. The value has already been checked
-    # by the context; this only writes it.
-    minutes = Map.get(attrs, "actual_minutes", Map.get(attrs, :actual_minutes))
+    # One timestamp owns both facts so rounding cannot put the duration and the
+    # completion clock on opposite sides of a minute. An explicit value wins;
+    # one recorded earlier survives; only a still-empty duration is derived.
+    completed_at = now()
+    supplied = Map.get(attrs, "actual_minutes", Map.get(attrs, :actual_minutes))
 
-    changes = %{status: :done, completed_at: now()}
+    minutes =
+      supplied || chset.data.actual_minutes ||
+        elapsed_minutes(chset.data.started_at, completed_at)
+
+    changes = %{status: :done, completed_at: completed_at}
 
     changes =
       if is_integer(minutes), do: Map.put(changes, :actual_minutes, minutes), else: changes
@@ -491,6 +500,16 @@ defmodule RintoPMO.Tasks.Task do
       {_source, nil} -> chset
       _present -> add_error(chset, field, message)
     end
+  end
+
+  # Round a positive partial minute up: recording a real, short execution as
+  # zero would make it look free to the calibrator. A missing start is legacy
+  # or corrupt state; completion remains possible, but no duration is invented.
+  defp elapsed_minutes(nil, _completed_at), do: nil
+
+  defp elapsed_minutes(started_at, completed_at) do
+    microseconds = max(DateTime.diff(completed_at, started_at, :microsecond), 0)
+    div(microseconds + 59_999_999, 60_000_000)
   end
 
   # Written the first time a task is selected into a week, and never again.

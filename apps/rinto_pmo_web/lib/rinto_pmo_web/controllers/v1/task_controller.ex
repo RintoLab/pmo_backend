@@ -246,8 +246,9 @@ defmodule RintoPMOWeb.V1.TaskController do
   @doc """
   Marks a task done.
 
-  Accepts optional `actual_minutes` so finishing and recording how long it
-  took can be one act. Absent or null leaves whatever was already stored.
+  Accepts optional `actual_minutes` so finishing and reporting a more accurate
+  duration can be one act. An explicit value wins and an existing value is
+  preserved; otherwise completion derives whole minutes from `started_at`.
   """
   def complete(conn, %{"id" => id} = params) do
     transition(conn, id, :complete, Map.take(params, ["actual_minutes"]))

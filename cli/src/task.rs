@@ -32,7 +32,7 @@ pub enum TaskCommand {
     Split(SplitArgs),
     /// Move an assigned open task to in_progress
     Start(TaskIdArgs),
-    /// Move an in_progress task to done, optionally recording what it took
+    /// Move an in_progress task to done, deriving its duration unless overridden
     Complete(CompleteArgs),
     /// Cancel outstanding work while retaining its record
     Cancel(TaskIdArgs),
@@ -157,7 +157,7 @@ pub struct CompleteArgs {
     /// Task id
     task_id: String,
 
-    /// How long the work actually took, in minutes; omit to leave it as it is
+    /// Override the automatically derived duration, in whole minutes
     #[arg(long, value_name = "MINUTES")]
     actual_minutes: Option<u32>,
 }
@@ -397,13 +397,11 @@ fn split(client: &Client, args: SplitArgs) -> Result<()> {
     Ok(())
 }
 
-/// Finishing and saying what it took are one act.
+/// Finishing and overriding what the execution clock measured are one act.
 ///
-/// The number is the only thing an executor produces that this system consumes
-/// -- it is what a later estimate is calibrated against -- and requiring a JSON
-/// file and a second call to record it is how it ends up never being recorded.
-/// Absent leaves whatever was already stored, so a caller that does not know
-/// simply does not say.
+/// The server derives a still-empty duration from start to completion. The
+/// optional number is for a caller that knows a more accurate value; requiring
+/// a JSON file and a second call to correct it would make corrections rare.
 fn complete(client: &Client, args: CompleteArgs) -> Result<()> {
     let path = format!("/tasks/{}/complete", args.task_id);
     let task = client::data(client.post(&path, complete_body(args.actual_minutes))?)?;
@@ -588,10 +586,10 @@ mod tests {
     use super::{complete_body, list_query, select_shape, task_detail, task_summary, ListArgs};
     use serde_json::json;
 
-    /// An empty body means "leave what is stored", which is not the same as
-    /// sending null -- somebody may have recorded the minutes already.
+    /// An empty body lets the server preserve a stored value or derive one
+    /// from the task's execution clock.
     #[test]
-    fn completing_without_a_duration_says_nothing_about_one() {
+    fn completing_without_an_override_sends_an_empty_body() {
         assert_eq!(complete_body(None), json!({}));
         assert_eq!(complete_body(Some(90)), json!({"actual_minutes": 90}));
     }

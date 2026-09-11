@@ -308,10 +308,11 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
         type: ["integer", "null"],
         minimum: 0,
         description: """
-        How long the work actually took, in minutes -- recorded, not derived
-        from the clocks, because `started_at` to `completed_at` counts the
-        night. Reopening a task clears it: the finish never held. Refused on a
-        summary node, which sums its children instead.
+        How long the work actually took, in minutes. When completion finds
+        neither a supplied nor a stored value, it derives whole minutes from
+        `started_at`, rounding a partial minute up. An explicit value takes
+        precedence. Reopening clears the duration. Refused on a summary node,
+        which sums its children instead.
         """
       }
     }

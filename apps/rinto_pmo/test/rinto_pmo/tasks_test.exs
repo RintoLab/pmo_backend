@@ -1495,15 +1495,38 @@ defmodule RintoPMO.TasksTest do
                Tasks.update_task(chunk, %{"actual_minutes" => 10})
     end
 
-    test "complete can stamp the duration in the same act" do
+    test "complete can override an existing duration" do
       actor = insert(:actor)
-      task = insert(:task, assignee: actor, status: :in_progress)
+
+      task =
+        insert(:task,
+          assignee: actor,
+          status: :in_progress,
+          actual_minutes: 20
+        )
 
       assert {:ok, done} =
                Tasks.transition_task(task, :complete, actor.id, %{"actual_minutes" => 45})
 
       assert done.status == :done
       assert done.actual_minutes == 45
+    end
+
+    test "complete derives a still-empty duration from the execution clock" do
+      actor = insert(:actor)
+      started_at = DateTime.add(DateTime.utc_now(), -61, :second)
+
+      task =
+        insert(:task,
+          assignee: actor,
+          status: :in_progress,
+          started_at: started_at
+        )
+
+      assert {:ok, done} = Tasks.transition_task(task, :complete, actor.id)
+
+      elapsed = DateTime.diff(done.completed_at, started_at, :microsecond)
+      assert done.actual_minutes == div(elapsed + 59_999_999, 60_000_000)
     end
 
     test "complete without a duration leaves whatever was already stored" do

@@ -480,6 +480,10 @@ defmodule RintoPMO.Tasks do
   else is holding is an ordinary planning act -- the whole point of `cancel`
   keeping the record is that the decision was made from outside the work.
 
+  Completing derives a still-empty `actual_minutes` from the execution clock.
+  An `actual_minutes` in `attrs` is an explicit override, and a value already on
+  the task survives an empty completion request.
+
   > #### One token, for now {: .info}
   >
   > `actor_id` comes from the token, so today it is always this installation's

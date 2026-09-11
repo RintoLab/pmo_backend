@@ -3491,9 +3491,10 @@ paths:
       summary: Mark a task done
       description: >
         Only from `in_progress`, only by the actor holding the task, and never
-        on a summary node. Stamps `completed_at`. Optional `actual_minutes`
-        records how long it took in the same act; absent or null leaves
-        whatever was already stored.
+        on a summary node. Stamps `completed_at`. An explicit
+        `actual_minutes` records an override. When it is absent or
+        null, an existing duration is preserved; if none exists, whole minutes
+        are derived from `started_at`, rounding a positive partial minute up.
 
 
         A task that was released while in progress has no owner, so finishing
@@ -5681,11 +5682,11 @@ components:
           minimum: 0
           nullable: true
           description: >
-            How long the work actually took, in minutes. Recorded rather than
-            derived from `started_at` / `completed_at`, which is wall time and
-            counts the night. Cleared on reopen. On a summary node this is the
-            sum over its measured descendants, or null when none of them carry
-            one.
+            How long the work actually took, in minutes. Completion derives a
+            still-empty value from `started_at`, rounding a positive partial
+            minute up; create, update, or complete can report a more accurate
+            value. Cleared on reopen. On a summary node this is the sum over
+            its measured descendants, or null when none carry one.
         unmeasured_tasks:
           type: integer
           minimum: 0
@@ -5834,9 +5835,9 @@ components:
           minimum: 0
           nullable: true
           description: >
-            Recorded duration in minutes, or null to clear. Refused on a
-            summary node (`invalid_actual`). Completing a task can set this in
-            the same act; PATCH is how it is filled in afterwards.
+            Duration in minutes, or null to clear. Refused on a summary node
+            (`invalid_actual`). An explicit value takes precedence over the
+            completion clock's automatic default.
         planned_start_on:
           type: string
           format: date
@@ -5911,8 +5912,9 @@ components:
           minimum: 0
           nullable: true
           description: >
-            Recorded duration in minutes, or null to clear. Refused on a
-            summary node (`invalid_actual`).
+            Duration in minutes, or null to clear. Refused on a summary node
+            (`invalid_actual`). A manual value can replace the automatically
+            calculated duration.
         planned_start_on:
           type: string
           format: date
@@ -5937,9 +5939,11 @@ components:
         actual_minutes:
           type: integer
           minimum: 0
+          nullable: true
           description: >
-            How long the work took, in minutes. Absent or null leaves whatever
-            was already stored.
+            How long the work took, in minutes. An explicit value wins.
+            Absent or null preserves an existing value, or derives
+            whole minutes from `started_at` when the task has none.
       additionalProperties: false
     Job:
       type: object
