@@ -6997,7 +6997,10 @@ components:
           nullable: true
         content:
           type: string
-          minLength: 1
+          description: >
+            Opinion text. May be empty when selected_text is nonblank, allowing
+            a selected-text reference to start a discussion without a comment.
+            Otherwise at least one non-whitespace character is required.
       additionalProperties: false
     AnnotationUpdateInput:
       type: object
@@ -7014,7 +7017,10 @@ components:
           nullable: true
         content:
           type: string
-          minLength: 1
+          description: >
+            Opinion text. May be empty when selected_text is nonblank, allowing
+            a selected-text reference to start a discussion without a comment.
+            Otherwise at least one non-whitespace character is required.
       additionalProperties: false
     BlockProposal:
       type: object

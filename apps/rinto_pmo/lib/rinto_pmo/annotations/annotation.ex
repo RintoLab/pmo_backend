@@ -71,8 +71,8 @@ defmodule RintoPMO.Annotations.Annotation do
       :selected_text,
       :content
     ])
-    |> validate_required([:document_id, :actor_id, :content])
-    |> validate_length(:content, min: 1)
+    |> validate_required([:document_id, :actor_id])
+    |> validate_content()
     |> foreign_key_constraint(:document_id)
     |> foreign_key_constraint(:actor_id)
     |> Embeddings.invalidate([:content])
@@ -82,9 +82,19 @@ defmodule RintoPMO.Annotations.Annotation do
   def update_changeset(%__MODULE__{} = annotation, attrs) do
     annotation
     |> cast(attrs, [:content, :block_id, :block_text, :selected_text])
-    |> validate_required([:content])
-    |> validate_length(:content, min: 1)
+    |> validate_content()
     |> Embeddings.invalidate([:content])
+  end
+
+  # A selected-text reference can start a discussion before there is an opinion.
+  defp validate_content(changeset) do
+    if get_field(changeset, :selected_text) && get_field(changeset, :content) in [nil, ""] do
+      put_change(changeset, :content, "")
+    else
+      changeset
+      |> validate_required([:content])
+      |> validate_length(:content, min: 1)
+    end
   end
 
   @doc false

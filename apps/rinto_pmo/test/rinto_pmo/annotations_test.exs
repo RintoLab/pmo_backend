@@ -33,6 +33,30 @@ defmodule RintoPMO.AnnotationsTest do
       assert annotation.content == "Please tighten this"
     end
 
+    test "creates an empty opinion anchored to selected text and can update its snapshot" do
+      document = insert(:document)
+      actor = insert(:actor)
+      block_id = UUIDv7.generate()
+
+      assert {:ok, annotation} =
+               Annotations.create_annotation(document, %{
+                 actor_id: actor.id,
+                 block_id: block_id,
+                 selected_text: "selected slice",
+                 content: ""
+               })
+
+      assert annotation.content == ""
+      assert annotation.selected_text == "selected slice"
+      assert {:ok, updated} = Annotations.update_annotation(annotation, %{block_text: "snapshot"})
+      assert updated.content == ""
+
+      assert {:error, changeset} =
+               Annotations.update_annotation(annotation, %{selected_text: nil})
+
+      assert "can't be blank" in errors_on(changeset).content
+    end
+
     test "requires actor and content" do
       document = insert(:document)
 
