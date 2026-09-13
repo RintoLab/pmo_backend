@@ -81,8 +81,9 @@ defmodule RintoPMO.Release do
 
   Safe to run on every deploy, and meant to be: a shortcut nobody has edited
   takes the new wording, an edited one keeps its own and gets the new default
-  as what "reset" will hand it, and one somebody deleted comes back. See
-  `RintoPMO.PromptShortcuts.Presets` for the rule in full.
+  as what "reset" will hand it, one somebody deleted comes back, and one this
+  release no longer carries is deleted. See `RintoPMO.PromptShortcuts.Presets`
+  for the rule in full.
 
   Run by hand for that last reason. On boot, resurrecting a deleted row would
   be a bug; in a deploy script it is why the command is being run.

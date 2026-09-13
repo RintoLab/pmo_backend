@@ -55,6 +55,10 @@ defmodule RintoPMO.PromptShortcuts.Presets do
   What went away is the click, not the capability -- which is the general
   shape: reserve a preset for the prompt somebody would not write from scratch.
 
+  There was a "梳理批注" that triaged the same notes: still standing, whose
+  job, whose duplicate. It was removed (Kenton, 2026-09-13) for the same
+  reason -- that sentence is one you would write from scratch.
+
   "按批注提案" is the same topic and passes that test where the reply one
   failed. "照这几条批注改一下" is an ordinary sentence; what is not is the half
   page deciding which of them may be acted on at all -- a note that names a
@@ -65,15 +69,20 @@ defmodule RintoPMO.PromptShortcuts.Presets do
   Every write here has the command it needs. That was the constraint the order
   of this file was built around, and it is still met.
 
-  ## Removing one is two acts
+  ## Removing one
 
-  Deleting the entry above does not delete the row. `seed/0` upserts and never
-  reaps, so a key that stops shipping leaves whatever it last wrote in place,
-  and somebody has to delete that row through the API.
+  Deleting the entry above is the whole act. `seed/0` upserts what is here,
+  then deletes every shipped row (`default_prompt` is not null) whose key is
+  no longer in the list. A button this release does not carry must not survive
+  the deploy that dropped it -- including one somebody had reworded, because
+  the decision was to take the button away, not to freeze its last wording.
 
-  That is deliberate. Reaping by absence would mean a mistyped key literal
-  silently destroying a prompt somebody had tuned, and the failure would look
-  exactly like the intended behaviour.
+  A row created through the API is not a shipped row and is left alone.
+
+  The old reason not to reap -- a mistyped key literal silently destroying a
+  prompt somebody had tuned -- is still a reason to copy a key rather than
+  invent one when rewording. It is no longer a reason to leave a retired
+  button in the composer until somebody deletes it by hand.
   """
 
   alias RintoPMO.PromptShortcuts
@@ -86,6 +95,7 @@ defmodule RintoPMO.PromptShortcuts.Presets do
     * `:followed` -- the row was untouched, so its prompt took the new default
     * `:default_only` -- the row had been edited, so only its default moved
     * `:unchanged` -- the row already said what this release says
+    * `:removed` -- a shipped row whose key is no longer in this release
 
   `:unchanged` writes nothing, which is the point of having it: this runs on
   every deploy, and an unconditional update would push `updated_at` forward on
@@ -96,6 +106,7 @@ defmodule RintoPMO.PromptShortcuts.Presets do
           | {:followed, PromptShortcut.t()}
           | {:default_only, PromptShortcut.t()}
           | {:unchanged, PromptShortcut.t()}
+          | {:removed, PromptShortcut.t()}
           | {:error, String.t(), Ecto.Changeset.t()}
 
   @presets [
@@ -290,24 +301,6 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       When you are done, say how many notes you left and on which documents, or \
       say that you found nothing. Do not paste the findings back into the \
       conversation -- they are on the documents now.
-      """
-    },
-    %{
-      key: "tdyofk22eb5h5ndf",
-      resource_type: "annotation",
-      label: "梳理批注",
-      icon: "message-square",
-      prompt: """
-      逐条读我引用的批注，以及每条下面已有的回复。对每一条说清楚：
-
-      - 它提出的问题是否还成立，还是已经被后来的讨论或改动解决了
-      - 如果还成立，需要谁做什么才算处理完
-      - 它是不是其实和另一条在说同一件事
-
-      按「需要先处理的」排在前面。
-
-      **你现在只做分诊，不做处理。** 不要替我写回复正文，不要提议改文档 ——
-      这两件事都要单独说了才做。
       """
     },
     %{
@@ -544,10 +537,11 @@ defmodule RintoPMO.PromptShortcuts.Presets do
   def all, do: @presets
 
   @doc """
-  Writes every preset, following the re-run rule above.
+  Writes every preset, following the re-run rule above, then deletes every
+  shipped row whose key is no longer in the list.
   """
   @spec seed() :: [outcome()]
-  def seed, do: Enum.map(@presets, &seed_one/1)
+  def seed, do: Enum.map(@presets, &seed_one/1) ++ reap_retired()
 
   @doc """
   One line describing what `seed/0` did to a row, for a deploy script to print.
@@ -562,6 +556,9 @@ defmodule RintoPMO.PromptShortcuts.Presets do
     do: ~s(kept the edited prompt on "#{shortcut.label}"; its default is now the new one)
 
   def describe({:unchanged, shortcut}), do: ~s(left "#{shortcut.label}" alone -- already current)
+
+  def describe({:removed, shortcut}),
+    do: ~s(removed "#{shortcut.label}" -- this release no longer ships it)
 
   def describe({:error, key, changeset}),
     do: ~s(failed on #{key}: #{inspect(changeset.errors)})
@@ -613,4 +610,22 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
   defp tag(outcome, _preset, {:ok, shortcut}), do: {outcome, shortcut}
   defp tag(_outcome, preset, {:error, changeset}), do: {:error, preset.key, changeset}
+
+  defp reap_retired do
+    shipped = MapSet.new(@presets, & &1.key)
+
+    PromptShortcuts.list_shortcuts()
+    |> Enum.filter(&retired?(&1, shipped))
+    |> Enum.map(&reap_one/1)
+  end
+
+  defp retired?(%PromptShortcut{default_prompt: nil}, _shipped), do: false
+  defp retired?(%PromptShortcut{key: key}, shipped), do: not MapSet.member?(shipped, key)
+
+  defp reap_one(%PromptShortcut{} = shortcut) do
+    case PromptShortcuts.delete_shortcut(shortcut) do
+      {:ok, deleted} -> {:removed, deleted}
+      {:error, changeset} -> {:error, shortcut.key, changeset}
+    end
+  end
 end

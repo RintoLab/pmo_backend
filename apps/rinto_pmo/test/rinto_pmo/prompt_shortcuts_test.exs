@@ -86,16 +86,15 @@ defmodule RintoPMO.PromptShortcutsTest do
     end
   end
 
-  # Two presets are offered against annotations, and the split between them is
-  # the thing worth pinning: one triages and never touches the document, the
-  # other proposes -- but only for the notes it is sure about.
-  describe "the annotation presets" do
-    test "one triages and one proposes" do
+  # One preset is offered against annotations. The judgement it exists to
+  # carry is which notes may be acted on at all -- a note that names a
+  # problem without naming a fix gets a question, not a guess proposed
+  # against it.
+  describe "the annotation preset" do
+    test "proposes, and only for the notes it is sure about" do
       outcomes = Presets.seed()
 
-      assert {:created, triage} = outcome_for(outcomes, "梳理批注")
-      assert triage.resource_type == "annotation"
-      refute triage.prompt =~ "rinto-pmo doc propose"
+      refute outcome_for(outcomes, "梳理批注")
 
       assert {:created, act} = outcome_for(outcomes, "按批注提案")
       assert act.resource_type == "annotation"
@@ -287,6 +286,35 @@ defmodule RintoPMO.PromptShortcutsTest do
       assert {:created, back} = Presets.seed() |> hd()
       assert back.key == preset.key
       refute back.id == preset.id
+    end
+
+    test "deletes a shipped shortcut this release no longer carries" do
+      # What an older deploy left behind: a button that used to ship and
+      # does not any more. Including a reworded one -- taking the button
+      # away is the decision, not freezing its last wording.
+      {:ok, leftover} =
+        PromptShortcuts.insert_preset(%{
+          key: "tdyofk22eb5h5ndf",
+          resource_type: "annotation",
+          label: "梳理批注",
+          icon: "message-square",
+          prompt: "我自己写的分诊",
+          default_prompt: "旧的分诊"
+        })
+
+      outcomes = Presets.seed()
+
+      assert {:removed, removed} = outcome_for(outcomes, "梳理批注")
+      assert removed.id == leftover.id
+      assert PromptShortcuts.get_shortcut_by_key("tdyofk22eb5h5ndf") == nil
+    end
+
+    test "does not delete a shortcut somebody created themselves" do
+      {:ok, custom} = PromptShortcuts.create_shortcut(attrs(%{"label" => "我的"}))
+
+      Presets.seed()
+
+      assert PromptShortcuts.get_shortcut!(custom.id).label == "我的"
     end
 
     test "the breakdown preset's preamble convention survives filing" do

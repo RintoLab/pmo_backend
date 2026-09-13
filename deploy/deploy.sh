@@ -108,8 +108,9 @@ fi
 # the only way to reach breaking a document down, reviewing one, or the rest of
 # what used to be a button, must not go live with none of them.
 #
-# Idempotent, and deliberately not idempotent in one respect: a shortcut
-# deleted through the API comes back. That is what running this means -- see
+# Idempotent, and deliberately not idempotent in two respects: a shortcut
+# deleted through the API comes back, and a shortcut this release no longer
+# ships is deleted. That is what running this means -- see
 # `RintoPMO.PromptShortcuts.Presets`. A shortcut whose prompt was edited keeps
 # the edit; only ones nobody has touched follow the new wording.
 say "making sure the quick prompts are there"
