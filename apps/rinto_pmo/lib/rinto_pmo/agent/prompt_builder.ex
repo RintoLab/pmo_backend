@@ -81,12 +81,14 @@ defmodule RintoPMO.Agent.PromptBuilder do
   | `document` | `id` | `<document>` holding the latest revision's blocks |
   | `annotation` | `id` + `document_id` | `<annotation>` and its replies |
   | `project` | `slug` | `<project>` and an index of its documents |
+  | `task` | `id` | `<task>` holding its title, status and description |
   | `attachment` | `id` | `<attachment>` marker plus an inline image |
   | `proposal` | `id` + `document_id` | `<proposal>` holding both sides of one local change |
 
   Projects are keyed by `slug` because that is how they are addressed
   everywhere else here; annotations and proposals need `document_id` because
-  they are only ever reachable through their document.
+  they are only ever reachable through their document. A task is keyed by `id`
+  the same way a document is.
 
   Every one of them, and a reference that has gone missing, carries a `ref`
   attribute holding the handle its mentions point at. See "Mentions".
@@ -119,7 +121,8 @@ defmodule RintoPMO.Agent.PromptBuilder do
   attributes -- an id, a title -- which are labels, not doorways. A document
   renders its blocks but not its annotations; an annotation renders its replies
   but not its document; a proposal renders both sides of its own change but
-  neither its document nor the topic that made it.
+  neither its document nor the topic that made it; a task renders its
+  description but not the document it consumes.
 
   That rule is what keeps every expansion a leaf. There is one shape that
   cannot obey it -- a conversation, whose messages carry references of their
@@ -172,6 +175,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Projects.Project
+  alias RintoPMO.Tasks.Task
   alias RintoPMO.Utils
 
   @type built :: %{message: String.t(), images: [map()]}
@@ -305,7 +309,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
   # The bare type words the client uses as placeholder link text. Only these are
   # replaced by a title -- anything else is a human's own words, or a label
   # already worth reading, and is left as written.
-  @type_words ~w(document annotation project proposal attachment)
+  @type_words ~w(document annotation project task proposal attachment)
 
   defp rewrite_mentions(text, refs_by_index, _handles) when map_size(refs_by_index) == 0, do: text
 
@@ -460,6 +464,12 @@ defmodule RintoPMO.Agent.PromptBuilder do
     end
   end
 
+  defp resolve(%{"type" => "task", "id" => id}, handle) when is_binary(id) do
+    with {:ok, task} <- fetch(fn -> tasks().get_task!(id) end, "task", id) do
+      {:ok, text_only(render_task(task, handle), task.title)}
+    end
+  end
+
   defp resolve(%{"type" => "proposal", "id" => id, "document_id" => document_id}, handle)
        when is_binary(id) and is_binary(document_id) do
     with {:ok, document} <-
@@ -576,6 +586,22 @@ defmodule RintoPMO.Agent.PromptBuilder do
       attributes,
       join_present([project.description, project_documents(project)])
     )
+  end
+
+  # The spec a task consumes is named, not opened: `document_id` is a pointer at
+  # another entity, and following it would make this expansion a doorway. The
+  # description is the part that belongs to the task.
+  defp render_task(%Task{} = task, handle) do
+    attributes =
+      [
+        {"ref", handle},
+        {"id", task.id},
+        {"title", task.title},
+        {"kind", task.kind},
+        {"status", task.status}
+      ] ++ optional_attribute("document_id", task.document_id)
+
+    element("task", attributes, join_present([task.description]))
   end
 
   # Each turn names what it referenced but does not repeat it: the expansions
@@ -940,6 +966,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
   defp annotations, do: Utils.module(:annotations)
   defp conversations, do: Utils.module(:conversations)
   defp projects, do: Utils.module(:projects)
+  defp tasks, do: Utils.module(:tasks)
   defp attachments, do: Utils.module(:attachments)
 
   defp setting(key) do

@@ -8005,7 +8005,7 @@ components:
         ref_type:
           type: string
           description: >
-            `document`, `annotation`, `project`, `attachment` or `proposal`.
+            `document`, `annotation`, `project`, `task`, `attachment` or `proposal`.
             Not a closed enum: the set grows, and an unknown type is stored and
             ignored rather than rejecting the turn.
 
@@ -8157,8 +8157,8 @@ components:
           description: >
             What this turn put in front of the model. One of
             `{type: document, id}`, `{type: annotation, id, document_id}`,
-            `{type: proposal, id, document_id}`, `{type: project, slug}` or
-            `{type: attachment, id}`.
+            `{type: proposal, id, document_id}`, `{type: project, slug}`,
+            `{type: attachment, id}` or `{type: task, id}`.
           items:
             type: object
             additionalProperties: true

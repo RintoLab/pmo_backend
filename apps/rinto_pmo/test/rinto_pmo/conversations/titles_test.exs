@@ -12,6 +12,7 @@ defmodule RintoPMO.Conversations.TitlesTest do
   alias RintoPMO.Conversations.Titles
   alias RintoPMO.Conversations.TitleWorker
   alias RintoPMO.DocumentsMock
+  alias RintoPMO.TasksMock
 
   # A topic carries an assistant by default now, and naming falls back to it when
   # no naming actor is configured -- so the real context answers unless a test
@@ -316,6 +317,23 @@ defmodule RintoPMO.Conversations.TitlesTest do
   end
 
   describe "references" do
+    test "describes a referenced task by title, never by description" do
+      task = insert(:task, title: "接入 r-nacos", description: "先确认 systemd unit。")
+      conversation = unnamed()
+      append(conversation, "帮我看看这个", [%{"type" => "task", "id" => task.id}])
+
+      expect(TasksMock, :get_task!, fn _id -> task end)
+
+      expect(TitleGeneratorMock, :generate, fn input, _opts ->
+        assert [%{type: "task", title: "接入 r-nacos"}] = input.references
+        refute input.first_user_message =~ "systemd"
+        {:ok, "接入 r-nacos"}
+      end)
+
+      assert {:ok, named, :model} = Titles.name(conversation.id)
+      assert named.title == "接入 r-nacos"
+    end
+
     test "describes a referenced document by title, never by contents" do
       document = document_titled("项目上线方案")
       conversation = unnamed()

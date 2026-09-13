@@ -437,6 +437,12 @@ defmodule RintoPMO.Conversations.Titles do
     _missing -> nil
   end
 
+  defp label(%{ref_type: "task", ref_id: id}) when is_binary(id) do
+    clamp(tasks().get_task!(id).title, summary_chars())
+  rescue
+    _missing -> nil
+  end
+
   defp label(%{ref_type: type, ref_document_id: document_id, ref_id: id})
        when type in ["annotation", "proposal"] and is_binary(document_id) and is_binary(id) do
     document = documents().get_document!(document_id)
@@ -610,5 +616,6 @@ defmodule RintoPMO.Conversations.Titles do
   defp documents, do: Utils.module(:documents)
   defp annotations, do: Utils.module(:annotations)
   defp projects, do: Utils.module(:projects)
+  defp tasks, do: Utils.module(:tasks)
   defp attachments, do: Utils.module(:attachments)
 end

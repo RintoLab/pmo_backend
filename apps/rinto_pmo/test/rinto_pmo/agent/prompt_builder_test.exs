@@ -7,6 +7,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
   alias RintoPMO.ConversationsMock
   alias RintoPMO.DocumentsMock
   alias RintoPMO.ProjectsMock
+  alias RintoPMO.TasksMock
 
   setup do
     # Replay hands a revived session its own standing proposals; a topic with
@@ -274,6 +275,47 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                PromptBuilder.build("hi", [%{"type" => "project", "slug" => project.slug}])
 
       assert message =~ "documents: none"
+    end
+  end
+
+  describe "build/2 with a task ref" do
+    test "renders the task itself and names its spec without expanding it" do
+      document = insert(:document)
+
+      task =
+        insert(:task,
+          title: "接入 r-nacos",
+          description: "先确认 systemd unit。",
+          document: document
+        )
+
+      expect(TasksMock, :get_task!, fn id ->
+        assert id == task.id
+        task
+      end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("怎么做？", [%{"type" => "task", "id" => task.id}])
+
+      assert message =~
+               ~s(<task ref="1" id="#{task.id}" title="接入 r-nacos" kind="work" status="open")
+
+      assert message =~ ~s(document_id="#{document.id}")
+      assert message =~ "先确认 systemd unit。"
+      # The spec is a label, not a doorway: the document body stays out.
+      refute message =~ "<document"
+    end
+
+    test "a task with no description still renders" do
+      task = insert(:task, title: "Empty job", description: nil)
+
+      expect(TasksMock, :get_task!, fn _id -> task end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("hi", [%{"type" => "task", "id" => task.id}])
+
+      assert message =~ ~s(<task ref="1" id="#{task.id}")
+      refute message =~ "document_id="
     end
   end
 
@@ -633,6 +675,20 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
 
       # Still expanded once each, which is what made the indices unusable.
       assert length(String.split(message, "<document ref=")) == 3
+    end
+
+    test "uses the title for a task, matching what the element renders" do
+      task = insert(:task, title: "接入 r-nacos")
+
+      expect(TasksMock, :get_task!, fn _id -> task end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("[task](reference#0)怎么做", [
+                 %{"type" => "task", "id" => task.id}
+               ])
+
+      assert message =~ ~s(<task ref="1" id="#{task.id}")
+      assert message =~ "[接入 r-nacos](ref#1)怎么做"
     end
 
     test "uses the slug for a project, matching what the element renders" do
