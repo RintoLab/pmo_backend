@@ -81,6 +81,33 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
 
       assert message =~ ~s(title="A &quot;quoted&quot; title")
     end
+
+    # A label, not a doorway: the project is named so a document written from
+    # this one can be filed beside it, and is not itself expanded.
+    test "names the project so a document written from it can be filed beside it" do
+      document = document_with_blocks(["Content"])
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("summarise it", [
+                 %{"type" => "document", "id" => document.id}
+               ])
+
+      assert message =~ ~s(project_id="#{document.project_id}")
+      refute message =~ "<project"
+    end
+
+    test "omits project_id when the document is unassigned" do
+      document = %{document_with_blocks(["Content"]) | project_id: nil}
+
+      expect(DocumentsMock, :get_document!, fn _id -> document end)
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("hi", [%{"type" => "document", "id" => document.id}])
+
+      refute message =~ "project_id="
+    end
   end
 
   # A block_id is thirty-six characters, once per block, paid again on every

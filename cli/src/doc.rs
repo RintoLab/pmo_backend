@@ -361,10 +361,10 @@ fn show(client: &Client, args: ShowArgs) -> Result<()> {
     }
 
     // Which project this is filed under, so that a document written *from* this
-    // one can be filed beside it. Nothing else reports it: the prompt an agent
-    // reads carries a document's id, title and blocks, and `doc list` prints
-    // status rather than project -- so without this line a derived document
-    // lands in the default project no matter where its source lives.
+    // one can be filed beside it. A cited document in a conversation prompt
+    // already carries `project_id`; this line is the same fact for the CLI
+    // path, where the agent read the document with `doc show` rather than by
+    // citing it. `doc list` still prints status rather than project.
     //
     // Printed as a comment line rather than a field of its own: everything else
     // here is the document's text, and a bare `project_id: ...` line would read

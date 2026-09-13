@@ -78,7 +78,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
 
   | `type` | key | expands to |
   |---|---|---|
-  | `document` | `id` | `<document>` holding the latest revision's blocks |
+  | `document` | `id` | `<document>` holding the latest revision's blocks, and naming its `project_id` |
   | `annotation` | `id` + `document_id` | `<annotation>` and its replies |
   | `project` | `slug` | `<project>` and an index of its documents |
   | `task` | `id` | `<task>` holding its title, status and description |
@@ -119,10 +119,11 @@ defmodule RintoPMO.Agent.PromptBuilder do
   **Expanding a reference renders the thing itself and the parts belonging to
   it, and never follows a pointer to another entity.** Other entities appear as
   attributes -- an id, a title -- which are labels, not doorways. A document
-  renders its blocks but not its annotations; an annotation renders its replies
-  but not its document; a proposal renders both sides of its own change but
-  neither its document nor the topic that made it; a task renders its
-  description but not the document it consumes.
+  renders its blocks but not its annotations, and names the project it is
+  filed under without opening it; an annotation renders its replies but not
+  its document; a proposal renders both sides of its own change but neither
+  its document nor the topic that made it; a task renders its description but
+  not the document it consumes.
 
   That rule is what keeps every expansion a leaf. There is one shape that
   cannot obey it -- a conversation, whose messages carry references of their
@@ -518,6 +519,10 @@ defmodule RintoPMO.Agent.PromptBuilder do
     Ecto.NoResultsError -> {:error, :ref_not_found, %{"type" => type, "id" => id}}
   end
 
+  # Which project this is filed under is named, not opened: `project_id` is a
+  # pointer at another entity. The model needs the id so a document written
+  # from this one can be filed beside it; following the pointer would expand
+  # the project.
   defp render_document(
          %Document{latest_revision: %DocumentRevision{} = revision} = document,
          handle
@@ -530,12 +535,10 @@ defmodule RintoPMO.Agent.PromptBuilder do
     # latest revision (see `RintoPMO.Documents.propose_block/2`), so naming the
     # snapshot here would only invite the model to send it back.
     attributes =
-      [
-        {"ref", handle},
-        {"id", document.id},
-        {"title", revision.title},
-        {"blocks", length(blocks)}
-      ] ++ if truncated?, do: [{"truncated", "true"}], else: []
+      [{"ref", handle}, {"id", document.id}] ++
+        optional_attribute("project_id", document.project_id) ++
+        [{"title", revision.title}, {"blocks", length(blocks)}] ++
+        if(truncated?, do: [{"truncated", "true"}], else: [])
 
     body =
       blocks
@@ -552,7 +555,8 @@ defmodule RintoPMO.Agent.PromptBuilder do
   defp render_document(%Document{} = document, handle) do
     element(
       "document",
-      [{"ref", handle}, {"id", document.id}],
+      [{"ref", handle}, {"id", document.id}] ++
+        optional_attribute("project_id", document.project_id),
       "[Document has no revision snapshot.]"
     )
   end
