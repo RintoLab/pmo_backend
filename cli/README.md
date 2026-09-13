@@ -139,7 +139,7 @@ away anything written there. On a developer's machine the repository to be in is
 | `schedule` | one command; what each week holds and what did not fit in it |
 | `history` | one command; what was actually worked, with the plan beside it |
 | `calibration` | one command; what the estimates turned out to be worth |
-| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `annotations`, `annotation`, `backlinks`, `contentions`, `rebase` |
+| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `proposal`, `annotations`, `annotation`, `backlinks`, `contentions`, `rebase` |
 | `search` | one command; finds things by meaning and answers with `rinto://` addresses |
 | `skill` | `list`, `install`, `sync` -- see "Skills" below |
 | `update` | self-update from the Gitea package registry |
@@ -175,7 +175,10 @@ topic's own standing proposals in place of the text they would replace. A topic
 that changed a document and then reads it back with plain `doc show` sees the
 text it replaced -- and proposing again from that overwrites its earlier
 proposal, because a topic holds one live proposal per block. Read `--working`
-before changing the same document twice.
+before changing the same document twice. A competing topic's wording is not in
+that view -- only a count that somebody else is there. `doc contentions <id>`
+lists the pairs that cannot both stand; `doc proposal <id> <proposal-id>` reads
+one, including the text it wants.
 
 **What people wrote about a document is not in the document.** An annotation is
 somebody pointing at a paragraph and saying it is wrong, and neither `doc show`

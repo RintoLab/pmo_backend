@@ -207,6 +207,70 @@ defmodule RintoPMO.PromptShortcutsTest do
     end
   end
 
+  # A shortcut is one resource_type, so auto-resolving conflicts is two buttons:
+  # the cited proposals, or every remaining argument on the document. What they
+  # share is the missing pause -- they propose a merge without waiting to be
+  # told which way to go, which is the whole difference from "提案冲突处理".
+  describe "the auto-resolve conflict presets" do
+    test "one ships against proposals, the other against documents" do
+      outcomes = Presets.seed()
+
+      assert {:created, cited} = outcome_for(outcomes, "解决冲突")
+      assert cited.resource_type == "proposal"
+      assert cited.icon == "git-merge"
+      assert cited.prompt == cited.default_prompt
+
+      assert {:created, whole} = outcome_for(outcomes, "解决所有冲突")
+      assert whole.resource_type == "document"
+      assert whole.icon == "layers"
+      assert whole.prompt == whole.default_prompt
+    end
+
+    test "neither waits for a direction" do
+      outcomes = Presets.seed()
+      {:created, cited} = outcome_for(outcomes, "解决冲突")
+      {:created, whole} = outcome_for(outcomes, "解决所有冲突")
+
+      # The pause is the other preset. Losing this half would turn auto-resolve
+      # back into a conversation, and the button would stop meaning what it says.
+      refute cited.prompt =~ "这一步不提案"
+      refute whole.prompt =~ "这一步不提案"
+      assert cited.prompt =~ "不要等我确认"
+      assert whole.prompt =~ "不要等我确认"
+    end
+
+    test "the proposal one proposes on the cited conflict" do
+      {:created, cited} = outcome_for(Presets.seed(), "解决冲突")
+
+      assert cited.prompt =~ "rinto-pmo doc propose"
+      assert cited.prompt =~ "--block"
+      assert cited.prompt =~ "--base-revision-id"
+      assert cited.prompt =~ "--with-block-ids"
+      assert cited.prompt =~ "不要 adopt"
+      assert cited.prompt =~ "<document-id> \\\n"
+
+      # It merges what was cited, not every argument on the document.
+      refute cited.prompt =~ "rinto-pmo doc contentions"
+    end
+
+    test "the document one finds every conflict before it proposes" do
+      {:created, whole} = outcome_for(Presets.seed(), "解决所有冲突")
+
+      # Rival wording is not in the cited document, and `--working` withholds it.
+      # Without these two reads the preset would be guessing from ids.
+      assert whole.prompt =~ "rinto-pmo doc contentions"
+      assert whole.prompt =~ "rinto-pmo doc proposal <document-id>"
+      refute whole.prompt =~ "rinto-pmo doc proposals"
+
+      assert whole.prompt =~ "rinto-pmo doc propose"
+      assert whole.prompt =~ "--block"
+      assert whole.prompt =~ "--base-revision-id"
+      assert whole.prompt =~ "--with-block-ids --working"
+      assert whole.prompt =~ "不要 adopt"
+      assert whole.prompt =~ "<document-id> \\\n"
+    end
+  end
+
   describe "Presets.seed/0" do
     test "creates every preset the first time" do
       outcomes = Presets.seed()

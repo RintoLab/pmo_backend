@@ -36,13 +36,21 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
   ## What is here, and what is not yet
 
-  Three presets write. "拆成任务" creates a document, which `rinto-pmo doc create`
+  Several presets write. "拆成任务" creates a document, which `rinto-pmo doc create`
   has always been able to do, and its prompt spells the command out because
   the shape of what it files is the whole point of the preset. "提案冲突处理" ends in a
   proposal of its own, and names `rinto-pmo doc propose` because the shape it
   has to produce -- one more candidate, on the block the cited ones are arguing
   over -- is the preset. It writes only after the person has settled which way
-  to go, which is the second half of the same prompt. The rest answer in prose.
+  to go, which is the second half of the same prompt.
+
+  "解决冲突" and "解决所有冲突" produce that extra candidate without the pause:
+  the model picks a merge from the document as a whole and proposes it. One is
+  offered against the cited proposals; the other is offered against the document,
+  and has to find every remaining argument first -- `doc contentions` for the
+  pairs, `doc proposal` for the wording `doc show --working` withholds. A shortcut
+  is one `resource_type`, so they are two rows rather than one that belongs to
+  both. The rest answer in prose.
 
   ## A shortcut is a starting point, not a workflow
 
@@ -304,6 +312,78 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       """
     },
     %{
+      key: "rrr3oped347jziqn",
+      resource_type: "document",
+      label: "解决所有冲突",
+      icon: "layers",
+      prompt: """
+      我引用的是文档。把这篇文档上所有还在互相争的提案都自动融掉：每个冲突组提一条
+      整合后的新提案。不要先问我方向、不要等我确认 —— 你根据整篇文档做取舍，提完
+      再说你怎么取舍的。
+
+      只处理还在争的。一篇文档上挂着的提案，彼此说得通的那些不是这次的事。
+
+      ## 先找出所有冲突
+
+          rinto-pmo doc contentions <document-id>
+
+      没有冲突就说没有，不要为了交差硬提。
+
+      列出的是成对的提案 id，以及它们在争哪一段（block 或 title）。一对一对地融会
+      把同一段提两次，第二次会换掉第一次 —— **先按 block（或 title）收成组，一组
+      只提一条。**
+
+      ## 读每条在争的提案
+
+      引用里的文档是已发布的正文，不含别人提的改法。`doc show --working` 也只代入
+      你这个话题自己的提案，别人要改成什么样不在那里。对组里每一条：
+
+          rinto-pmo doc proposal <document-id> <proposal-id>
+
+      读它要改成什么样、落在哪、跟谁冲突。提示词里的 `[block:b1]` 是给人读的标签，
+      **不是 id**；contentions 和这条命令给出的才是真的 block id。
+
+      一条基于已经过时的正文写的提案，可能在解决一个不存在的问题 —— 以文档现在的
+      正文为准，不要把旧稿当现状。
+
+      ## 每组提一条新的
+
+      提的是**独立的一条新提案**，不是去改某条现有的。我在评审界面从原文那几条和
+      你这条里选一条 adopt。
+
+      取正文和 `base_revision_id`：
+
+          rinto-pmo doc show <document-id> --with-block-ids --working
+
+      `base_revision_id` 原样传给下一步，不要另外查一个"最新的"顶上。
+
+      把融合后的那一段写进文件，只写这一段，不是整篇：
+
+          rinto-pmo doc propose <document-id> \\
+            --block <block-id> \\
+            --body merged.md \\
+            --base-revision-id <上面读到的值> \\
+            --change-summary "融合该段 N 条冲突提案"
+
+      争的是标题而不是某一段时，用 `--title`，不要传 `--block`。
+
+      **一个 block 只提一条。** 你这个话题在同一个 block 上只挂得住一条 live
+      提案，再提一次是替换掉自己上一条，不是多一个候选。
+
+      写正文时：
+
+      - **综合的是主张，不是措辞。** 两条各对一半就各取一半；互斥就按整篇文档选
+        更能说得通的那条：术语对得上、别处还按得通、没有把已经过时的正文当现状。
+      - 不要为了显得公平而给每条都留一点痕迹。融合版要能独立读通，不是几条的拼贴。
+      - 只动这一组在争的那一段。别的 block、别人的提案都不是这次的事。
+      - **不要 adopt，也不要试图撤下别人的提案。** 选哪一条是我的动作。
+      - 用文档本身的语言写。
+
+      全部提完，按组说清楚新提案的 id、它融了哪几条、你在哪里做了取舍。不要把正文
+      贴回聊天里 —— 它们已经是提案了。
+      """
+    },
+    %{
       key: "rxt67rwqqi4d34ls",
       resource_type: "annotation",
       label: "按批注提案",
@@ -494,6 +574,76 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
       **确实分属几个 block 各有各的争用** —— 按 block 分组，第一步一次把几组都讲
       完，第二步每组各提一条。不同 block 之间没有争用，不要揉进同一段文字里。
+      """
+    },
+    %{
+      key: "bpjkq5bgew2aw2ms",
+      resource_type: "proposal",
+      label: "解决冲突",
+      icon: "git-merge",
+      prompt: """
+      我引用的这几条提案在争同一段正文，同一条消息里还有它们所属的文档。
+
+      把它们自动融成一条新提案。不要先问我方向、不要等我确认 —— 你根据整篇文档做
+      取舍，提完再说你怎么取舍的。
+
+      ## 先看清这个冲突
+
+      读的时候两件事一起看：
+
+      - 每条提案带三段文字。`<old>` 是它写作时那一段的样子，`<new>` 是它要改成
+        的样子，`<current>` 只在正文后来又被人改过时才出现，那是这一段现在的
+        样子。分歧在 `<new>` 之间，但一条基于旧正文写的提案，可能已经在解决一个
+        不存在的问题了。
+      - **整篇文档也在，用它。** 一段改写好不好，取决于它跟文档其余部分说不说得
+        通：术语对不对得上、它改掉的决定别处是不是还在按旧的说、和前后两段还接不
+        接得上。只盯着这一段比不出对错。
+
+      按 block 分组。同一段上的几条是一组，融成一条；不同 block 之间没有争用，
+      不要揉进同一段文字里。
+
+      **它们其实不冲突** —— 落在不同 block，或者可以同时成立 —— 说清楚，不要为了
+      交差硬融一版出来。只处理我引用的这几条，文档上还挂着的别的争用不是这次的事。
+
+      ## 直接提一条新的
+
+      提的是**独立的一条新提案**，不是去改某条现有的。四条冲突提案进去，出来的
+      是第五条，我在评审界面从这五条里选一条 adopt。
+
+      取正文和真的 block id：
+
+          rinto-pmo doc show <document-id> --with-block-ids --working
+
+      两样东西都在这一次输出里：每一段真实的 block id，以及 `base_revision_id: ...`
+      那一行。提示词里的 `[block:b1]` 是给人读的标签，**不是 id**，编一个出来不会
+      报错，只会把提案挂到别处去。`base_revision_id` 原样传给下一步，不要另外查一
+      个"最新的"顶上 —— 服务端靠它判断你这一版是从哪份正文改起的。
+
+      把融合后的那一段写进文件，只写这一段，不是整篇：
+
+          rinto-pmo doc propose <document-id> \\
+            --block <block-id> \\
+            --body merged.md \\
+            --base-revision-id <上面读到的值> \\
+            --change-summary "融合 N 条冲突提案"
+
+      争的是标题而不是某一段时，用 `--title`，不要传 `--block`。
+
+      **一个 block 只提一条。** 你这个话题在同一个 block 上只挂得住一条 live
+      提案，再提一次是替换掉自己上一条，不是多一个候选。几个 block 各有各的争用，
+      每组各提一条。
+
+      写正文时：
+
+      - **综合的是主张，不是措辞。** 两条各对一半就各取一半；互斥就按整篇文档选
+        更能说得通的那条：术语对得上、别处还按得通、没有把已经过时的正文当现状。
+      - 不要为了显得公平而给每条都留一点痕迹。融合版要能独立读通，不是几条的拼贴。
+      - 只动这一组在争的那一处。别的 block、别人的提案都不是这次的事。
+      - **不要 adopt，也不要试图撤下别人的提案。** 选哪一条是我的动作。
+      - 用文档本身的语言写。
+
+      提完说清楚新提案的 id、它落在哪一段，以及你在哪里做了取舍。不要把正文贴回
+      聊天里 —— 它已经是一条提案了。
       """
     },
     %{

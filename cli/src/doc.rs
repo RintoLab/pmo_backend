@@ -19,6 +19,8 @@ pub enum DocCommand {
     Propose(ProposeArgs),
     /// List the changes standing on a document, awaiting review
     Proposals(ProposalsArgs),
+    /// Show one proposed change, including the text it wants
+    Proposal(ProposalArgs),
     /// List the notes people left on a document
     Annotations(AnnotationsArgs),
     /// Show one note and the conclusions written under it
@@ -127,6 +129,24 @@ pub struct ProposalsArgs {
     /// Only proposals on this block
     #[arg(long, value_name = "BLOCK_ID")]
     block: Option<String>,
+}
+
+/// One proposed change, including the text it wants.
+///
+/// `doc proposals` is a list and omits content on purpose: a document's worth
+/// of candidates would bury the ids. Reading one is the other half -- what a
+/// competing topic wants this paragraph to say, which `doc show --working`
+/// will not tell you. That command stands in this topic's own candidates and
+/// only counts anybody else's; the rival wording is withheld because reconciling
+/// versions is a person's decision. This command exists for the moment they ask
+/// a topic to merge them anyway.
+#[derive(Args)]
+pub struct ProposalArgs {
+    /// Document id
+    document_id: String,
+
+    /// The proposal to read
+    proposal_id: String,
 }
 
 /// What people wrote *about* a document, as opposed to in it.
@@ -260,6 +280,7 @@ pub fn run(command: DocCommand) -> Result<()> {
         DocCommand::List(args) => list(client, args),
         DocCommand::Propose(args) => propose(client, &config, args),
         DocCommand::Proposals(args) => proposals(client, &config, args),
+        DocCommand::Proposal(args) => proposal(client, args),
         DocCommand::Annotations(args) => annotations(client, args),
         DocCommand::Annotation(args) => annotation(client, args),
         DocCommand::AnnotationReply(args) => annotation_reply(client, &config, args),
@@ -727,6 +748,44 @@ fn proposal_summary(proposal: &Value) -> String {
         .unwrap_or("(no summary)");
 
     format!("{id}  {status}  {slot}  {summary}")
+}
+
+/// Needs no topic of its own: what a standing change wants is a fact about
+/// the document, and a topic reading this is finding out what it would have
+/// to merge with, not asserting anything of its own.
+fn proposal(client: &Client, args: ProposalArgs) -> Result<()> {
+    let path = format!(
+        "/documents/{}/proposals/{}",
+        args.document_id, args.proposal_id
+    );
+    let proposal = client::data(client.get(&path, &[])?)?;
+
+    println!("{}", proposal_summary(&proposal));
+
+    if let Some(ids) = proposal
+        .get("conflicting_proposal_ids")
+        .and_then(Value::as_array)
+    {
+        let ids: Vec<_> = ids.iter().filter_map(Value::as_str).collect();
+        if !ids.is_empty() {
+            println!("conflicts with {}", ids.join(", "));
+        }
+    }
+
+    println!();
+    println!("{}", proposal_body(&proposal));
+    Ok(())
+}
+
+fn proposal_body(proposal: &Value) -> String {
+    match string(proposal, "operation", "") {
+        "delete" => "(block removed)".to_string(),
+        "move" => match proposal.get("after_block_id").and_then(Value::as_str) {
+            Some(after) => format!("(same text, moved after {after})"),
+            None => "(same text, moved to the start of the document)".to_string(),
+        },
+        _ => string(proposal, "content", "").to_string(),
+    }
 }
 
 /// Which filters this asks for, using the server's own parameter names.
@@ -1392,9 +1451,9 @@ mod tests {
     mod api {
         use super::super::{
             annotate, annotation, annotation_reply, annotations, backlinks, contentions, create,
-            proposals, propose, working, AnnotateArgs, AnnotationArgs, AnnotationReplyArgs,
-            AnnotationsArgs, BacklinksArgs, ContentionsArgs, CreateArgs, ProposalsArgs,
-            ProposeArgs, ShowArgs,
+            proposal, proposals, propose, working, AnnotateArgs, AnnotationArgs,
+            AnnotationReplyArgs, AnnotationsArgs, BacklinksArgs, ContentionsArgs, CreateArgs,
+            ProposalArgs, ProposalsArgs, ProposeArgs, ShowArgs,
         };
         use crate::config::Config;
         use crate::testing::{client, Reply, StubServer};
@@ -1817,6 +1876,41 @@ mod tests {
             assert_eq!(
                 requests[0].target,
                 "/api/v1/documents/doc-1/annotations/note-1"
+            );
+        }
+
+        /// The listing omits content; this is how a topic reads what a competing
+        /// candidate actually wants the paragraph to say.
+        #[test]
+        fn one_proposal_is_read_through_its_own_endpoint() {
+            let server = StubServer::start(vec![Reply::json(
+                200,
+                json!({"data": {
+                    "id": "proposal-1",
+                    "scope": "block",
+                    "operation": "update",
+                    "status": "live",
+                    "block_id": "block-9",
+                    "change_summary": "tighten the rollback",
+                    "content": "Rolled back in two steps.",
+                    "conflicting_proposal_ids": ["proposal-2"]
+                }}),
+            )]);
+
+            proposal(
+                &client(&server),
+                ProposalArgs {
+                    document_id: "doc-1".to_string(),
+                    proposal_id: "proposal-1".to_string(),
+                },
+            )
+            .unwrap();
+
+            let requests = server.only_request();
+            assert_eq!(requests[0].method, "GET");
+            assert_eq!(
+                requests[0].target,
+                "/api/v1/documents/doc-1/proposals/proposal-1"
             );
         }
 
