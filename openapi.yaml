@@ -765,6 +765,9 @@ paths:
       tags: [Documents]
       operationId: listDocuments
       summary: List non-archived documents
+      description: >-
+        Non-archived documents, pinned first, then newest first by latest
+        revision. `pin` on each row is the bookmark that put it at the front.
       parameters:
         - name: project_id
           in: query
@@ -1344,6 +1347,50 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/pin:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Documents]
+      operationId: pinDocument
+      summary: Pin a document so listings keep it at the front
+      description: >-
+        Sets `pin` to `true`, idempotently. A person's bookmark, not a judgement
+        about the content: pinning does not adopt the document, and nothing about
+        the revision history moves. There is no counterpart in the agent CLI --
+        the same rule `formalize` follows.
+
+
+        A draft can be pinned. An applied document can be pinned. Archiving still
+        hides it from `GET /documents`; the bookmark is waiting if it comes back.
+      responses:
+        "200":
+          description: Document with its latest revision and blocks, now pinned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /documents/{document_id}/unpin:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Documents]
+      operationId: unpinDocument
+      summary: Clear a document's pin
+      description: >-
+        Sets `pin` to `false`, idempotently. The document goes back to sorting
+        with everything else; nothing else about it changes.
+      responses:
+        "200":
+          description: Document with its latest revision and blocks, no longer pinned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /documents/{document_id}/refile:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -5361,7 +5408,7 @@ components:
       additionalProperties: false
     DocumentSummary:
       type: object
-      required: [id, project_id, archived_at, status, latest_revision, inserted_at, updated_at]
+      required: [id, project_id, archived_at, status, pin, latest_revision, inserted_at, updated_at]
       properties:
         id:
           type: string
@@ -5385,6 +5432,14 @@ components:
             not a waiting room -- most documents stop here. `applied` means the
             document has already been consumed downstream, and once is all there
             is. Every step is one-way.
+        pin:
+          type: boolean
+          description: >-
+            A person's bookmark. Pinned documents always sort first in
+            `GET /documents`; that is all it means. Set with
+            `POST /documents/{document_id}/pin` and cleared with
+            `POST /documents/{document_id}/unpin`. Not a status: a draft can
+            be pinned and a formal document can be unpinned.
         latest_revision:
           $ref: "#/components/schemas/DocumentRevisionSummary"
         inserted_at:
@@ -5396,7 +5451,7 @@ components:
       additionalProperties: false
     Document:
       type: object
-      required: [id, project_id, archived_at, status, latest_revision, inserted_at, updated_at]
+      required: [id, project_id, archived_at, status, pin, latest_revision, inserted_at, updated_at]
       properties:
         id:
           type: string
@@ -5420,6 +5475,14 @@ components:
             not a waiting room -- most documents stop here. `applied` means the
             document has already been consumed downstream, and once is all there
             is. Every step is one-way.
+        pin:
+          type: boolean
+          description: >-
+            A person's bookmark. Pinned documents always sort first in
+            `GET /documents`; that is all it means. Set with
+            `POST /documents/{document_id}/pin` and cleared with
+            `POST /documents/{document_id}/unpin`. Not a status: a draft can
+            be pinned and a formal document can be unpinned.
         latest_revision:
           $ref: "#/components/schemas/DocumentRevision"
         inserted_at:

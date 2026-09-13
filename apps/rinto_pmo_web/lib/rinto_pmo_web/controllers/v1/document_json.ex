@@ -26,6 +26,7 @@ defmodule RintoPMOWeb.V1.DocumentJSON do
       project_id: document.project_id,
       archived_at: document.archived_at,
       status: document.status,
+      pin: document.pin,
       latest_revision: DocumentRevisionJSON.summary(document.latest_revision),
       inserted_at: document.inserted_at,
       updated_at: document.updated_at

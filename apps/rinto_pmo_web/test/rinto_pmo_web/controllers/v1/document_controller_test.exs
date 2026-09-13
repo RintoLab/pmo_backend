@@ -17,6 +17,7 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
     assert [data] = json_response(conn, 200)["data"]
     assert data["id"] == document.id
     assert data["status"] == "draft"
+    assert data["pin"] == false
     assert data["latest_revision"]["title"] == "Plan"
     refute Map.has_key?(data["latest_revision"], "blocks")
   end
@@ -92,7 +93,7 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
 
     conn = get(conn, ~p"/api/v1/documents/#{document.id}")
 
-    assert %{"latest_revision" => %{"blocks" => [rendered_block]}} =
+    assert %{"pin" => false, "latest_revision" => %{"blocks" => [rendered_block]}} =
              json_response(conn, 200)["data"]
 
     assert rendered_block["block_id"] == block.block_id
@@ -198,6 +199,40 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
     conn = post(conn, ~p"/api/v1/documents/#{document.id}/formalize")
 
     assert json_response(conn, 200)["data"]["status"] == "formal"
+  end
+
+  test "POST /api/v1/documents/:id/pin bookmarks it at the front", %{conn: conn} do
+    document = document_with_revision()
+    unpinned = %{document | pin: false}
+    pinned = %{document | pin: true}
+
+    expect(DocumentsMock, :get_document!, fn id ->
+      assert id == document.id
+      unpinned
+    end)
+
+    expect(DocumentsMock, :pin_document, fn ^unpinned -> {:ok, pinned} end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/pin")
+
+    assert json_response(conn, 200)["data"]["pin"] == true
+  end
+
+  test "POST /api/v1/documents/:id/unpin clears the bookmark", %{conn: conn} do
+    document = document_with_revision()
+    pinned = %{document | pin: true}
+    unpinned = %{document | pin: false}
+
+    expect(DocumentsMock, :get_document!, fn id ->
+      assert id == document.id
+      pinned
+    end)
+
+    expect(DocumentsMock, :unpin_document, fn ^pinned -> {:ok, unpinned} end)
+
+    conn = post(conn, ~p"/api/v1/documents/#{document.id}/unpin")
+
+    assert json_response(conn, 200)["data"]["pin"] == false
   end
 
   test "POST /api/v1/documents/:id/refile moves it to the project named", %{conn: conn} do

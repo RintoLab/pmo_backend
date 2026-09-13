@@ -467,6 +467,59 @@ defmodule RintoPMO.DocumentsTest do
     end
   end
 
+  # A bookmark, not a status. Pinning does not adopt the document, and a
+  # caller that tries to create one already pinned is not heard -- the same
+  # rule status follows, for the same reason: the choice is a person's later.
+  describe "pinning a document" do
+    test "every document is created unpinned" do
+      assert {:ok, document} = Documents.create_document(%{title: "Written down"})
+      refute document.pin
+      refute Documents.get_document!(document.id).pin
+    end
+
+    test "ignores a caller trying to create a document already pinned" do
+      assert {:ok, document} =
+               Documents.create_document(%{title: "Claims to sit at the front", pin: true})
+
+      refute document.pin
+      refute Documents.get_document!(document.id).pin
+    end
+
+    test "pins and unpins idempotently, touching nothing else" do
+      project = insert(:project)
+      {:ok, document} = create_document(project, %{title: "Scratch"})
+
+      assert {:ok, pinned} = Documents.pin_document(document)
+      assert pinned.pin
+      assert pinned.id == document.id
+      assert pinned.status == :draft
+
+      assert {:ok, pinned_again} = Documents.pin_document(pinned)
+      assert pinned_again.pin
+
+      assert {:ok, unpinned} = Documents.unpin_document(pinned_again)
+      refute unpinned.pin
+
+      assert {:ok, unpinned_again} = Documents.unpin_document(unpinned)
+      refute unpinned_again.pin
+
+      revisions = Documents.list_revisions(document)
+      assert length(revisions) == 1
+      assert Documents.get_document!(document.id).latest_revision.title == "Scratch"
+    end
+
+    test "lists pinned documents ahead of newer unpinned ones" do
+      project = insert(:project)
+
+      {:ok, older} = create_document(project, %{title: "Older"})
+      {:ok, newer} = create_document(project, %{title: "Newer"})
+      {:ok, _older} = Documents.pin_document(older)
+
+      assert Enum.map(Documents.list_documents(%{project: project.id}), & &1.id) ==
+               [older.id, newer.id]
+    end
+  end
+
   describe "revisions" do
     test "applies block operations into a new immutable snapshot" do
       project = insert(:project)

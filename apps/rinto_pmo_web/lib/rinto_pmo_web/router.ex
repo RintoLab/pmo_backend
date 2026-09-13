@@ -141,6 +141,11 @@ defmodule RintoPMOWeb.Router do
     # no counterpart in the agent CLI.
     post "/documents/:id/formalize", DocumentController, :formalize
 
+    # A person's bookmark: pinned documents always sort first. Not a status,
+    # and not something an author (or a model) gets to decide on the way past.
+    post "/documents/:id/pin", DocumentController, :pin
+    post "/documents/:id/unpin", DocumentController, :unpin
+
     # Correcting which project a document was filed under -- meant for one just
     # written into the wrong place, usually the default project an AI landed in
     # by not naming one. A person's action for the same reason `formalize` is,

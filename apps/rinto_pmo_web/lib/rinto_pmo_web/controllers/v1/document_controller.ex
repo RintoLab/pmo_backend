@@ -114,6 +114,37 @@ defmodule RintoPMOWeb.V1.DocumentController do
   end
 
   @doc """
+  Pins a document so listings keep it at the front.
+
+  A person's bookmark -- see `RintoPMO.Documents.pin_document/1` -- so it is
+  reachable only here and not from the agent CLI. Idempotent: pinning an
+  already pinned document changes nothing.
+  """
+  def pin(conn, %{"id" => id}) do
+    context = Utils.module(:documents)
+    document = context.get_document!(id)
+
+    with {:ok, document} <- context.pin_document(document) do
+      render(conn, :show, document: document)
+    end
+  end
+
+  @doc """
+  Clears a document's pin.
+
+  The mirror of `pin/2`. Idempotent: unpinning a document that was not pinned
+  changes nothing.
+  """
+  def unpin(conn, %{"id" => id}) do
+    context = Utils.module(:documents)
+    document = context.get_document!(id)
+
+    with {:ok, document} <- context.unpin_document(document) do
+      render(conn, :show, document: document)
+    end
+  end
+
+  @doc """
   Files an adopted task document as the project's work breakdown.
 
   A task document arrives from a topic -- somebody sends the breakdown

@@ -3,8 +3,9 @@ defmodule RintoPMO.Documents.Document do
   The stable identity of a document.
 
   Mutable document content and titles live in immutable revisions. Documents
-  only carry optional project ownership, their archive lifecycle, and how far
-  along their status is.
+  only carry optional project ownership, their archive lifecycle, how far
+  along their status is, and whether a person has pinned them to the front of
+  listings.
 
   ## Status
 
@@ -47,6 +48,14 @@ defmodule RintoPMO.Documents.Document do
   archived, and an archived `:formal` document is still one somebody vouched
   for -- it is just not in use. Folding the two together would lose that
   distinction and the time it happened.
+
+  ## Pinning is a different question
+
+  `pin` is not a status either. It is a person's bookmark: pinned documents
+  always sort ahead of the rest, and that is all it means. A draft can be
+  pinned, a formal one can be unpinned, and neither move says anything about
+  whether anybody has vouched for the document. Folding it into status would
+  lose that distinction.
   """
 
   use RintoPMO, :schema
@@ -64,6 +73,7 @@ defmodule RintoPMO.Documents.Document do
   schema "documents" do
     field :archived_at, :utc_datetime_usec
     field :status, Ecto.Enum, values: @statuses, default: :draft
+    field :pin, :boolean, default: false
     field :latest_revision, :any, virtual: true
 
     belongs_to :project, Project
@@ -133,6 +143,16 @@ defmodule RintoPMO.Documents.Document do
     |> change()
     |> add_error(:status, "a #{status} document cannot be filed as a work breakdown")
   end
+
+  @doc false
+  def pin_changeset(%__MODULE__{pin: true} = document), do: change(document)
+
+  def pin_changeset(%__MODULE__{} = document), do: change(document, pin: true)
+
+  @doc false
+  def unpin_changeset(%__MODULE__{pin: false} = document), do: change(document)
+
+  def unpin_changeset(%__MODULE__{} = document), do: change(document, pin: false)
 
   defp nest_initial_revision(attrs) when is_map(attrs) do
     attrs = stringify_keys(attrs)

@@ -59,7 +59,11 @@ defmodule RintoPMO.Documents do
   @behaviour RintoPMO.Documents.Behaviour
 
   @doc """
-  Lists non-archived documents with their latest revision, newest first.
+  Lists non-archived documents with their latest revision.
+
+  Pinned documents come first; within each group, newest first. `pin` is a
+  person's bookmark, not a filter -- an absent key still returns both, because
+  a list that hid unpinned documents would hide nearly everything.
 
   `filter` accepts `:project` -- a project id, or `:unassigned` for documents
   belonging to none -- and `:status`. An absent key filters nothing, which is
@@ -76,7 +80,7 @@ defmodule RintoPMO.Documents do
     |> join(:inner, [document: document], revision in subquery(Revisions.latest()),
       on: revision.document_id == document.id
     )
-    |> order_by([_document, revision], desc: revision.id)
+    |> order_by([document, revision], desc: document.pin, desc: revision.id)
     |> select([document, revision], {document, revision})
     |> Repo.all()
     |> Enum.map(fn {document, revision} ->
@@ -236,6 +240,34 @@ defmodule RintoPMO.Documents do
   def formalize_document(%Document{} = document) do
     document
     |> Document.formalize_changeset()
+    |> Repo.update()
+  end
+
+  @doc """
+  Idempotently pins a document so listings keep it at the front.
+
+  A person's bookmark, not a judgement about the content: pinning does not
+  adopt the document, unpinning does not archive it, and nothing about the
+  revision history moves. Reachable only over HTTP, with no counterpart in
+  the agent CLI -- the same rule `formalize_document/1` follows.
+  """
+  @impl true
+  def pin_document(%Document{} = document) do
+    document
+    |> Document.pin_changeset()
+    |> Repo.update()
+  end
+
+  @doc """
+  Idempotently clears a document's pin.
+
+  The mirror of `pin_document/1`. The document goes back to sorting with
+  everything else; nothing else about it changes.
+  """
+  @impl true
+  def unpin_document(%Document{} = document) do
+    document
+    |> Document.unpin_changeset()
     |> Repo.update()
   end
 

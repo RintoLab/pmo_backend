@@ -126,6 +126,10 @@ defmodule RintoPMO.Documents.Behaviour do
               {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
   @callback formalize_document(Document.t()) ::
               {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
+  @callback pin_document(Document.t()) ::
+              {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
+  @callback unpin_document(Document.t()) ::
+              {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
 
   @callback list_revisions(Document.t()) :: [DocumentRevision.t()]
   @callback get_revision!(Document.t(), UUIDv7.t()) :: DocumentRevision.t()
