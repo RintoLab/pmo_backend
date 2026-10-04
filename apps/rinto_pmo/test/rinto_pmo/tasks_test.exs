@@ -145,10 +145,36 @@ defmodule RintoPMO.TasksTest do
     test "sorting by plan is the order the board fills a week in" do
       project = insert(:project)
 
-      later = insert(:task, project: project, priority: 2, planned_start_on: ~D[2026-09-09])
-      sooner = insert(:task, project: project, priority: 2, planned_start_on: ~D[2026-09-07])
-      first = insert(:task, project: project, priority: 1, planned_start_on: ~D[2026-09-11])
-      backlog = insert(:task, project: project, priority: 3)
+      # UUIDv7 random bits need not increase within one millisecond. Give the
+      # fixtures a known ID order instead of relying on insertion timing.
+      [later_id, sooner_id, first_id, backlog_id] =
+        Enum.sort(for _ <- 1..4, do: UUIDv7.generate())
+
+      later =
+        insert(:task,
+          id: later_id,
+          project: project,
+          priority: 2,
+          planned_start_on: ~D[2026-09-09]
+        )
+
+      sooner =
+        insert(:task,
+          id: sooner_id,
+          project: project,
+          priority: 2,
+          planned_start_on: ~D[2026-09-07]
+        )
+
+      first =
+        insert(:task,
+          id: first_id,
+          project: project,
+          priority: 1,
+          planned_start_on: ~D[2026-09-11]
+        )
+
+      backlog = insert(:task, id: backlog_id, project: project, priority: 3)
 
       assert [later.id, sooner.id, first.id, backlog.id] == ids(Tasks.list_tasks(project, %{}))
 
@@ -1389,11 +1415,9 @@ defmodule RintoPMO.TasksTest do
 
       [_, first, second, _, third] = filed
 
-      # Descriptions keep the escaping, and must: they are Markdown -- the
-      # lists in them do not render otherwise -- so `document\_id` is how you
-      # write a literal underscore. Stripping it here to match the title would
-      # turn somebody's `_x_` into emphasis they never asked for.
-      assert first.description =~ "- document\\_id、actor\\_id、content 非空"
+      # Intraword underscores may be emitted with or without escapes. What
+      # matters is that the description still renders a literal list item.
+      assert MDEx.to_html!(first.description) =~ "<li>document_id、actor_id、content 非空</li>"
       assert first.description =~ "验收：迁移 up/down 可往返。"
       assert second.description =~ "唯一约束生效"
       assert third.description =~ "取最大 position + 1"

@@ -92,6 +92,9 @@ defmodule RintoPMOWeb.Router do
       param: "slug" do
       resources "/repos", ProjectRepoController, only: [:index, :show, :create, :update, :delete]
 
+      resources "/requirements", RequirementController,
+        only: [:index, :show, :create, :update, :delete]
+
       # Where a branch of this repository is on this machine, cloned or fetched
       # first if it is not there or has gone stale. The only door to the
       # workspace: nothing else tells a caller a path.

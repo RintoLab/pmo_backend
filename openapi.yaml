@@ -51,6 +51,8 @@ tags:
     description: Projects and their archive lifecycle.
   - name: Project Repositories
     description: Read-only Git repositories scoped to a project.
+  - name: Requirements
+    description: Project-scoped development requirements. Repository scope is derived from tasks.
   - name: Documents
     description: Top-level, block-based documents and their immutable revision history.
   - name: Annotations
@@ -676,6 +678,145 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
+  /projects/{slug}/requirements:
+    parameters:
+      - $ref: "#/components/parameters/ProjectSlug"
+    get:
+      tags: [Requirements]
+      operationId: listRequirements
+      summary: List unarchived requirements in a project
+      description: Newest first. Archived projects remain readable.
+      responses:
+        "200":
+          description: Requirement list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Requirements]
+      operationId: createRequirement
+      summary: Create a requirement draft
+      description: >-
+        The project comes from the path and must be active. No repository
+        association is created. Status always starts as draft. Supplying
+        project_id, status or archived_at in the body returns 422.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequirementCreateInput"
+      responses:
+        "201":
+          description: Created requirement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /projects/{slug}/requirements/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectSlug"
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Requirement UUIDv7. A requirement in another project returns 404.
+    get:
+      tags: [Requirements]
+      operationId: getRequirement
+      summary: Read a requirement, including archived history
+      responses:
+        "200":
+          description: Requirement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Requirements]
+      operationId: updateRequirement
+      summary: Edit requirement draft metadata
+      description: >-
+        Only unarchived drafts in active projects can be edited. Both PUT and
+        PATCH update only supplied fields. Project and business status are not
+        writable. Archived or non-draft requirements return 422.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequirementUpdateInput"
+      responses:
+        "200":
+          description: Updated requirement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      tags: [Requirements]
+      operationId: replaceRequirementMetadata
+      summary: Edit requirement draft metadata
+      description: >-
+        Only unarchived drafts in active projects can be edited. Both PUT and
+        PATCH update only supplied fields. Project and business status are not
+        writable. Archived or non-draft requirements return 422.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequirementUpdateInput"
+      responses:
+        "200":
+          description: Updated requirement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [Requirements]
+      operationId: archiveRequirement
+      summary: Archive a requirement
+      description: >-
+        Idempotent soft archive. Does not change business status or delete
+        content, the project or its repositories. Direct GET remains available.
+      responses:
+        "204":
+          description: Archived
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /projects/{slug}/tasks:
     parameters:
       - $ref: "#/components/parameters/ProjectSlug"
@@ -4797,6 +4938,78 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Actor"
+      additionalProperties: false
+    Requirement:
+      type: object
+      required: [id, project_id, title, description, status, archived_at, inserted_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          description: Requirement description, optionally containing Markdown. May be empty.
+        status:
+          type: string
+          enum: [draft, active, completed, cancelled]
+          description: Workflow-owned business status. Only draft creation is currently exposed.
+        archived_at:
+          type: string
+          format: date-time
+          nullable: true
+        inserted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    RequirementCreateInput:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Trimmed on write; whitespace-only titles are invalid.
+        description:
+          type: string
+          default: ""
+      additionalProperties: false
+    RequirementUpdateInput:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          description: Set to an empty string to clear. Null is invalid.
+      additionalProperties: false
+    RequirementResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Requirement"
+      additionalProperties: false
+    RequirementListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Requirement"
       additionalProperties: false
     ProjectStatus:
       type: string
