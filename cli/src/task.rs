@@ -483,6 +483,7 @@ fn task_detail(task: &Value) -> String {
         ("id", text(task, "id", "?")),
         ("title", text(task, "title", "(untitled)")),
         ("project_id", text(task, "project_id", "?")),
+        ("requirement_id", text(task, "requirement_id", "?")),
         ("kind", text(task, "kind", "?")),
         ("status", text(task, "status", "?")),
         ("assignee_id", text(task, "assignee_id", "none")),
@@ -870,7 +871,8 @@ mod tests {
         #[test]
         fn create_posts_the_file_under_the_project() {
             let server = StubServer::start(vec![Reply::json(201, json!({"data": {"id": "new"}}))]);
-            let input = json_file(json!({"title": "Wire it up", "priority": 2}));
+            let input =
+                json_file(json!({"title": "Wire it up", "description": "Use the existing API"}));
 
             create(
                 &client(&server),
@@ -886,7 +888,7 @@ mod tests {
             assert_eq!(requests[0].target, "/api/v1/projects/demo/tasks");
             assert_eq!(
                 requests[0].json(),
-                json!({"title": "Wire it up", "priority": 2})
+                json!({"title": "Wire it up", "description": "Use the existing API"})
             );
         }
 

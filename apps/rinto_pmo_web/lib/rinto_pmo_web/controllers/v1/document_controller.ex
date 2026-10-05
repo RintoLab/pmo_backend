@@ -2,6 +2,7 @@ defmodule RintoPMOWeb.V1.DocumentController do
   use RintoPMOWeb, :controller
 
   alias RintoPMO.Documents.Document
+  alias RintoPMO.Documents.Scope
   alias RintoPMO.Utils
   alias RintoPMOWeb.Plugs.ActorToken
   alias RintoPMOWeb.V1.TaskJSON
@@ -9,9 +10,19 @@ defmodule RintoPMOWeb.V1.DocumentController do
   @statuses Map.new(Document.statuses(), &{Atom.to_string(&1), &1})
 
   def index(conn, params) do
-    with {:ok, filter} <- document_filter(params) do
+    with {:ok, filter} <- document_filter(params),
+         {:ok, scope} <- Scope.parse(params) do
+      filter = Map.merge(filter, scope)
       documents = Utils.module(:documents).list_documents(filter)
       render(conn, :index, documents: documents)
+    end
+  end
+
+  def update(conn, %{"id" => id} = params) do
+    context = Utils.module(:documents)
+
+    with {:ok, document} <- context.update_document_metadata(context.get_document!(id), params) do
+      render(conn, :show, document: document)
     end
   end
 

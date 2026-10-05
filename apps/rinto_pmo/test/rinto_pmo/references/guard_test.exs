@@ -42,7 +42,7 @@ defmodule RintoPMO.References.GuardTest do
       second = absent()
 
       assert {:error, :unresolvable_references, %{uris: uris}} =
-               Tasks.create_task(insert(:project), %{
+               create_task(insert(:project), %{
                  title: "甲",
                  description: "见 [一](#{first}) 和 [二](#{second})"
                })
@@ -69,7 +69,7 @@ defmodule RintoPMO.References.GuardTest do
                  content: "见 [x](#{absent()})"
                })
 
-      {:ok, task} = Tasks.create_task(insert(:project), %{title: "甲"})
+      {:ok, task} = create_task(insert(:project), %{title: "甲"})
 
       assert {:error, :unresolvable_references, _} =
                Tasks.update_task(task, %{description: "见 [x](#{absent()})"})
@@ -128,7 +128,7 @@ defmodule RintoPMO.References.GuardTest do
     # type a breaking change for text already written.
     test "a type this build does not know" do
       assert {:ok, _task} =
-               Tasks.create_task(insert(:project), %{
+               create_task(insert(:project), %{
                  title: "甲",
                  description: "见 [情报](rinto://intel/whatever)"
                })
@@ -139,7 +139,7 @@ defmodule RintoPMO.References.GuardTest do
     # syntax rather than of references.
     test "a malformed rinto URI" do
       assert {:ok, _task} =
-               Tasks.create_task(insert(:project), %{
+               create_task(insert(:project), %{
                  title: "甲",
                  description: "见 [坏的](rinto://task/not-a-uuid) 和 [更坏的](rinto://block:xyz)"
                })
@@ -147,7 +147,7 @@ defmodule RintoPMO.References.GuardTest do
 
     test "an address inside a code block, which is content rather than a link" do
       assert {:ok, _task} =
-               Tasks.create_task(insert(:project), %{
+               create_task(insert(:project), %{
                  title: "甲",
                  description: "```\n[x](#{absent()})\n```"
                })
@@ -157,7 +157,7 @@ defmodule RintoPMO.References.GuardTest do
       insert(:project, slug: "infra")
 
       assert {:ok, _task} =
-               Tasks.create_task(insert(:project), %{
+               create_task(insert(:project), %{
                  title: "甲",
                  description: "归 [基础设施](rinto://project/infra) 管"
                })
@@ -184,12 +184,16 @@ defmodule RintoPMO.References.GuardTest do
       uri = "rinto://task/#{task.id}"
 
       {:ok, edited} =
-        Tasks.create_task(insert(:project), %{title: "甲", description: "见 [x](#{uri})"})
+        create_task(insert(:project), %{title: "甲", description: "见 [x](#{uri})"})
 
       {:ok, _deleted} = Tasks.delete_task(task)
 
       assert {:error, :unresolvable_references, %{uris: [^uri]}} =
                Tasks.update_task(edited, %{description: "见 [x](#{uri}) 还有新的一句"})
     end
+  end
+
+  defp create_task(project, attrs) do
+    Tasks.create_task(project, Map.put_new(attrs, :requirement_id, task_requirement(project).id))
   end
 end

@@ -54,6 +54,7 @@ defmodule RintoPMO.Search do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.Documents.Revisions
+  alias RintoPMO.Documents.Scope
   alias RintoPMO.Projects.Project
   alias RintoPMO.References
   alias RintoPMO.References.Reference
@@ -482,6 +483,8 @@ defmodule RintoPMO.Search do
   # Scope narrows before distance does, which is the filter that matters first:
   # finding the right thing is usually a matter of looking in the right place.
   defp scoped(query, opts, on) do
+    query = if on == :document, do: Scope.apply(query, opts), else: query
+
     case {Keyword.get(opts, :project_id), on} do
       {nil, _on} -> query
       {_project_id, :none} -> query

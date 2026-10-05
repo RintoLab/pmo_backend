@@ -11,7 +11,11 @@ defmodule RintoPMO.AIRolesTest do
 
   describe "list_roles/0" do
     test "answers with every job, unconfigured ones included" do
-      assert AIRoles.list_roles() == %{"topic_naming" => nil, "task_estimation" => nil}
+      assert AIRoles.list_roles() == %{
+               "topic_naming" => nil,
+               "task_estimation" => nil,
+               "requirement_prioritization" => nil
+             }
     end
 
     test "carries the whole configuration of each job that has one" do
@@ -81,7 +85,12 @@ defmodule RintoPMO.AIRolesTest do
 
     test "refuses a job the system does not have" do
       assert AIRoles.put_role("chief_of_vibes", @configuration) == {:error, :not_found}
-      assert AIRoles.list_roles() == %{"topic_naming" => nil, "task_estimation" => nil}
+
+      assert AIRoles.list_roles() == %{
+               "topic_naming" => nil,
+               "task_estimation" => nil,
+               "requirement_prioritization" => nil
+             }
     end
 
     # The key comes from the URL; a body that also carries one cannot move the

@@ -10,10 +10,41 @@ defmodule RintoPMO.SearchTest do
   alias RintoPMO.Documents
   alias RintoPMO.Documents.DocumentBlock
   alias RintoPMO.References
+  alias RintoPMO.Requirements
   alias RintoPMO.Search
   alias RintoPMO.Tasks
 
   setup :verify_on_exit!
+
+  test "document, block and annotation search exclude requirement content unless scoped" do
+    project = insert(:project)
+    {:ok, requirement} = Requirements.create_requirement(project, %{title: "Feature"})
+    public = document_with("## Public\n\nShared knowledge", project_id: project.id)
+    scoped = document_with("## Spec\n\nFeature details", project_id: project.id)
+
+    {:ok, _} =
+      Documents.update_document_metadata(scoped, %{kind: "spec", requirement_id: requirement.id})
+
+    for document <- [public, scoped] do
+      {:ok, _} =
+        Annotations.create_annotation(document, %{actor_id: insert(:actor).id, content: "Note"})
+    end
+
+    embed_everything()
+
+    for type <- ~w(document block annotation) do
+      for {filters, expected} <- [
+            {[], [public.id]},
+            {[requirement_id: requirement.id], [scoped.id]},
+            {[requirement_id: "all", kind: :spec], [scoped.id]},
+            {[requirement_id: "all"], [public.id, scoped.id]}
+          ] do
+        expect_pipeline()
+        assert {:ok, results} = Search.search("content", [type: type] ++ filters)
+        assert Enum.sort(Enum.map(results, & &1.document_id)) == Enum.sort(expected)
+      end
+    end
+  end
 
   defp vector, do: List.duplicate(0.1, 1024)
 

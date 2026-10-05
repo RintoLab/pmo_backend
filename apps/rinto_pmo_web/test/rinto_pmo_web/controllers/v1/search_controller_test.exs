@@ -3,6 +3,35 @@ defmodule RintoPMOWeb.V1.SearchControllerTest do
 
   alias RintoPMO.SearchMock
 
+  test "document scope reaches search and cannot be used for other resource types", %{conn: conn} do
+    requirement_id = UUIDv7.generate()
+
+    expect(SearchMock, :search, fn "login", opts ->
+      assert opts[:kind] == :spec
+      assert opts[:requirement_id] == requirement_id
+      {:ok, []}
+    end)
+
+    assert json_response(
+             get(
+               conn,
+               ~p"/api/v1/search?q=login&type=block&kind=spec&requirement_id=#{requirement_id}"
+             ),
+             200
+           )["data"] == []
+
+    for params <- [
+          %{type: "task", kind: "spec"},
+          %{type: "project", requirement_id: "all"},
+          %{type: "document", kind: "prd"},
+          %{type: "annotation", requirement_id: "bad"}
+        ] do
+      assert json_response(get(conn, ~p"/api/v1/search", Map.put(params, :q, "login")), 400)[
+               "error"
+             ] == "bad_request"
+    end
+  end
+
   defp result(fields) do
     Map.merge(
       %{

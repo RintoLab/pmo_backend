@@ -82,7 +82,8 @@ defmodule RintoPMO.Tasks.Task do
   the packer, not a row. Nothing about it is scoped to a project either,
   because one person's week spans every project they are working in.
 
-  `priority` is 1 (highest) to 5, defaulting to 3, and never null: "no opinion"
+  `priority` is read from the owning requirement, 1 (highest) to 5. It is
+  virtual and cannot be written on a task. The requirement defaults to 3: "no opinion"
   is "normal". It decides who gets cut when a week is over-filled, so it sorts
   ahead of everything else -- work carried over from last week has no claim to
   jump the queue.
@@ -190,9 +191,8 @@ defmodule RintoPMO.Tasks.Task do
     # moment somebody acts on it. Not castable; see `put_first_planned_on/1`.
     field :first_planned_on, :date
 
-    # 1 highest, 3 normal. Not null: "no opinion" is "normal", and unlike an
-    # estimate a missing priority says nothing worth counting.
-    field :priority, :integer, default: 3
+    # Filled from the requirement at read time, never copied into this table.
+    field :priority, :integer, virtual: true
     field :estimate_optimistic, :integer
     field :estimate_likely, :integer
     field :estimate_pessimistic, :integer
@@ -236,6 +236,7 @@ defmodule RintoPMO.Tasks.Task do
     field :embedding, Pgvector.Ecto.Vector
 
     belongs_to :project, Project
+    belongs_to :requirement, RintoPMO.Requirements.Requirement
     belongs_to :document, Document
     belongs_to :assignee, Actor
     belongs_to :parent, __MODULE__
@@ -277,6 +278,15 @@ defmodule RintoPMO.Tasks.Task do
   """
   @spec priorities() :: [pos_integer()]
   def priorities, do: @priorities
+
+  @doc "Returns tasks with the current priority of their requirement."
+  def with_priority(query \\ __MODULE__) do
+    import Ecto.Query
+
+    from task in query,
+      join: requirement in assoc(task, :requirement),
+      select_merge: %{priority: requirement.priority}
+  end
 
   @doc """
   The largest a single three-point estimate may be, in minutes.
@@ -338,7 +348,7 @@ defmodule RintoPMO.Tasks.Task do
   @doc false
   def creation_changeset(%__MODULE__{} = task \\ %__MODULE__{}, attrs) do
     task
-    |> cast(attrs, [:kind])
+    |> cast(attrs, [:kind, :requirement_id])
     |> common_changes(attrs)
     |> Embeddings.invalidate([:title, :description])
   end
@@ -348,7 +358,15 @@ defmodule RintoPMO.Tasks.Task do
     task
     |> change()
     |> common_changes(attrs)
+    |> reject_input(attrs, :requirement_id, "cannot be changed")
     |> Embeddings.invalidate([:title, :description])
+  end
+
+  @doc false
+  def split_child_changeset(task, attrs) do
+    task
+    |> changeset(attrs)
+    |> reject_input(attrs, :parent_id, "is inherited from the split task")
   end
 
   defp common_changes(chset, attrs) do
@@ -365,16 +383,16 @@ defmodule RintoPMO.Tasks.Task do
       :estimate_pessimistic,
       :difficulty,
       :actual_minutes,
-      :planned_start_on,
-      :priority
+      :planned_start_on
     ])
-    |> validate_required([:title, :kind, :priority])
+    |> validate_required([:title, :kind, :requirement_id])
     |> validate_length(:title, min: 1, max: 255)
-    |> validate_inclusion(:priority, @priorities)
+    |> reject_input(attrs, :priority, "is inherited from the requirement")
     |> put_first_planned_on()
     |> reject_work_on_summary()
     |> put_assigned_at()
     |> foreign_key_constraint(:project_id)
+    |> foreign_key_constraint(:requirement_id)
     |> foreign_key_constraint(:document_id)
     |> foreign_key_constraint(:parent_id)
     |> foreign_key_constraint(:assignee_id)
@@ -382,10 +400,12 @@ defmodule RintoPMO.Tasks.Task do
       name: :tasks_summary_holds_no_work_check,
       message: "a summary node cannot hold work"
     )
-    |> check_constraint(:priority,
-      name: :tasks_priority_check,
-      message: "is invalid"
-    )
+  end
+
+  defp reject_input(changeset, attrs, field, message) do
+    if Map.has_key?(attrs, field) or Map.has_key?(attrs, Atom.to_string(field)),
+      do: add_error(changeset, field, message),
+      else: changeset
   end
 
   @doc false

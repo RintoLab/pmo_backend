@@ -305,6 +305,59 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
     end
   end
 
+  describe "build/2 with a requirement ref" do
+    test "reads the current requirement and rewrites its mention without expanding descendants" do
+      project = insert(:project)
+      root = insert(:requirement, project: project)
+
+      requirement =
+        insert(:requirement,
+          project: project,
+          parent: root,
+          title: "短信登录",
+          description: "以验证码完成登录",
+          priority: 2
+        )
+
+      insert(:requirement,
+        project: project,
+        parent: requirement,
+        description: "CHILD_NOT_EXPANDED"
+      )
+
+      ref = %{"type" => "requirement", "id" => requirement.id}
+
+      assert {:ok, %{message: message, images: []}} =
+               PromptBuilder.build("分析 [requirement](reference#0)", [ref, ref])
+
+      assert message =~ ~s(<requirement ref="1" id="#{requirement.id}" title="短信登录")
+      assert message =~ ~s(project_slug="#{project.slug}")
+      assert message =~ ~s(parent_id="#{root.id}")
+      assert message =~ ~s(priority="2")
+      assert message =~ "以验证码完成登录"
+      assert message =~ "[短信登录](ref#1)"
+      assert length(Regex.scan(~r/<requirement /, message)) == 1
+      refute message =~ "CHILD_NOT_EXPANDED"
+
+      RintoPMO.Requirements.update_requirement(requirement, %{description: "更新后的描述"})
+      assert {:ok, %{message: updated}} = PromptBuilder.build("继续", [ref])
+      assert updated =~ "更新后的描述"
+    end
+
+    test "retains archived context and reports missing requirements with the standard ref error" do
+      requirement = insert(:requirement, archived_at: DateTime.utc_now())
+
+      assert {:ok, %{message: message}} =
+               PromptBuilder.build("查看", [%{"type" => "requirement", "id" => requirement.id}])
+
+      assert message =~ ~s(archived="true")
+      id = Ecto.UUID.generate()
+
+      assert {:error, :ref_not_found, %{"refs" => [%{"type" => "requirement", "id" => ^id}]}} =
+               PromptBuilder.build("查看", [%{"type" => "requirement", "id" => id}])
+    end
+  end
+
   describe "build/2 with a task ref" do
     test "renders the task itself and names its spec without expanding it" do
       document = insert(:document)

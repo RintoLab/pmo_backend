@@ -241,6 +241,7 @@ defmodule RintoPMO.Schedule do
       if project_id, do: where(query, [task], task.project_id == ^project_id), else: query
     end)
     |> order_by([task], asc: task.started_at)
+    |> Task.with_priority()
     |> Repo.all()
   end
 
@@ -302,6 +303,7 @@ defmodule RintoPMO.Schedule do
     |> where([task], not is_nil(task.planned_start_on))
     |> where([task], not is_nil(task.estimate_optimistic))
     |> where([task], task.planned_start_on <= ^cutoff)
+    |> Task.with_priority()
     |> Repo.all()
   end
 

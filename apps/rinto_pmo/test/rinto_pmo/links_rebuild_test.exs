@@ -59,7 +59,7 @@ defmodule RintoPMO.LinksRebuildTest do
       })
 
     {:ok, _task} =
-      Tasks.create_task(project, %{
+      create_task(project, %{
         title: "甲",
         description: "依赖 [那个](#{uri("task", target.id)})"
       })
@@ -182,5 +182,9 @@ defmodule RintoPMO.LinksRebuildTest do
   test "on an empty system produces an empty index" do
     assert Links.rebuild()["annotation"] == 0
     assert fingerprint() == []
+  end
+
+  defp create_task(project, attrs) do
+    Tasks.create_task(project, Map.put_new(attrs, :requirement_id, task_requirement(project).id))
   end
 end

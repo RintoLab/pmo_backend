@@ -87,6 +87,14 @@ defmodule RintoPMOWeb.Router do
     post "/ai_auth/openai_codex/cancel", CodexAuthController, :cancel
     delete "/ai_auth/openai_codex", CodexAuthController, :logout
 
+    get "/requirements", RequirementController, :overview
+    post "/requirements", RequirementController, :create_unscoped
+    post "/requirements/estimate", RequirementController, :estimate
+    post "/requirements/:id/prioritize", RequirementController, :prioritize
+
+    get "/requirements/:id", RequirementController, :show_by_id
+    patch "/requirements/:id", RequirementController, :update_by_id
+
     resources "/projects", ProjectController,
       only: [:index, :show, :create, :update, :delete],
       param: "slug" do
@@ -162,6 +170,8 @@ defmodule RintoPMOWeb.Router do
     # on its way past. An action on the document because that is what it
     # consumes -- it comes out `applied` and cannot be filed a second time.
     post "/documents/:id/file_breakdown", DocumentController, :file_breakdown
+
+    patch "/documents/:id", DocumentController, :update
 
     resources "/documents", DocumentController, only: [:index, :show, :create, :delete] do
       resources "/revisions", DocumentRevisionController,

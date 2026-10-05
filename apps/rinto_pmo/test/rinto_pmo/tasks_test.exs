@@ -20,7 +20,7 @@ defmodule RintoPMO.TasksTest do
       project = insert(:project)
 
       assert {:ok, %Task{} = task} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Wire the claim endpoint",
                  "description" => "Follow docs/api-frontend-guide.md"
                })
@@ -39,7 +39,7 @@ defmodule RintoPMO.TasksTest do
       actor = insert(:actor)
 
       assert {:ok, task} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Implement §4",
                  "document_id" => document.id,
                  "assignee_id" => actor.id,
@@ -55,7 +55,7 @@ defmodule RintoPMO.TasksTest do
     test "requires a title" do
       project = insert(:project)
 
-      assert {:error, changeset} = Tasks.create_task(project, %{})
+      assert {:error, changeset} = create_task(project, %{})
       assert "can't be blank" in errors_on(changeset).title
     end
 
@@ -63,7 +63,7 @@ defmodule RintoPMO.TasksTest do
       project = insert(:project)
 
       assert {:error, changeset} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Orphan",
                  "assignee_id" => UUIDv7.generate()
                })
@@ -230,13 +230,13 @@ defmodule RintoPMO.TasksTest do
       second = insert(:task)
       third = insert(:task)
 
-      {:ok, _} = Tasks.add_dependency(second, first.id)
-      {:ok, _} = Tasks.add_dependency(third, second.id)
+      {:ok, one} = Tasks.add_dependency(second, first.id)
+      {:ok, two} = Tasks.add_dependency(third, second.id)
 
-      assert [
-               %{task_id: second.id, depends_on_id: first.id},
-               %{task_id: third.id, depends_on_id: second.id}
-             ] == Tasks.list_edges()
+      expected =
+        [one, two] |> Enum.sort_by(& &1.id) |> Enum.map(&Map.take(&1, [:task_id, :depends_on_id]))
+
+      assert Tasks.list_edges() == expected
     end
 
     # An edge reaching out of the project is a real constraint on the work
@@ -573,7 +573,7 @@ defmodule RintoPMO.TasksTest do
       project = insert(:project)
 
       assert {:error, changeset} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "kind" => "summary",
                  "title" => "Chunk",
                  "assignee_id" => insert(:actor).id
@@ -716,7 +716,7 @@ defmodule RintoPMO.TasksTest do
       project = insert(:project)
 
       assert {:ok, task} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Estimated",
                  "estimate" => %{"optimistic" => 120, "likely" => 240, "pessimistic" => 480}
                })
@@ -732,7 +732,7 @@ defmodule RintoPMO.TasksTest do
       project = insert(:project)
 
       assert {:error, :invalid_estimate, %{field: "pessimistic", reason: reason}} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Half",
                  "estimate" => %{"optimistic" => 1, "likely" => 2}
                })
@@ -740,32 +740,32 @@ defmodule RintoPMO.TasksTest do
       assert reason =~ "must be given with"
 
       assert {:error, :invalid_estimate, %{field: "likely", reason: "must be ordered"}} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Backwards",
                  "estimate" => %{"optimistic" => 480, "likely" => 240, "pessimistic" => 600}
                })
 
       assert {:error, :invalid_estimate, %{field: "pessimistic", reason: "must be ordered"}} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Backwards",
                  "estimate" => %{"optimistic" => 1, "likely" => 240, "pessimistic" => 2}
                })
 
       assert {:error, :invalid_estimate, %{field: "optimistic"}} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Negative",
                  "estimate" => %{"optimistic" => -1, "likely" => 2, "pessimistic" => 3}
                })
 
       assert {:error, :invalid_estimate, %{field: "estimate"}} =
-               Tasks.create_task(project, %{"title" => "Wrong shape", "estimate" => 240})
+               create_task(project, %{"title" => "Wrong shape", "estimate" => 240})
     end
 
     test "the raw columns are not writable, only the estimate object is" do
       project = insert(:project)
 
       assert {:ok, task} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Sneaky",
                  "estimate_likely" => 240
                })
@@ -1014,17 +1014,17 @@ defmodule RintoPMO.TasksTest do
       elsewhere = insert(:summary_task)
 
       assert {:error, changeset} =
-               Tasks.create_task(project, %{"title" => "Child", "parent_id" => work.id})
+               create_task(project, %{"title" => "Child", "parent_id" => work.id})
 
       assert "must be a summary node" in errors_on(changeset).parent_id
 
       assert {:error, changeset} =
-               Tasks.create_task(project, %{"title" => "Child", "parent_id" => elsewhere.id})
+               create_task(project, %{"title" => "Child", "parent_id" => elsewhere.id})
 
       assert "belongs to another project" in errors_on(changeset).parent_id
 
       assert {:error, changeset} =
-               Tasks.create_task(project, %{"title" => "Child", "parent_id" => UUIDv7.generate()})
+               create_task(project, %{"title" => "Child", "parent_id" => UUIDv7.generate()})
 
       assert "does not exist" in errors_on(changeset).parent_id
     end
@@ -1433,6 +1433,7 @@ defmodule RintoPMO.TasksTest do
       Documents.create_document(%{
         title: "任务文档",
         project_id: project.id,
+        requirement_id: task_requirement(project).id,
         actor_id: insert(:actor).id,
         markdown: markdown
       })
@@ -1445,20 +1446,20 @@ defmodule RintoPMO.TasksTest do
     test "accepts a Fibonacci story point and refuses anything else" do
       project = insert(:project)
 
-      assert {:ok, task} = Tasks.create_task(project, %{"title" => "Rated", "difficulty" => 5})
+      assert {:ok, task} = create_task(project, %{"title" => "Rated", "difficulty" => 5})
       assert task.difficulty == 5
 
-      assert {:ok, big} = Tasks.create_task(project, %{"title" => "Huge", "difficulty" => 21})
+      assert {:ok, big} = create_task(project, %{"title" => "Huge", "difficulty" => 21})
       assert big.difficulty == 21
 
       assert {:error, :invalid_difficulty, %{field: "difficulty"}} =
-               Tasks.create_task(project, %{"title" => "Off-scale", "difficulty" => 4})
+               create_task(project, %{"title" => "Off-scale", "difficulty" => 4})
 
       assert {:error, :invalid_difficulty, %{field: "difficulty"}} =
-               Tasks.create_task(project, %{"title" => "Past the ceiling", "difficulty" => 34})
+               create_task(project, %{"title" => "Past the ceiling", "difficulty" => 34})
 
       assert {:error, :invalid_difficulty, %{field: "difficulty"}} =
-               Tasks.create_task(project, %{"title" => "Zero", "difficulty" => 0})
+               create_task(project, %{"title" => "Zero", "difficulty" => 0})
     end
 
     test "an explicit null clears the rating" do
@@ -1506,12 +1507,12 @@ defmodule RintoPMO.TasksTest do
       project = insert(:project)
 
       assert {:ok, task} =
-               Tasks.create_task(project, %{"title" => "Timed", "actual_minutes" => 90})
+               create_task(project, %{"title" => "Timed", "actual_minutes" => 90})
 
       assert task.actual_minutes == 90
 
       assert {:error, :invalid_actual, %{field: "actual_minutes"}} =
-               Tasks.create_task(project, %{"title" => "Negative", "actual_minutes" => -1})
+               create_task(project, %{"title" => "Negative", "actual_minutes" => -1})
 
       chunk = insert(:summary_task)
 
@@ -1915,7 +1916,7 @@ defmodule RintoPMO.TasksTest do
       ceiling = Task.estimate_ceiling()
 
       assert {:error, :invalid_estimate, %{field: "pessimistic", reason: reason}} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "A week of work in one row",
                  "estimate" => %{
                    "optimistic" => 60,
@@ -1933,7 +1934,7 @@ defmodule RintoPMO.TasksTest do
       ceiling = Task.estimate_ceiling()
 
       assert {:ok, task} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "A full day",
                  "estimate" => %{
                    "optimistic" => ceiling,
@@ -1951,15 +1952,15 @@ defmodule RintoPMO.TasksTest do
       project = insert(:project)
       day = ~D[2026-09-07]
 
-      assert {:ok, task} = Tasks.create_task(project, %{"title" => "Planned"})
+      assert {:ok, task} = create_task(project, %{"title" => "Planned"})
       assert task.planned_start_on == nil
       assert task.priority == 3
 
       assert {:ok, task} =
-               Tasks.update_task(task, %{"planned_start_on" => day, "priority" => 1})
+               Tasks.update_task(task, %{"planned_start_on" => day})
 
       assert task.planned_start_on == day
-      assert task.priority == 1
+      assert task.priority == 3
 
       assert {:ok, task} = Tasks.update_task(task, %{"planned_start_on" => nil})
       assert task.planned_start_on == nil
@@ -1968,7 +1969,7 @@ defmodule RintoPMO.TasksTest do
     test "the first plan is recorded once and survives every reschedule" do
       project = insert(:project)
 
-      assert {:ok, task} = Tasks.create_task(project, %{"title" => "Planned"})
+      assert {:ok, task} = create_task(project, %{"title" => "Planned"})
       assert task.first_planned_on == nil
 
       assert {:ok, task} =
@@ -1997,7 +1998,7 @@ defmodule RintoPMO.TasksTest do
       project = insert(:project)
 
       assert {:ok, task} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Planned",
                  "planned_start_on" => ~D[2026-09-07]
                })
@@ -2010,7 +2011,7 @@ defmodule RintoPMO.TasksTest do
       project = insert(:project)
 
       assert {:ok, task} =
-               Tasks.create_task(project, %{
+               create_task(project, %{
                  "title" => "Planned",
                  "planned_start_on" => ~D[2026-09-07],
                  "first_planned_on" => ~D[2020-01-01]
@@ -2025,7 +2026,7 @@ defmodule RintoPMO.TasksTest do
       project = insert(:project)
 
       {:ok, task} =
-        Tasks.create_task(project, %{"title" => "Chunk", "planned_start_on" => ~D[2026-09-07]})
+        create_task(project, %{"title" => "Chunk", "planned_start_on" => ~D[2026-09-07]})
 
       assert {:ok, cover} =
                Tasks.split_task(task, [
@@ -2040,11 +2041,11 @@ defmodule RintoPMO.TasksTest do
       assert listed.planned_start_on == ~D[2026-09-14]
     end
 
-    test "refuses a priority outside the five levels" do
+    test "refuses independently assigned task priority" do
       project = insert(:project)
 
-      assert {:error, changeset} = Tasks.create_task(project, %{"title" => "X", "priority" => 6})
-      assert %{priority: ["is invalid"]} = errors_on(changeset)
+      assert {:error, changeset} = create_task(project, %{"title" => "X", "priority" => 6})
+      assert %{priority: ["is inherited from the requirement"]} = errors_on(changeset)
     end
 
     test "a summary node cannot be scheduled" do
@@ -2115,5 +2116,10 @@ defmodule RintoPMO.TasksTest do
     |> Tasks.list_tasks(%{})
     |> Enum.find(&(&1.id == id))
     |> Map.fetch!(:status)
+  end
+
+  defp create_task(project, attrs) do
+    requirement = task_requirement(project)
+    RintoPMO.Tasks.create_task(project, Map.put_new(attrs, "requirement_id", requirement.id))
   end
 end

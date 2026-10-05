@@ -1,18 +1,20 @@
 defmodule RintoPMO.AIRoles do
   @moduledoc """
-  The two pieces of work that happen automatically, and how each calls a model.
+  Background AI work and the model configuration for each job.
 
-  Not a catalogue of system-wide roles. There are exactly two jobs here, and
+  Not a catalogue of system-wide roles. These jobs share a narrow boundary, and
   what they have in common is narrow and worth stating: **neither happens
   inside a conversation**. Everything else a model does in this system is asked
   for by somebody who is talking to it, and takes its configuration from the
-  topic they are talking in. These two have nobody standing there.
+  topic they are talking in.
 
     * `"topic_naming"` -- a topic gets a title from its first message. Nobody
       asks for it; it happens because a topic without a name is unusable.
     * `"task_estimation"` -- a task is rated for difficulty, or given a
       three-point estimate. Asked for, but in bulk and against a subtree, and
       what comes back is numbers written into columns and fed to calibration.
+    * `"requirement_prioritization"` -- sets a single requirement priority
+      directly; users can correct it manually.
 
   The jobs that used to be here -- breaking a document down, answering an
   annotation, reviewing a set of documents -- were none of that. Each was one
@@ -33,7 +35,7 @@ defmodule RintoPMO.AIRoles do
   kind of thing to be a configuration. What is left is one validation -- the
   three model fields arrive together -- and it lives on the changeset.
 
-  ## An empty role is an ordinary state, and the two readers differ
+  ## An empty role is an ordinary state, and readers differ
 
   A role may never have been configured, and may be emptied at any time with
   `delete_role/1`. What that means is the reader's to decide, and they answer
@@ -43,7 +45,8 @@ defmodule RintoPMO.AIRoles do
       configuration. Naming happens inside a conversation, so there is always
       another configuration right there to inherit -- one whose credentials are
       known to work, since the person is already talking through it.
-    * `RintoPMO.Tasks` refuses. Estimation belongs to no conversation, so there
+    * `RintoPMO.Tasks` and `RintoPMO.Requirements.Prioritization` refuse.
+      Estimation and prioritization belong to no conversation, so there
       is nothing to fall back *to*, and picking a provider off the catalogue
       would be this module inventing an answer nobody gave it.
 
@@ -68,7 +71,7 @@ defmodule RintoPMO.AIRoles do
   """
   @type key :: String.t()
 
-  @keys ~w(topic_naming task_estimation)
+  @keys ~w(topic_naming task_estimation requirement_prioritization)
 
   @doc """
   The jobs that exist.

@@ -135,11 +135,12 @@ away anything written there. On a developer's machine the repository to be in is
 | `config` | `init`, `show` |
 | `project` | `list`, `show` -- repositories, directory names, git URLs |
 | `repo` | `checkout` -- puts a branch on the *server's* disk and says where; only useful there |
+| `requirement` | `list`, `show`, `create`, `update`, `estimate` -- description, priority, workload and documents |
 | `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `split`, `start`, `complete`, `cancel`, `reopen`, `delete` |
 | `schedule` | one command; what each week holds and what did not fit in it |
 | `history` | one command; what was actually worked, with the plan beside it |
 | `calibration` | one command; what the estimates turned out to be worth |
-| `doc` | `create`, `show`, `list`, `propose`, `proposals`, `proposal`, `annotations`, `annotation`, `backlinks`, `contentions`, `rebase` |
+| `doc` | `create`, `show`, `list`, `classify`, `propose`, `proposals`, `proposal`, `annotations`, `annotation`, `backlinks`, `contentions`, `rebase` |
 | `search` | one command; finds things by meaning and answers with `rinto://` addresses |
 | `skill` | `list`, `install`, `sync` -- see "Skills" below |
 | `update` | self-update from the Gitea package registry |
@@ -297,3 +298,123 @@ deploy installs the CLI onto the server's own host. A push that leaves
 `cli/VERSION` alone skips every CLI job and the Server still releases; a CLI job
 that *fails* holds the Server back, since `latest` would still be the previous
 CLI.
+
+## Requirements
+
+AI can set one requirement's priority directly:
+
+```sh
+rinto-pmo requirement prioritize <UUID> --wait
+rinto-pmo requirement update <UUID> --priority 2
+```
+
+The `requirement_prioritization` AI role must be configured. Only the named
+requirement is updated; children retain their own priorities. There is no review
+or apply step. Priorities use 1–5, with 1 highest; the UI labels these P0–P4.
+Task priorities follow their owning requirement. Manual changes while the job is
+queued or running take precedence over its result. `--wait` polls the shared
+jobs endpoint, then displays the current requirement. You can always correct a
+priority with `update --priority`.
+
+Requirements belong to a Project (the business system); repositories are the
+codebases that implement its work. The requirement description carries the PRD
+content. Child requirements have their own descriptions and documents.
+
+```sh
+rinto-pmo requirement list
+rinto-pmo requirement list --project pmo
+rinto-pmo requirement list --parent-id <PARENT_UUID>
+rinto-pmo requirement list --project pmo --parent-id all
+rinto-pmo requirement show <UUID>
+rinto-pmo requirement create --project pmo --title "账号体系升级" --body requirement.md
+rinto-pmo requirement create --parent-id <PARENT_UUID> --title "短信登录" --body child.md
+rinto-pmo requirement update <UUID> --body requirement.md
+rinto-pmo requirement update <UUID> --title "新标题"
+rinto-pmo doc show <DOCUMENT_UUID>
+```
+
+Lists default to unarchived roots; `--parent-id` selects direct children,
+`none` for roots, or `all` for every level, with or without a project filter. The cross-project
+overview includes project slugs, even for archived projects. `show` also reports
+archive state, child counts and directly associated document summaries. These commands work both inside and outside
+topics and require no actor id.
+
+Creation requires exactly one of `--project` (a root) or `--parent-id` (a child
+that inherits its parent's project). Existing requirements are read and updated
+by ID alone. Descriptions are read verbatim from UTF-8 files. Creation may omit `--body` for
+an empty description. Updates replace only supplied fields; an empty body file
+clears the description. The server refuses edits to archived or non-draft
+requirements and to requirements in archived projects. Project, parent and
+workflow status cannot be changed through `update`.
+
+`requirement show` includes every kind of directly associated, unarchived document,
+with its ID, title, kind and status. It does not fetch document bodies or merge
+ancestor or descendant documents. Use `doc show <DOCUMENT_UUID>` for content,
+and `doc list --requirement-id <UUID> --kind spec` when a filtered list is needed.
+There is no separate requirement documents subcommand. The `rinto-requirements` server skill describes this
+workflow and is discovered and embedded from the skills directory automatically.
+
+`requirement show` also returns `workload`: task counts, known three-point totals,
+remaining effort and missing-estimate counts across all descendants. Summary tasks
+are excluded. Total includes finished/cancelled work and archived descendants for
+history; remaining includes only open/in-progress tasks. Unplanned open leaves are
+counted separately. Null estimates mean unknown, not zero. These are effort minutes,
+not a delivery date; there is no separately writable requirement estimate.
+
+```sh
+rinto-pmo requirement estimate <UUID> <OTHER_UUID>
+rinto-pmo requirement estimate <UUID> --wait
+```
+
+This expands open descendants, deduplicates overlapping selections and queues one
+job per open leaf in an active project. It only fills missing estimates on unfinished
+work tasks. Existing estimates are preserved. Skipped leaves explain whether they
+need task breakdown, have no unfinished tasks, or are already estimated. Configure
+the `task_estimation` AI role first. Each model call estimates at most 20 tasks using
+ancestor descriptions, unarchived spec/plan/task documents and project history.
+A malformed or stale batch is rejected; earlier successful batches remain visible.
+Failures are not retried automatically. `--wait` reports each outcome; use `show`
+afterward to read the rollup. Without it, the output includes job IDs for `GET /jobs/{id}`.
+
+## Document types and requirement ownership
+
+`kind` is `general` (default), `rfc`, `spec`, `plan`, or `task`, independent of
+adoption status. Existing documents remain general; titles do not imply a type.
+An optional `requirement_id` files the document under a requirement. By default,
+`doc list` and semantic searches of documents, blocks and annotations only include
+independent documents. Use a requirement UUID or `all` to expand that scope.
+
+```sh
+rinto-pmo doc create --title "登录规格" --body spec.md --kind spec --requirement-id <UUID>
+rinto-pmo doc list --requirement-id <UUID>
+rinto-pmo doc list --requirement-id all --kind spec
+rinto-pmo search "登录规则" --type block --requirement-id <UUID> --kind spec
+rinto-pmo doc classify <DOCUMENT_UUID> --kind rfc
+rinto-pmo doc classify <DOCUMENT_UUID> --requirement-id <REQUIREMENT_UUID>
+rinto-pmo doc classify <DOCUMENT_UUID> --requirement-id none
+```
+
+Creation derives the project from the requirement unless one is supplied, in
+which case it must match. Existing documents can only link to requirements in
+their own project. `none` explicitly unlinks; omission leaves ownership unchanged.
+Classification preserves content, revisions and adoption status. Linked documents
+must be detached before moving to another project. `doc show` includes kind and
+requirement ID in comment lines so subsequent calls can preserve that context.
+
+### Requirement priority and task ownership
+
+`requirement create` and `requirement update` accept `--priority 1` through
+`--priority 5` (1 highest, default 3). Priority can change on an unarchived draft
+or active requirement in an active project. Titles and descriptions remain draft-only.
+
+Task creation JSON must include `requirement_id`, naming an open leaf requirement
+in the selected project. Task priority is read-only and follows that requirement
+immediately in detail, lists and scheduling. Update priority with:
+
+```sh
+rinto-pmo requirement update <requirement-id> --priority 1
+```
+
+Task splits inherit the requirement; tasks cannot move between requirements.
+A requirement that owns tasks cannot gain child requirements. The existing document
+breakdown importer now requires the source document to belong to a leaf requirement.

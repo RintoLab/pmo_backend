@@ -21,4 +21,8 @@ Hammox.defmock(RintoPMO.Agent.CodexAuth.HelperMock,
 Hammox.defmock(RintoPMO.Agent.TitleGeneratorMock, for: RintoPMO.Agent.TitleGenerator.Behaviour)
 Hammox.defmock(RintoPMO.Agent.TaskEstimatorMock, for: RintoPMO.Agent.TaskEstimator.Behaviour)
 
+Hammox.defmock(RintoPMO.Agent.RequirementPrioritizerMock,
+  for: RintoPMO.Agent.RequirementPrioritizerBehaviour
+)
+
 Hammox.defmock(RintoPMO.Calendar.HolidaysMock, for: RintoPMO.Calendar.Holidays.Behaviour)

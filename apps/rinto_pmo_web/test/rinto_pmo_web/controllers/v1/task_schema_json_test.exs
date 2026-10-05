@@ -22,7 +22,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
       assert %{"create" => create, "update" => _update, "split" => split} =
                json_response(conn, 200)["data"]
 
-      assert create["required"] == ["title"]
+      assert create["required"] == ["title", "requirement_id"]
       assert create["properties"]["kind"]["enum"] == ["work", "summary"]
       assert split["properties"]["children"]["items"]["required"] == ["title"]
     end
@@ -33,7 +33,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
 
       refute Map.has_key?(update["properties"], "status")
       refute Map.has_key?(update["properties"], "kind")
-      assert update["description"] =~ "ignored rather than refused"
+      assert update["description"] =~ "writes are refused"
     end
 
     test "a child of a split carries no parent, because the split answered that", %{conn: conn} do
@@ -50,7 +50,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
       properties = json_response(conn, 200)["data"]["create"]["properties"]
 
       assert properties["difficulty"]["enum"] == Task.difficulties()
-      assert properties["priority"]["enum"] == Task.priorities()
+      refute Map.has_key?(properties, "priority")
 
       assert properties["estimate"]["properties"]["pessimistic"]["maximum"] ==
                Task.estimate_ceiling()
@@ -84,10 +84,11 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
 
     test "create's example is a body the domain accepts", %{project: project, shapes: shapes} do
       [example] = shapes.create.examples
+      example = Map.put(example, "requirement_id", task_requirement(project).id)
 
       assert {:ok, task} = Tasks.create_task(project, example)
       assert task.title == example["title"]
-      assert task.priority == example["priority"]
+      assert task.priority == 3
       assert task.difficulty == example["difficulty"]
       assert task.estimate_likely == example["estimate"]["likely"]
     end
@@ -97,7 +98,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
       task = insert(:task, project: project, planned_start_on: ~D[2026-09-01])
 
       assert {:ok, task} = Tasks.update_task(task, example)
-      assert task.priority == 1
+      assert task.priority == 3
       assert task.planned_start_on == nil
     end
 

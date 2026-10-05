@@ -218,7 +218,7 @@ defmodule RintoPMO.LinksTest do
       target = insert(:task)
 
       {:ok, task} =
-        Tasks.create_task(project, %{
+        create_task(project, %{
           title: "甲",
           description: "依赖 [那个](#{uri("task", target.id)})"
         })
@@ -280,7 +280,7 @@ defmodule RintoPMO.LinksTest do
       target = insert(:task)
 
       {:ok, _task} =
-        Tasks.create_task(project, %{
+        create_task(project, %{
           title: "甲",
           description: "依赖 [那个](#{uri("task", target.id)})"
         })
@@ -297,7 +297,7 @@ defmodule RintoPMO.LinksTest do
       target = insert(:task)
 
       {:ok, _task} =
-        Tasks.create_task(project, %{
+        create_task(project, %{
           title: "甲",
           description: "[头一次](#{uri("task", target.id)}) 和 [第二次](#{uri("task", target.id)})"
         })
@@ -312,7 +312,7 @@ defmodule RintoPMO.LinksTest do
       project = insert(:project)
 
       {:ok, task} =
-        Tasks.create_task(project, %{
+        create_task(project, %{
           title: "甲",
           description: "见 [情报](rinto://intel/whatever)"
         })
@@ -326,7 +326,7 @@ defmodule RintoPMO.LinksTest do
       target = insert(:task)
 
       {:ok, _task} =
-        Tasks.create_task(project, %{
+        create_task(project, %{
           title: "甲",
           description: "```\n[x](#{uri("task", target.id)})\n```"
         })
@@ -340,7 +340,7 @@ defmodule RintoPMO.LinksTest do
       project = insert(:project, slug: "infra")
 
       {:ok, _task} =
-        Tasks.create_task(insert(:project), %{
+        create_task(insert(:project), %{
           title: "甲",
           description: "见 [基础设施](rinto://project/infra)"
         })
@@ -351,5 +351,9 @@ defmodule RintoPMO.LinksTest do
       assert link.target_id == nil
       assert project.slug == "infra"
     end
+  end
+
+  defp create_task(project, attrs) do
+    Tasks.create_task(project, Map.put_new(attrs, :requirement_id, task_requirement(project).id))
   end
 end

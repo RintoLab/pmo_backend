@@ -56,7 +56,7 @@ defmodule RintoPMO.LinksBacklinksTest do
       Annotations.create_reply(annotation, %{actor_id: actor.id, content: "见 [丙](#{target})"})
 
     {:ok, _task} =
-      Tasks.create_task(insert(:project), %{title: "甲", description: "见 [丁](#{target})"})
+      create_task(insert(:project), %{title: "甲", description: "见 [丁](#{target})"})
 
     conversation = insert(:conversation, title: "关于部署")
 
@@ -124,7 +124,7 @@ defmodule RintoPMO.LinksBacklinksTest do
     target = insert(:task)
 
     {:ok, task} =
-      Tasks.create_task(insert(:project), %{
+      create_task(insert(:project), %{
         title: "甲",
         description: "见 [x](#{uri("task", target.id)})"
       })
@@ -141,7 +141,7 @@ defmodule RintoPMO.LinksBacklinksTest do
     target = uri("task", task.id)
 
     {:ok, _task} =
-      Tasks.create_task(insert(:project), %{
+      create_task(insert(:project), %{
         title: "甲",
         description: "[头一次](#{target}) 和 [第二次](#{target})"
       })
@@ -171,7 +171,7 @@ defmodule RintoPMO.LinksBacklinksTest do
     block = insert(:document_block, revision: revision)
 
     {:ok, _task} =
-      Tasks.create_task(insert(:project), %{
+      create_task(insert(:project), %{
         title: "甲",
         description: "见 [那一块](#{uri("block", block.block_id)})"
       })
@@ -179,5 +179,9 @@ defmodule RintoPMO.LinksBacklinksTest do
     assert [entry] = backlinks(uri("block", block.block_id))
     assert entry.source_type == "task"
     assert entry.label == "那一块"
+  end
+
+  defp create_task(project, attrs) do
+    Tasks.create_task(project, Map.put_new(attrs, :requirement_id, task_requirement(project).id))
   end
 end

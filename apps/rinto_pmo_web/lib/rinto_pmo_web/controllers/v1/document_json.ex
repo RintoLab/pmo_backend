@@ -24,6 +24,8 @@ defmodule RintoPMOWeb.V1.DocumentJSON do
     %{
       id: document.id,
       project_id: document.project_id,
+      requirement_id: document.requirement_id,
+      kind: document.kind,
       archived_at: document.archived_at,
       status: document.status,
       pin: document.pin,

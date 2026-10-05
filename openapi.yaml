@@ -678,6 +678,244 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
+  /requirements/{id}/prioritize:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Requirements]
+      operationId: prioritizeRequirement
+      summary: Set one requirement's priority using AI
+      description: >-
+        Uses the requirement_prioritization AI role to determine and directly write the
+        named requirement's priority (1 highest, 5 lowest). Requires an open hierarchy
+        in an active project. Does not compare other requirements or expand children.
+        Tasks inherit their owning requirement's priority. There is no review/apply step.
+        An in-flight request for the same requirement reuses the existing job.
+        Poll GET /jobs/{id} then re-read the requirement. Manual edits while queued or
+        running take precedence; changed reference context cancels the update as well.
+      responses:
+        "202":
+          description: Priority update queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "400":
+          description: Invalid id or a closed requirement hierarchy/project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: requirement_prioritization AI role is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+
+  /requirements/estimate:
+    post:
+      tags: [Requirements]
+      operationId: estimateRequirements
+      summary: Fill missing task estimates across selected requirement hierarchies
+      description: >-
+        Expands open descendants to leaf requirements and deduplicates overlapping selections.
+        All selected requirements and ancestors must be open and unarchived in active projects.
+        Only open/in_progress work tasks without an estimate are eligible. Existing estimates
+        are preserved; no independent requirement estimate is written. One background job per
+        leaf, deduplicated while incomplete. Jobs use the task_estimation AI role and batches
+        of at most 20 tasks. Invalid or stale batches are rejected atomically; previous successful
+        batches remain. No automatic retries. Poll GET /jobs/{id} then re-read the requirement.
+        Empty results mean no eligible open leaf descendants. Requires no project parameter.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requirement_ids]
+              properties:
+                requirement_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: string
+                    format: uuid
+              additionalProperties: false
+      responses:
+        "202":
+          description: At least one job queued or already running; other leaves may be skipped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementEstimationResponse"
+        "200":
+          description: No jobs needed; every leaf was skipped or no open leaves exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementEstimationResponse"
+        "400":
+          description: Invalid selection; no jobs enqueued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          description: task_estimation AI role is missing; no jobs enqueued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+  /requirements:
+    get:
+      tags: [Requirements]
+      operationId: listRequirementOverview
+      summary: List requirements across projects
+      description: >-
+        Defaults to unarchived roots, newest first, with direct unarchived child
+        counts and a project summary on every row, including archived projects.
+        Lists omit document summaries. A parent_id selects direct children
+        without requiring the caller to supply the parent's project.
+      parameters:
+        - name: parent_id
+          in: query
+          description: Omit or use none for roots; use a requirement UUID for direct children, or all for every level. An unknown parent returns 404.
+          schema:
+            oneOf:
+              - type: string
+                format: uuid
+              - type: string
+                enum: [none, all]
+      responses:
+        "200":
+          description: Requirement list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "400":
+          description: Invalid parent filter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Requirements]
+      operationId: createRequirementByScope
+      summary: Create a root by project slug or a child by parent ID
+      description: >-
+        Supply project_slug for a root or parent_id for a child, not both.
+        Children inherit their parent's project. The project must be active,
+        and the parent must be an unarchived draft or active requirement.
+        Missing or conflicting scope and malformed parent IDs return 400;
+        unknown projects or parents return 404. Closed or archived parents,
+        archived projects and invalid metadata return 422. The system always
+        creates a draft; project_id, status and archived_at are not writable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequirementScopedCreateInput"
+      responses:
+        "201":
+          description: Created requirement with project and document summaries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementResponse"
+        "400":
+          description: Invalid creation scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /requirements/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Requirements]
+      operationId: getRequirementById
+      summary: Read a requirement by ID, including its document summaries
+      description: >-
+        Includes project, description, hierarchy metadata and every directly
+        associated unarchived document's summary. Document bodies, ancestors'
+        documents and descendants' documents are not included. Read a document
+        through GET /documents/{id}. Archived requirements remain readable.
+      responses:
+        "200":
+          description: Requirement detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementResponse"
+        "400":
+          description: Invalid requirement ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Requirements]
+      operationId: updateRequirementById
+      summary: Edit requirement draft metadata by ID
+      description: >-
+        Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived active requirements. Updates only
+        supplied title and description fields. An empty description clears it;
+        null is invalid. Project, parent and status cannot be changed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequirementUpdateInput"
+      responses:
+        "200":
+          description: Updated requirement detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementResponse"
+        "400":
+          description: Invalid requirement ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /projects/{slug}/requirements:
     parameters:
       - $ref: "#/components/parameters/ProjectSlug"
@@ -685,8 +923,24 @@ paths:
       tags: [Requirements]
       operationId: listRequirements
       summary: List unarchived requirements in a project
-      description: Newest first. Archived projects remain readable.
+      description: Newest first. Defaults to roots only. Archived projects remain readable.
+      parameters:
+        - name: parent_id
+          in: query
+          description: Omit or use none for roots; use a requirement UUID for direct children, or all for every level. Unknown or cross-project parents return 404.
+          schema:
+            oneOf:
+              - type: string
+                format: uuid
+              - type: string
+                enum: [none, all]
       responses:
+        "400":
+          description: Invalid parent filter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
         "200":
           description: Requirement list
           content:
@@ -704,7 +958,9 @@ paths:
       description: >-
         The project comes from the path and must be active. No repository
         association is created. Status always starts as draft. Supplying
-        project_id, status or archived_at in the body returns 422.
+        project_id, status or archived_at in the body returns 422. An optional
+        parent_id creates a child under a draft or active, unarchived requirement
+        in the same project. Unknown, closed or cross-project parents return 422.
       requestBody:
         required: true
         content:
@@ -754,9 +1010,10 @@ paths:
       operationId: updateRequirement
       summary: Edit requirement draft metadata
       description: >-
-        Only unarchived drafts in active projects can be edited. Both PUT and
+        Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived active requirements. Both PUT and
         PATCH update only supplied fields. Project and business status are not
-        writable. Archived or non-draft requirements return 422.
+        writable. Parent assignment is create-only; supplying parent_id returns
+        422, including null or the current value. Archived or non-draft requirements return 422.
       requestBody:
         required: true
         content:
@@ -781,9 +1038,10 @@ paths:
       operationId: replaceRequirementMetadata
       summary: Edit requirement draft metadata
       description: >-
-        Only unarchived drafts in active projects can be edited. Both PUT and
+        Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived active requirements. Both PUT and
         PATCH update only supplied fields. Project and business status are not
-        writable. Archived or non-draft requirements return 422.
+        writable. Parent assignment is create-only; supplying parent_id returns
+        422, including null or the current value. Archived or non-draft requirements return 422.
       requestBody:
         required: true
         content:
@@ -810,7 +1068,11 @@ paths:
       description: >-
         Idempotent soft archive. Does not change business status or delete
         content, the project or its repositories. Direct GET remains available.
+        Returns 422 with a children error while any direct child is unarchived;
+        descendants are never implicitly archived or detached.
       responses:
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "204":
           description: Archived
         "401":
@@ -908,12 +1170,26 @@ paths:
       summary: List non-archived documents
       description: >-
         Non-archived documents, pinned first, then newest first by latest
-        revision. `pin` on each row is the bookmark that put it at the front.
+        revision. Requirement artifacts are excluded unless explicitly requested. `pin` on each row is the bookmark that put it at the front.
       parameters:
+        - name: requirement_id
+          in: query
+          description: Omit or use none for documents outside requirements; use a UUID for one requirement, or all to include requirement artifacts.
+          schema:
+            oneOf:
+              - type: string
+                format: uuid
+              - type: string
+                enum: [none, all]
+        - name: kind
+          in: query
+          description: Filter document purpose.
+          schema:
+            $ref: "#/components/schemas/DocumentKind"
         - name: project_id
           in: query
           required: false
-          description: Filter by project UUIDv7 id. Use `none` for unassigned documents; omit for all documents.
+          description: Filter by project UUIDv7 id. Use `none` for unassigned documents; omit for all projects within the selected requirement scope.
           schema:
             oneOf:
               - type: string
@@ -938,7 +1214,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/DocumentListResponse"
         "400":
-          description: Invalid project or status filter
+          description: Invalid project, status, kind or requirement filter
           content:
             application/json:
               schema:
@@ -1026,6 +1302,10 @@ paths:
       operationId: search
       summary: Find things by meaning
       description: >-
+        Document, block and annotation search excludes requirement artifacts by
+        default. Supply requirement_id to select one requirement or all artifacts.
+        Supplying document filters with other search types returns 400.
+
         Two stages. The query is embedded, the nearest hundred rows are pulled by
         cosine distance, and a reranker then reads the query against each and
         scores it properly. The first stage is cheap and rough; the second is the
@@ -1072,6 +1352,20 @@ paths:
         query share a conservative 7680-byte UTF-8 budget, leaving 512 tokens
         for the model's prompt template.
       parameters:
+        - name: requirement_id
+          in: query
+          description: Omit or use none for documents outside requirements; use a UUID for one requirement, or all to include requirement artifacts. Applies to document, block and annotation searches only.
+          schema:
+            oneOf:
+              - type: string
+                format: uuid
+              - type: string
+                enum: [none, all]
+        - name: kind
+          in: query
+          description: Filter document purpose. Applies to document, block and annotation searches only.
+          schema:
+            $ref: "#/components/schemas/DocumentKind"
         - name: q
           in: query
           required: true
@@ -1329,7 +1623,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/APIError"
   /prompt_shortcuts/{id}:
     parameters:
       - name: id
@@ -1354,7 +1648,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/APIError"
     patch:
       tags: [Prompt shortcuts]
       operationId: updatePromptShortcut
@@ -1386,7 +1680,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/APIError"
     delete:
       tags: [Prompt shortcuts]
       operationId: deletePromptShortcut
@@ -1403,7 +1697,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/APIError"
   /prompt_shortcuts/{id}/reset:
     parameters:
       - name: id
@@ -1442,7 +1736,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/APIError"
         "422":
           description: >-
             `not_a_preset` -- the shortcut was created through this API and has
@@ -1450,7 +1744,35 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/APIError"
+  /documents/{document_id}:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    patch:
+      tags: [Documents]
+      operationId: updateDocumentMetadata
+      summary: Change document purpose or requirement ownership
+      description: >-
+        Changes metadata without creating a revision or changing references or annotations.
+        Documents must be unarchived. Requirement ownership must remain in the same
+        project. Kind does not change adoption status. Omitted fields are preserved.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentMetadataInput"
+      responses:
+        "200":
+          description: Updated document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /documents/{document_id}/formalize:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -1548,12 +1870,17 @@ paths:
         the author.
 
 
-        **Meant for documents just written, and nothing enforces that.** Any
-        document is accepted, `applied` ones included, but tasks filed from a
+        **Meant for documents just written.** Independent documents are
+        accepted, `applied` ones included, but tasks filed from a
         breakdown took a copy of the project id at the moment they were filed
         and do not follow the document -- there is no way to move them
         afterwards. Moving a document something else has already acted on
         leaves the two disagreeing, silently.
+
+
+        A document linked to a requirement cannot move to another project.
+        Detach it through the metadata endpoint first; mismatched ownership
+        is rejected with `422`.
 
 
         Nothing else has to be brought back into line. No copy of the project
@@ -1600,6 +1927,8 @@ paths:
       operationId: fileDocumentBreakdown
       summary: File an adopted task document as the project's work breakdown
       description: >
+        The source document must belong to an open leaf requirement in its project.
+        Created tasks inherit that requirement and its priority.
         The other end of the breakdown prompt shortcut. A topic turned a plan
         into a task document somebody could argue with; this turns the document
         they settled on into the work itself. Between them sits the only gate
@@ -2930,7 +3259,7 @@ paths:
 
 
         Built from `RintoPMO.Tasks.Task` as the request is answered, so the
-        difficulty ladder, the priority range and the estimate ceiling are the
+        difficulty ladder and the estimate ceiling are the
         values the server will enforce rather than a copy of them. Each shape
         carries an `examples` entry that the server's own test suite feeds
         back through the domain, so an example that stopped being accepted
@@ -4328,7 +4657,7 @@ components:
       description: The automatic job being configured.
       schema:
         type: string
-        enum: [topic_naming, task_estimation]
+        enum: [topic_naming, task_estimation, requirement_prioritization]
     ActorId:
       name: id
       in: path
@@ -4939,16 +5268,135 @@ components:
           items:
             $ref: "#/components/schemas/Actor"
       additionalProperties: false
+    RequirementWorkload:
+      type: object
+      readOnly: true
+      required: [task_count, remaining_task_count, unplanned_requirement_count, estimate]
+      description: >-
+        Derived effort minutes across this requirement and all descendants; summary tasks are
+        excluded. Total includes finished/cancelled tasks and archived descendants for history.
+        Remaining includes open/in_progress tasks only. Missing estimates are excluded from
+        numeric sums and counted separately. Null means no known estimate, never zero.
+        PERT expected is computed from the summed three-point values, rounded once.
+        No independent requirement estimate is stored; these are not delivery dates.
+      properties:
+        task_count:
+          type: integer
+          minimum: 0
+        remaining_task_count:
+          type: integer
+          minimum: 0
+        unplanned_requirement_count:
+          type: integer
+          minimum: 0
+          description: Open leaf requirements in open descendant branches with no work tasks.
+        estimate:
+          type: object
+          required: [total, remaining, unestimated_tasks, unestimated_tasks_remaining]
+          properties:
+            total:
+              oneOf:
+                - $ref: "#/components/schemas/TaskEstimate"
+                - type: object
+                  nullable: true
+                  enum: [null]
+            remaining:
+              oneOf:
+                - $ref: "#/components/schemas/TaskEstimate"
+                - type: object
+                  nullable: true
+                  enum: [null]
+            unestimated_tasks:
+              type: integer
+              minimum: 0
+            unestimated_tasks_remaining:
+              type: integer
+              minimum: 0
+          additionalProperties: false
+      additionalProperties: false
+    RequirementEstimationResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [requirement_id, title, job, reason]
+            properties:
+              requirement_id:
+                type: string
+                format: uuid
+              title:
+                type: string
+              job:
+                oneOf:
+                  - $ref: "#/components/schemas/Job"
+                  - type: object
+                    nullable: true
+                    enum: [null]
+              reason:
+                type: string
+                nullable: true
+                enum: [no_tasks, no_pending_tasks, already_estimated, null]
+                description: Null when a job is returned, otherwise explains why this leaf was skipped.
+            additionalProperties: false
+      additionalProperties: false
     Requirement:
       type: object
-      required: [id, project_id, title, description, status, archived_at, inserted_at, updated_at]
+      required: [id, project_id, parent_id, child_count, priority, workload, title, description, status, archived_at, inserted_at, updated_at]
       properties:
+        workload:
+          $ref: "#/components/schemas/RequirementWorkload"
+        priority:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+          default: 3
+          description: 1 highest, 3 normal. All tasks inherit their requirement's current priority.
         id:
           type: string
           format: uuid
         project_id:
           type: string
           format: uuid
+        project:
+          type: object
+          readOnly: true
+          description: Included in global lists and every detail/create/update response, including archived projects. Omitted from project-scoped lists.
+          required: [id, slug, name, status]
+          properties:
+            id:
+              type: string
+              format: uuid
+            slug:
+              type: string
+            name:
+              type: string
+            status:
+              type: string
+              enum: [active, archived]
+          additionalProperties: false
+        documents:
+          type: array
+          readOnly: true
+          description: >-
+            Present in every detail/create/update response, omitted from lists.
+            All directly associated unarchived document summaries; no bodies or
+            ancestor/descendant documents. Pinned documents first, then newest
+            revision first, matching the document list. Multiple documents may
+            share the same kind.
+          items:
+            $ref: "#/components/schemas/DocumentSummary"
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Parent in the same project, or null for a root. Immutable after creation.
+        child_count:
+          type: integer
+          minimum: 0
+          readOnly: true
+          description: Number of direct unarchived children; not a descendant or task count.
         title:
           type: string
           minLength: 1
@@ -4971,10 +5419,65 @@ components:
           type: string
           format: date-time
       additionalProperties: false
+    RequirementDetail:
+      allOf:
+        - $ref: "#/components/schemas/Requirement"
+        - type: object
+          required: [project, documents]
+    RequirementScopedCreateInput:
+      type: object
+      required: [title]
+      properties:
+        priority:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+          default: 3
+          description: 1 highest, 3 normal. All tasks inherit their requirement's current priority.
+        project_slug:
+          type: string
+          minLength: 1
+          description: Required for a root; omit when supplying parent_id.
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: For a child, its project is inherited from this open parent. Omit project_slug. Null means a root.
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          default: ""
+      oneOf:
+        - required: [project_slug]
+          properties:
+            parent_id:
+              nullable: true
+              enum: [null]
+        - required: [parent_id]
+          properties:
+            parent_id:
+              type: string
+              format: uuid
+              nullable: false
+          not:
+            required: [project_slug]
+      additionalProperties: false
     RequirementCreateInput:
       type: object
       required: [title]
       properties:
+        priority:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+          default: 3
+          description: 1 highest, 3 normal. All tasks inherit their requirement's current priority.
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Omit or null for a root. A child must name an open parent in the same project that has no tasks.
         title:
           type: string
           minLength: 1
@@ -4987,6 +5490,11 @@ components:
     RequirementUpdateInput:
       type: object
       properties:
+        priority:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+          default: 3
+          description: 1 highest, 3 normal. All tasks inherit their requirement's current priority.
         title:
           type: string
           minLength: 1
@@ -5000,7 +5508,7 @@ components:
       required: [data]
       properties:
         data:
-          $ref: "#/components/schemas/Requirement"
+          $ref: "#/components/schemas/RequirementDetail"
       additionalProperties: false
     RequirementListResponse:
       type: object
@@ -5198,10 +5706,31 @@ components:
           update: "#/components/schemas/UpdateBlockOperation"
           move_after: "#/components/schemas/MoveAfterBlockOperation"
           delete: "#/components/schemas/DeleteBlockOperation"
+    DocumentKind:
+      type: string
+      enum: [general, rfc, spec, plan, task]
+      description: Content purpose, independent of requirement ownership and lifecycle. Existing documents default to general.
+    DocumentMetadataInput:
+      type: object
+      properties:
+        kind:
+          $ref: "#/components/schemas/DocumentKind"
+        requirement_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Attach to an unarchived requirement in the same project; null detaches. Omission preserves ownership.
+      additionalProperties: false
     DocumentCreateInput:
       type: object
       required: [title]
       properties:
+        kind:
+          $ref: "#/components/schemas/DocumentKind"
+        requirement_id:
+          type: string
+          format: uuid
+          nullable: true
         project_id:
           type: string
           format: uuid
@@ -5211,7 +5740,9 @@ components:
             project reserved as the default (slug `personal`) rather than
             leaving it belonging to nothing -- most notes are not written with
             a project in mind, and a document filed nowhere is one nothing
-            lists. Sending one still wins.
+            lists. With requirement_id, the project is derived from that requirement;
+            an explicitly supplied project must match. An unknown or archived
+            requirement is rejected. Kind defaults to general.
 
 
             `422 default_project_missing` when that project does not exist,
@@ -5621,8 +6152,14 @@ components:
       additionalProperties: false
     DocumentSummary:
       type: object
-      required: [id, project_id, archived_at, status, pin, latest_revision, inserted_at, updated_at]
+      required: [id, project_id, kind, requirement_id, archived_at, status, pin, latest_revision, inserted_at, updated_at]
       properties:
+        kind:
+          $ref: "#/components/schemas/DocumentKind"
+        requirement_id:
+          type: string
+          format: uuid
+          nullable: true
         id:
           type: string
           format: uuid
@@ -5664,8 +6201,14 @@ components:
       additionalProperties: false
     Document:
       type: object
-      required: [id, project_id, archived_at, status, pin, latest_revision, inserted_at, updated_at]
+      required: [id, project_id, kind, requirement_id, archived_at, status, pin, latest_revision, inserted_at, updated_at]
       properties:
+        kind:
+          $ref: "#/components/schemas/DocumentKind"
+        requirement_id:
+          type: string
+          format: uuid
+          nullable: true
         id:
           type: string
           format: uuid
@@ -5892,8 +6435,12 @@ components:
         `open`.
     Task:
       type: object
-      required: [id, project_id, kind, title, status]
+      required: [id, project_id, requirement_id, kind, title, status, priority]
       properties:
+        requirement_id:
+          type: string
+          format: uuid
+          description: Required open leaf requirement in this project; immutable after creation. Split children inherit it.
         id:
           type: string
           format: uuid
@@ -5907,7 +6454,7 @@ components:
           nullable: true
           description: >
             Position in the WBS. Null is a root. A parent must be a summary
-            node in the same project.
+            node in the same project and requirement.
         kind:
           $ref: "#/components/schemas/TaskKind"
         document_id:
@@ -6045,11 +6592,12 @@ components:
             chunk reporting "starts in week 12" while half of it is unplanned
             reads like a schedule while being a fragment of one.
         priority:
+          readOnly: true
           type: integer
           enum: [1, 2, 3, 4, 5]
           default: 3
           description: >
-            1 is highest, 3 is normal, and never null -- "no opinion" *is*
+            Inherited live from the requirement. 1 is highest, 3 is normal, and never null -- "no opinion" *is*
             "normal", so unlike an estimate a missing priority carries nothing
             worth counting.
 
@@ -6086,8 +6634,12 @@ components:
       additionalProperties: false
     TaskCreateInput:
       type: object
-      required: [title]
+      required: [title, requirement_id]
       properties:
+        requirement_id:
+          type: string
+          format: uuid
+          description: Required open leaf requirement in this project; immutable after creation. Split children inherit it.
         kind:
           $ref: "#/components/schemas/TaskKind"
         parent_id:
@@ -6145,16 +6697,11 @@ components:
             Selects the task into the week this day falls in, and bounds where
             inside that week it may land. Null is the backlog. Refused on a
             summary node.
-        priority:
-          type: integer
-          enum: [1, 2, 3, 4, 5]
-          description: >
-            1 highest, defaults to 3. Decides who is cut when a week is
-            over-filled.
       additionalProperties: false
     TaskUpdateInput:
       type: object
       description: >
+        Priority and requirement_id cannot be set here. Edit the requirement to change priority.
         `status` and `kind` are absent on purpose. Use the event endpoints for
         status and `POST /tasks/{id}/split` for `kind`; neither belongs in the
         same request as an edit of the wording. Moving `parent_id` away from a
@@ -6227,10 +6774,6 @@ components:
             past something waiting on it. Both ends of every edge the task sits
             on are checked, and only when the day actually changes -- editing a
             title never fails over a scheduling conflict.
-        priority:
-          type: integer
-          enum: [1, 2, 3, 4, 5]
-          description: 1 highest, 3 normal.
       additionalProperties: false
     TaskCompleteInput:
       type: object
@@ -6351,6 +6894,7 @@ components:
             $ref: "#/components/schemas/TaskSplitChildInput"
       additionalProperties: false
     TaskSplitChildInput:
+      description: A work task inheriting the split task's requirement and priority. Explicit parent_id and requirement_id writes are refused.
       type: object
       required: [title]
       properties:
@@ -6398,10 +6942,6 @@ components:
             Selects the child into the week this day falls in. Null is the
             backlog. A breakdown that already knows when its parts are worked
             can say so here rather than PATCHing each child afterwards.
-        priority:
-          type: integer
-          enum: [1, 2, 3, 4, 5]
-          description: 1 highest, 3 normal. Inherits nothing from the cover.
       additionalProperties: false
     TaskSplitResponse:
       type: object
@@ -8043,7 +8583,7 @@ components:
           format: uuid
         key:
           type: string
-          enum: [topic_naming, task_estimation]
+          enum: [topic_naming, task_estimation, requirement_prioritization]
         provider:
           type: string
           description: A provider id from `GET /ai_models`.
@@ -8072,7 +8612,7 @@ components:
       additionalProperties: false
     AIRoles:
       type: object
-      required: [topic_naming, task_estimation]
+      required: [topic_naming, task_estimation, requirement_prioritization]
       properties:
         topic_naming:
           allOf:
@@ -8093,6 +8633,11 @@ components:
             Null means nobody has configured it, and unlike naming there is no
             fallback: the job belongs to no conversation, so
             `POST /tasks/{id}/estimate` answers `no_estimation_ai` until it is.
+        requirement_prioritization:
+          allOf:
+            - $ref: "#/components/schemas/AIRole"
+          nullable: true
+          description: Sets a single requirement priority directly; null refuses new requests with no_prioritization_ai.
       additionalProperties: false
     AIRolesResponse:
       type: object
@@ -8224,7 +8769,7 @@ components:
         ref_type:
           type: string
           description: >
-            `document`, `annotation`, `project`, `task`, `attachment` or `proposal`.
+            `document`, `annotation`, `project`, `task`, `requirement`, `attachment` or `proposal`.
             Not a closed enum: the set grows, and an unknown type is stored and
             ignored rather than rejecting the turn.
 
@@ -8377,7 +8922,10 @@ components:
             What this turn put in front of the model. One of
             `{type: document, id}`, `{type: annotation, id, document_id}`,
             `{type: proposal, id, document_id}`, `{type: project, slug}`,
-            `{type: attachment, id}` or `{type: task, id}`.
+            `{type: attachment, id}`, `{type: task, id}` or `{type: requirement, id}`.
+            Requirement references expand the current title, description, priority, status,
+            archive state, owning project and optional parent id. Related documents and
+            child requirements are not automatically expanded.
           items:
             type: object
             additionalProperties: true
@@ -8581,6 +9129,7 @@ components:
         - task_not_splittable
         - document_not_formal
         - no_estimation_ai
+        - no_prioritization_ai
         - nothing_to_estimate
         - no_chunks
         - task_before_chunk

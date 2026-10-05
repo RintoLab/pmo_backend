@@ -1,6 +1,7 @@
 defmodule RintoPMOWeb.V1.SearchController do
   use RintoPMOWeb, :controller
 
+  alias RintoPMO.Documents.Scope
   alias RintoPMO.Utils
 
   @doc """
@@ -26,7 +27,10 @@ defmodule RintoPMOWeb.V1.SearchController do
 
     with {:ok, opts} <- put_positive(opts, params, "limit", :limit),
          {:ok, opts} <- put_positive(opts, params, "recall_limit", :recall_limit),
-         {:ok, results} <- Utils.module(:search).search(query, opts) do
+         {:ok, scope} <- Scope.parse(params),
+         :ok <- validate_document_scope(type, scope),
+         {:ok, results} <-
+           Utils.module(:search).search(query, Keyword.merge(opts, Map.to_list(scope))) do
       render(conn, :index, results: results)
     end
   end
@@ -37,6 +41,14 @@ defmodule RintoPMOWeb.V1.SearchController do
 
   def index(_conn, _params) do
     {:error, :bad_request, %{q: ["can't be blank"]}}
+  end
+
+  defp validate_document_scope(type, scope) do
+    if map_size(scope) == 0 or type in ["document", "block", "annotation"],
+      do: :ok,
+      else:
+        {:error, :bad_request,
+         %{type: ["document filters require document, block or annotation"]}}
   end
 
   # Absent means "use the default", so only a present-and-unusable value is a

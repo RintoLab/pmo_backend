@@ -15,6 +15,8 @@ pub enum DocCommand {
     Show(ShowArgs),
     /// List documents that have not been archived
     List(ListArgs),
+    /// Change a document's type or requirement ownership without revising its content
+    Classify(ClassifyArgs),
     /// Propose a change to a document, for a person to review
     Propose(ProposeArgs),
     /// List the changes standing on a document, awaiting review
@@ -48,6 +50,14 @@ pub struct CreateArgs {
     /// Project to file the document under; omit to use the default project
     #[arg(long, value_name = "UUID")]
     project_id: Option<String>,
+
+    /// Document purpose: general (default), rfc, spec, plan or task
+    #[arg(long)]
+    kind: Option<String>,
+
+    /// Owning requirement; its project is used when --project-id is omitted
+    #[arg(long, value_name = "UUID")]
+    requirement_id: Option<String>,
 
     /// What this document records, for the revision log
     #[arg(long, value_name = "TEXT")]
@@ -267,6 +277,54 @@ pub struct ListArgs {
     /// Only documents in this state; omit for every state
     #[arg(long, value_name = "draft|formal|applied")]
     status: Option<String>,
+
+    /// Only this purpose: general, rfc, spec, plan or task
+    #[arg(long)]
+    kind: Option<String>,
+
+    /// Omit for independent documents; UUID for one requirement; all includes requirement documents
+    #[arg(long, value_name = "UUID|none|all")]
+    requirement_id: Option<String>,
+}
+
+#[derive(Args)]
+pub struct ClassifyArgs {
+    document_id: String,
+    /// Document purpose: general, rfc, spec, plan or task
+    #[arg(long)]
+    kind: Option<String>,
+    /// Requirement in the same project; none explicitly removes the association
+    #[arg(long, value_name = "UUID|none")]
+    requirement_id: Option<String>,
+}
+
+fn classify(client: &Client, args: ClassifyArgs) -> Result<()> {
+    let mut payload = Map::new();
+    if let Some(kind) = args.kind {
+        payload.insert("kind".to_string(), json!(kind));
+    }
+    if let Some(requirement_id) = args.requirement_id {
+        payload.insert(
+            "requirement_id".to_string(),
+            if requirement_id == "none" {
+                Value::Null
+            } else {
+                json!(requirement_id)
+            },
+        );
+    }
+    if payload.is_empty() {
+        return Err(Error::Input(
+            "pass --kind or --requirement-id; content and revision history are unchanged"
+                .to_string(),
+        ));
+    }
+    client.patch(
+        &format!("/documents/{}", args.document_id),
+        Value::Object(payload),
+    )?;
+    println!("updated document metadata {}", args.document_id);
+    Ok(())
 }
 
 pub fn run(command: DocCommand) -> Result<()> {
@@ -278,6 +336,7 @@ pub fn run(command: DocCommand) -> Result<()> {
         DocCommand::Show(args) if args.working => working(client, &config, args),
         DocCommand::Show(args) => show(client, args),
         DocCommand::List(args) => list(client, args),
+        DocCommand::Classify(args) => classify(client, args),
         DocCommand::Propose(args) => propose(client, &config, args),
         DocCommand::Proposals(args) => proposals(client, &config, args),
         DocCommand::Proposal(args) => proposal(client, args),
@@ -318,6 +377,12 @@ fn create(client: &Client, config: &Config, args: CreateArgs) -> Result<()> {
     attribute(&mut payload, config)?;
     if let Some(project_id) = args.project_id {
         payload.insert("project_id".to_string(), json!(project_id));
+    }
+    if let Some(kind) = args.kind {
+        payload.insert("kind".to_string(), json!(kind));
+    }
+    if let Some(requirement_id) = args.requirement_id {
+        payload.insert("requirement_id".to_string(), json!(requirement_id));
     }
     if let Some(change_summary) = args.change_summary {
         payload.insert("change_summary".to_string(), json!(change_summary));
@@ -392,6 +457,11 @@ fn show(client: &Client, args: ShowArgs) -> Result<()> {
     // as part of it.
     if let Some(project_id) = document.get("project_id").and_then(Value::as_str) {
         println!("<!-- project_id: {project_id} -->\n");
+    }
+    for field in ["kind", "requirement_id"] {
+        if let Some(value) = document.get(field).and_then(Value::as_str) {
+            println!("<!-- {field}: {value} -->\n");
+        }
     }
 
     // What a proposal written from this read has to be written *against*. The
@@ -1219,6 +1289,13 @@ fn list_query(args: &ListArgs) -> Vec<(&str, &str)> {
         query.push(("status", status));
     }
 
+    if let Some(kind) = args.kind.as_deref() {
+        query.push(("kind", kind));
+    }
+    if let Some(requirement_id) = args.requirement_id.as_deref() {
+        query.push(("requirement_id", requirement_id));
+    }
+
     query
 }
 
@@ -1240,11 +1317,21 @@ fn list(client: &Client, args: ListArgs) -> Result<()> {
             .and_then(Value::as_str)
             .unwrap_or("(untitled)");
 
+        let classification = document
+            .get("kind")
+            .and_then(Value::as_str)
+            .map(|kind| format!("  [{kind}]"))
+            .unwrap_or_default();
+        let ownership = document
+            .get("requirement_id")
+            .and_then(Value::as_str)
+            .map(|id| format!("  requirement:{id}"))
+            .unwrap_or_default();
         // Anything past draft carries its state. Everything is created draft,
         // so marking those would mark almost every row and say nothing.
         match document.get("status").and_then(Value::as_str) {
-            Some("draft") | None => println!("{id}  {title}"),
-            Some(status) => println!("{id}  {title}  ({status})"),
+            Some("draft") | None => println!("{id}  {title}{classification}{ownership}"),
+            Some(status) => println!("{id}  {title}  ({status}){classification}{ownership}"),
         }
     }
 
@@ -1285,6 +1372,8 @@ mod tests {
         ListArgs {
             project_id: project_id.map(str::to_string),
             status: status.map(str::to_string),
+            kind: None,
+            requirement_id: None,
         }
     }
 
@@ -1944,6 +2033,8 @@ mod tests {
                 title: title.to_string(),
                 body: markdown_file("# Heading\n\nBody."),
                 project_id: Some("project-1".to_string()),
+                kind: Some("spec".to_string()),
+                requirement_id: Some("requirement-1".to_string()),
                 change_summary: None,
                 dry_run: false,
             };
@@ -1953,6 +2044,8 @@ mod tests {
 
             let requests = server.requests();
             assert_eq!(requests[0].target, "/api/v1/documents");
+            assert_eq!(requests[0].json()["kind"], json!("spec"));
+            assert_eq!(requests[0].json()["requirement_id"], json!("requirement-1"));
             assert_eq!(requests[0].json()["conversation_id"], json!(TOPIC));
             assert_eq!(requests[0].json()["actor_id"], json!(null));
             assert_eq!(requests[1].json()["actor_id"], json!("human-id"));
@@ -1975,6 +2068,8 @@ mod tests {
                     title: "Preview".to_string(),
                     body: markdown_file("# Heading\n\nBody."),
                     project_id: None,
+                    kind: None,
+                    requirement_id: None,
                     change_summary: None,
                     dry_run: true,
                 },
@@ -1992,6 +2087,50 @@ mod tests {
     #[test]
     fn an_omitted_filter_is_not_sent_at_all() {
         assert_eq!(list_query(&list_args(None, None)), vec![]);
+    }
+
+    #[test]
+    fn classification_and_requirement_filters_are_explicit() {
+        let mut args = list_args(None, None);
+        args.kind = Some("plan".to_string());
+        args.requirement_id = Some("all".to_string());
+        assert_eq!(
+            list_query(&args),
+            vec![("kind", "plan"), ("requirement_id", "all")]
+        );
+    }
+
+    #[test]
+    fn metadata_updates_distinguish_omitted_scope_from_unlinking() {
+        use crate::testing::{client, Reply, StubServer};
+        let server = StubServer::start(vec![
+            Reply::json(200, json!({"data": {}})),
+            Reply::json(200, json!({"data": {}})),
+        ]);
+        let client = client(&server);
+        super::classify(
+            &client,
+            super::ClassifyArgs {
+                document_id: "doc-1".to_string(),
+                kind: Some("rfc".to_string()),
+                requirement_id: None,
+            },
+        )
+        .unwrap();
+        super::classify(
+            &client,
+            super::ClassifyArgs {
+                document_id: "doc-1".to_string(),
+                kind: None,
+                requirement_id: Some("none".to_string()),
+            },
+        )
+        .unwrap();
+        let requests = server.requests();
+        assert_eq!(requests[0].method, "PATCH");
+        assert_eq!(requests[0].target, "/api/v1/documents/doc-1");
+        assert_eq!(requests[0].json(), json!({"kind": "rfc"}));
+        assert_eq!(requests[1].json(), json!({"requirement_id": null}));
     }
 
     #[test]

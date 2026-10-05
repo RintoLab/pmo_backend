@@ -1,7 +1,7 @@
 defmodule RintoPMOWeb.V1.AIRoleControllerTest do
   use RintoPMOWeb.ConnCase, async: true
 
-  @empty %{"topic_naming" => nil, "task_estimation" => nil}
+  @empty %{"topic_naming" => nil, "task_estimation" => nil, "requirement_prioritization" => nil}
 
   @configuration %{
     "provider" => "google",

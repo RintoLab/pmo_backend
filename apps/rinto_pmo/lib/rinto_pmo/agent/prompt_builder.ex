@@ -81,6 +81,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
   | `document` | `id` | `<document>` holding the latest revision's blocks, and naming its `project_id` |
   | `annotation` | `id` + `document_id` | `<annotation>` and its replies |
   | `project` | `slug` | `<project>` and an index of its documents |
+  | `requirement` | `id` | `<requirement>` holding its title, description, priority, status and ownership |
   | `task` | `id` | `<task>` holding its title, status and description |
   | `attachment` | `id` | `<attachment>` marker plus an inline image |
   | `proposal` | `id` + `document_id` | `<proposal>` holding both sides of one local change |
@@ -176,6 +177,8 @@ defmodule RintoPMO.Agent.PromptBuilder do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
   alias RintoPMO.Projects.Project
+  alias RintoPMO.Requirements
+  alias RintoPMO.Requirements.Requirement
   alias RintoPMO.Tasks.Task
   alias RintoPMO.Utils
 
@@ -310,7 +313,7 @@ defmodule RintoPMO.Agent.PromptBuilder do
   # The bare type words the client uses as placeholder link text. Only these are
   # replaced by a title -- anything else is a human's own words, or a label
   # already worth reading, and is left as written.
-  @type_words ~w(document annotation project task proposal attachment)
+  @type_words ~w(document annotation project task requirement proposal attachment)
 
   defp rewrite_mentions(text, refs_by_index, _handles) when map_size(refs_by_index) == 0, do: text
 
@@ -465,6 +468,13 @@ defmodule RintoPMO.Agent.PromptBuilder do
     end
   end
 
+  defp resolve(%{"type" => "requirement", "id" => id}, handle) when is_binary(id) do
+    with {:ok, requirement} <-
+           fetch(fn -> Requirements.get_requirement!(id) end, "requirement", id) do
+      {:ok, text_only(render_requirement(requirement, handle), requirement.title)}
+    end
+  end
+
   defp resolve(%{"type" => "task", "id" => id}, handle) when is_binary(id) do
     with {:ok, task} <- fetch(fn -> tasks().get_task!(id) end, "task", id) do
       {:ok, text_only(render_task(task, handle), task.title)}
@@ -590,6 +600,24 @@ defmodule RintoPMO.Agent.PromptBuilder do
       attributes,
       join_present([project.description, project_documents(project)])
     )
+  end
+
+  # Like task references, this expands the resource itself, not its related documents or children.
+  defp render_requirement(%Requirement{} = requirement, handle) do
+    attributes =
+      [
+        {"ref", handle},
+        {"id", requirement.id},
+        {"title", requirement.title},
+        {"project_id", requirement.project_id},
+        {"project_slug", requirement.project.slug},
+        {"project_status", requirement.project.status},
+        {"status", requirement.status},
+        {"priority", requirement.priority},
+        {"archived", not is_nil(requirement.archived_at)}
+      ] ++ optional_attribute("parent_id", requirement.parent_id)
+
+    element("requirement", attributes, join_present([requirement.description]))
   end
 
   # The spec a task consumes is named, not opened: `document_id` is a pointer at

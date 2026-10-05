@@ -39,6 +39,14 @@ pub struct SearchArgs {
     #[arg(long)]
     project_id: Option<String>,
 
+    /// Document purpose (general, rfc, spec, plan, task); only for document/block/annotation
+    #[arg(long)]
+    kind: Option<String>,
+
+    /// Document scope: omit for independent documents, UUID for one requirement, all for every scope
+    #[arg(long, value_name = "UUID|none|all")]
+    requirement_id: Option<String>,
+
     /// Results to return
     #[arg(long)]
     limit: Option<u32>,
@@ -80,6 +88,12 @@ fn search(client: &Client, args: SearchArgs) -> Result<()> {
     }
     if args.include_archived {
         query.push(("include_archived", "true"));
+    }
+    if let Some(kind) = args.kind.as_deref() {
+        query.push(("kind", kind));
+    }
+    if let Some(requirement_id) = args.requirement_id.as_deref() {
+        query.push(("requirement_id", requirement_id));
     }
 
     let results = client::data(client.get("/search", &query)?)?;
@@ -177,6 +191,8 @@ mod tests {
                 query: "vector search".to_string(),
                 r#type: "task".to_string(),
                 project_id: None,
+                kind: None,
+                requirement_id: None,
                 limit: None,
                 recall_limit: None,
                 include_archived: false,
@@ -190,6 +206,8 @@ mod tests {
                 query: "vector search".to_string(),
                 r#type: "block".to_string(),
                 project_id: Some("project-1".to_string()),
+                kind: Some("spec".to_string()),
+                requirement_id: Some("all".to_string()),
                 limit: Some(5),
                 recall_limit: Some(200),
                 include_archived: true,
@@ -205,7 +223,7 @@ mod tests {
         assert_eq!(
             requests[1].target,
             "/api/v1/search?q=vector+search&type=block&project_id=project-1\
-             &limit=5&recall_limit=200&include_archived=true"
+             &limit=5&recall_limit=200&include_archived=true&kind=spec&requirement_id=all"
         );
     }
 

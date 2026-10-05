@@ -4,6 +4,10 @@ defmodule RintoPMOWeb.ErrorJSONTest do
   alias RintoPMOWeb.ErrorJSON
 
   @errors %{
+    no_prioritization_ai:
+      {422,
+       "The requirement priority AI is not configured. Set it with PUT /ai_roles/requirement_prioritization.",
+       %{}},
     bad_request: {400, "The request is invalid.", %{parameter: "limit", reason: "is invalid"}},
     unauthorized: {401, "The request carries no valid actor token.", %{}},
     token_not_configured:

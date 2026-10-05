@@ -52,8 +52,10 @@ defmodule RintoPMO.Documents do
   alias RintoPMO.Documents.Markdown
   alias RintoPMO.Documents.ProposalPlan
   alias RintoPMO.Documents.Revisions
+  alias RintoPMO.Documents.Scope
   alias RintoPMO.Links
   alias RintoPMO.References.Guard
+  alias RintoPMO.Requirements.Requirement
   alias RintoPMO.Utils
 
   @behaviour RintoPMO.Documents.Behaviour
@@ -65,11 +67,10 @@ defmodule RintoPMO.Documents do
   person's bookmark, not a filter -- an absent key still returns both, because
   a list that hid unpinned documents would hide nearly everything.
 
-  `filter` accepts `:project` -- a project id, or `:unassigned` for documents
-  belonging to none -- and `:status`. An absent key filters nothing, which is
-  the only sane default here: every document is created `:draft`, so a list that
-  quietly dropped them would hide nearly everything, starting with whatever was
-  written most recently.
+  `filter` accepts `:project`, `:status`, `:kind` and `:requirement_id`. Without
+  a requirement scope, only independent documents are listed. A requirement id
+  lists its direct documents; `"all"` includes every scope. Status and kind do
+  not infer ownership or adoption, and absent status includes drafts too.
   """
   @impl true
   def list_documents(filter) when is_map(filter) do
@@ -114,7 +115,9 @@ defmodule RintoPMO.Documents do
 
   ## No `project_id` means the default project
 
-  Omitting it files the document in the project reserved as the default (see
+  When `requirement_id` is present, its project is used and a conflicting
+  explicit project is rejected. Otherwise, omitting it files the document in
+  the project reserved as the default (see
   `RintoPMO.Projects`) rather than leaving it belonging to nothing. Most notes
   are not written with a project in mind, and asking for one before anything
   can be written down is a question at exactly the wrong moment -- but a
@@ -125,13 +128,19 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def create_document(attrs) do
-    with :ok <- Guard.check(attr(attrs, :markdown, nil)),
+    with :ok <- Guard.check(attr(attrs, :markdown, nil)) do
+      Repo.transact(&create_document_record(&1, attrs))
+    end
+    |> unwrap_error()
+  end
+
+  defp create_document_record(repo, attrs) do
+    with {:ok, attrs} <- put_requirement_project(attrs),
          {:ok, attrs} <- put_default_project(attrs),
          {:ok, author_id} <- document_author(attrs),
          {:ok, attrs} <- split_markdown(attrs, author_id) do
-      Repo.transact(&insert_document(&1, attrs))
+      insert_document(repo, attrs)
     end
-    |> unwrap_error()
   end
 
   # Creation does not go through `insert_revision/4` -- the first revision and
@@ -203,9 +212,32 @@ defmodule RintoPMO.Documents do
   """
   @impl true
   def refile_document(%Document{} = document, project_id) do
-    document
-    |> Document.refile_changeset(project_id)
-    |> Repo.update()
+    Repo.transact(fn repo ->
+      current = repo.one!(from d in Document, where: d.id == ^document.id, lock: "FOR UPDATE")
+
+      current
+      |> Document.refile_changeset(project_id)
+      |> validate_requirement(false)
+      |> repo.update()
+    end)
+  end
+
+  @impl true
+  def update_document_metadata(%Document{} = document, attrs) do
+    Repo.transact(fn repo ->
+      current = repo.one!(from d in Document, where: d.id == ^document.id, lock: "FOR UPDATE")
+      changeset = current |> Document.metadata_changeset(attrs) |> validate_requirement(false)
+
+      changeset =
+        if current.archived_at,
+          do:
+            Changeset.add_error(changeset, :archived_at, "cannot classify an archived document"),
+          else: changeset
+
+      with {:ok, updated} <- repo.update(changeset) do
+        {:ok, %{updated | latest_revision: get_document!(updated.id).latest_revision}}
+      end
+    end)
   end
 
   @doc """
@@ -1189,6 +1221,60 @@ defmodule RintoPMO.Documents do
   # means the reserved slug has been renamed or the setup task was never run,
   # and both are things to fix rather than to work around one document at a
   # time.
+  defp put_requirement_project(attrs) do
+    changeset =
+      %Document{project_id: attr(attrs, :project_id, nil)}
+      |> Document.metadata_changeset(attrs)
+      |> validate_requirement(true)
+
+    if changeset.valid? do
+      {:ok,
+       attrs
+       |> Map.drop([:project_id, "project_id"])
+       |> Map.put("project_id", Changeset.get_field(changeset, :project_id))}
+    else
+      {:error, changeset}
+    end
+  end
+
+  # Scope is selected explicitly; kind never implies ownership or adoption.
+  # The foreign key checks existence. Creation, metadata updates and refiling
+  # check project ownership here while holding the requirement's row lock.
+  defp validate_requirement(changeset, derive_project?) do
+    case Changeset.get_field(changeset, :requirement_id) do
+      nil ->
+        changeset
+
+      id ->
+        validate_requirement_record(
+          changeset,
+          Repo.one(from r in Requirement, where: r.id == ^id, lock: "FOR UPDATE"),
+          derive_project?
+        )
+    end
+  end
+
+  defp validate_requirement_record(changeset, nil, _derive),
+    do: Changeset.add_error(changeset, :requirement_id, "does not exist")
+
+  defp validate_requirement_record(changeset, requirement, derive_project?) do
+    project_id = Changeset.get_field(changeset, :project_id)
+
+    cond do
+      requirement.archived_at != nil ->
+        Changeset.add_error(changeset, :requirement_id, "is archived")
+
+      derive_project? and is_nil(project_id) ->
+        Changeset.put_change(changeset, :project_id, requirement.project_id)
+
+      project_id != requirement.project_id ->
+        Changeset.add_error(changeset, :requirement_id, "must belong to the document's project")
+
+      true ->
+        changeset
+    end
+  end
+
   defp put_default_project(attrs) do
     case attr(attrs, :project_id, nil) do
       nil ->
@@ -1239,6 +1325,8 @@ defmodule RintoPMO.Documents do
   end
 
   defp filter_documents(query, filter) do
+    query = Scope.apply(query, filter)
+
     Enum.reduce(filter, query, fn
       {:project, :unassigned}, query ->
         where(query, [document], is_nil(document.project_id))

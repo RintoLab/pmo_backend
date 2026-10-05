@@ -5,7 +5,12 @@ defmodule RintoPMO.Documents.Behaviour do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
 
+  @callback update_document_metadata(Document.t(), map()) ::
+              {:ok, Document.t()} | {:error, Ecto.Changeset.t()}
+
   @type filter :: %{
+          optional(:requirement_id) => String.t(),
+          optional(:kind) => atom(),
           optional(:project) => :unassigned | UUIDv7.t(),
           optional(:status) => Document.status()
         }

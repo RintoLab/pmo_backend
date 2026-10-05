@@ -27,6 +27,9 @@ defmodule RintoPMOWeb.ErrorJSON do
     image_too_large: {413, "The image exceeds the size accepted for inline use."},
     unsupported_image: {415, "The file is not an image format that can be sent to a model."},
     stale_document: {409, "The document has changed since the provided base revision."},
+    no_prioritization_ai:
+      {422,
+       "The requirement priority AI is not configured. Set it with PUT /ai_roles/requirement_prioritization."},
     task_state_conflict: {409, "The task is no longer in the expected state."},
     # Losing a claim race is not a validation failure and not a retry: the task
     # has an owner now, and the answer is to pick a different one.

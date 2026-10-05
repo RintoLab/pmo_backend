@@ -19,7 +19,11 @@ defmodule RintoPMOWeb.V1.PromptShortcutControllerTest do
 
     # Both, including the one whose type does not match anything the caller
     # said: matching is the client's, on the list it is handed.
-    assert [%{"label" => "一"}, %{"label" => "二"}] = json_response(conn, 200)["data"]
+    assert conn
+           |> json_response(200)
+           |> Map.fetch!("data")
+           |> Enum.map(& &1["label"])
+           |> MapSet.new() == MapSet.new(["一", "二"])
   end
 
   test "POST creates one and generates its key", %{conn: conn} do

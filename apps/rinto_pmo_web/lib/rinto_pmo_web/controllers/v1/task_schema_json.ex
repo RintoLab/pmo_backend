@@ -79,13 +79,18 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
       title: "TaskCreateInput",
       description: """
       The body of `POST /projects/{slug}/tasks`, which is the file
-      `rinto-pmo task create --input FILE` reads. Only `title` is required.
+      `rinto-pmo task create --input FILE` reads. `title` and `requirement_id` are required. Priority is inherited from that leaf requirement.
       """,
       type: "object",
-      required: ["title"],
+      required: ["title", "requirement_id"],
       additionalProperties: false,
       properties:
         Map.merge(common_properties(), %{
+          requirement_id: %{
+            type: "string",
+            format: "uuid",
+            description: "An open leaf requirement in this project. Immutable after creation."
+          },
           kind: %{
             type: "string",
             enum: Enum.map(Task.kinds(), &Atom.to_string/1),
@@ -104,7 +109,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
         %{
           "title" => "Wire the estimator into the task board",
           "description" => "Reuse the job channel the decomposer already publishes on.",
-          "priority" => 2,
+          "requirement_id" => "01990000-0000-7000-8000-000000000011",
           "planned_start_on" => "2026-09-01",
           "estimate" => %{"optimistic" => 60, "likely" => 120, "pessimistic" => 240},
           "difficulty" => 5
@@ -127,14 +132,14 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
       `kind` only through `task split`; neither belongs in the same request as
       an edit of the wording.
 
-      Keys this schema does not list are **ignored rather than refused**. A
+      `priority` and `requirement_id` writes are refused. Other unlisted keys are ignored. A
       PATCH carrying `status: "done"` answers 200 and changes nothing, so read
       the task back rather than reading the status code as agreement.
       """,
       type: "object",
       additionalProperties: false,
       properties: common_properties(),
-      examples: [%{"priority" => 1, "planned_start_on" => nil}]
+      examples: [%{"planned_start_on" => nil}]
     }
   end
 
@@ -151,7 +156,8 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
       clocks, no estimate, no difficulty, no actual minutes and no
       planned_start_on, so all of those are dropped, and its status becomes
       the rollup over whatever children it now has. Title, description,
-      priority and its place in the tree stay.
+      requirement and its place in the tree stay; priority is inherited.
+      Children cannot override requirement_id or parent_id.
       """,
       type: "object",
       additionalProperties: false,
@@ -182,7 +188,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
               "title" => "Add the pgvector column and its index",
               "estimate" => %{"optimistic" => 30, "likely" => 60, "pessimistic" => 120}
             },
-            %{"title" => "Backfill embeddings for existing tasks", "priority" => 4}
+            %{"title" => "Backfill embeddings for existing tasks"}
           ]
         }
       ]
@@ -257,16 +263,6 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
         Refused as `dependency_out_of_order` when the move would put the task
         ahead of live work it waits for, or push a prerequisite past something
         waiting on it.
-        """
-      },
-      priority: %{
-        type: "integer",
-        enum: Task.priorities(),
-        default: 3,
-        description: """
-        1 is highest, 3 is normal, and it is never null -- "no opinion" is
-        "normal". It decides who is cut when a week is over-filled, so it
-        outranks everything else the board sorts on.
         """
       },
       estimate: %{

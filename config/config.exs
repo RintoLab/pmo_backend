@@ -41,6 +41,7 @@ config :rinto_pmo,
     # -- is testable without a model.
     title_generator: RintoPMO.Agent.TitleGenerator,
     task_estimator: RintoPMO.Agent.TaskEstimator,
+    requirement_prioritizer: RintoPMO.Agent.RequirementPrioritizer,
     # Reading what a `rinto://` reference points at. Only the read side is
     # injected: parsing a reference is pure and belongs to every write path,
     # and mocking it would let a document test lie about what it stored.

@@ -17,6 +17,7 @@ defmodule RintoPMO.Factory do
   alias RintoPMO.Projects.Project
   alias RintoPMO.Projects.ProjectRepo
   alias RintoPMO.RepoCredentials.RepoCredential
+  alias RintoPMO.Requirements.Requirement
   alias RintoPMO.Tasks.Task
 
   def actor_factory do
@@ -184,23 +185,60 @@ defmodule RintoPMO.Factory do
     }
   end
 
-  def task_factory do
-    %Task{
+  def requirement_factory do
+    %Requirement{
       project: build(:project),
+      title: sequence(:requirement_title, &"Requirement #{&1}")
+    }
+  end
+
+  # Task fixtures in one project/priority share a leaf requirement by default.
+  # Tests for ownership boundaries pass an explicit requirement instead.
+  def task_requirement(project, priority \\ 3) do
+    RintoPMO.Repo.get_by(Requirement,
+      project_id: project.id,
+      title: "Task fixture requirement",
+      priority: priority
+    ) ||
+      insert(:requirement,
+        project: project,
+        title: "Task fixture requirement",
+        priority: priority
+      )
+  end
+
+  def task_factory(attrs) do
+    parent = Map.get(attrs, :parent) || fixture_row(Task, attrs[:parent_id])
+    project = task_project(attrs, parent)
+    requirement = task_owner(attrs, parent, project)
+
+    %Task{
+      project_id: project.id,
+      requirement_id: requirement.id,
+      priority: requirement.priority,
       kind: :work,
       title: sequence(:task_title, &"Task #{&1}"),
       status: :open
     }
+    |> merge_attributes(Map.drop(attrs, [:project, :requirement, :priority]))
+    |> evaluate_lazy_attributes()
   end
 
-  def summary_task_factory do
-    %Task{
-      project: build(:project),
-      kind: :summary,
-      title: sequence(:task_title, &"Chunk #{&1}"),
-      status: :open
-    }
+  defp task_project(attrs, parent) do
+    Map.get(attrs, :project) || fixture_row(Project, attrs[:project_id]) ||
+      fixture_row(Project, parent && parent.project_id) || insert(:project)
   end
+
+  defp task_owner(attrs, parent, project) do
+    Map.get(attrs, :requirement) || fixture_row(Requirement, attrs[:requirement_id]) ||
+      fixture_row(Requirement, parent && parent.requirement_id) ||
+      task_requirement(project, Map.get(attrs, :priority, 3))
+  end
+
+  defp fixture_row(_schema, nil), do: nil
+  defp fixture_row(schema, id), do: RintoPMO.Repo.get!(schema, id)
+
+  def summary_task_factory(attrs), do: task_factory(Map.put(attrs, :kind, :summary))
 
   def message_ref_factory do
     %MessageRef{

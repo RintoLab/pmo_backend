@@ -88,6 +88,7 @@ defmodule RintoPMOWeb.V1.TaskJSON do
     %{
       id: task.id,
       project_id: task.project_id,
+      requirement_id: task.requirement_id,
       parent_id: task.parent_id,
       document_id: task.document_id,
       assignee_id: task.assignee_id,

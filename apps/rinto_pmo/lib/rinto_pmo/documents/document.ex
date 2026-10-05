@@ -3,7 +3,7 @@ defmodule RintoPMO.Documents.Document do
   The stable identity of a document.
 
   Mutable document content and titles live in immutable revisions. Documents
-  only carry optional project ownership, their archive lifecycle, how far
+  carry project and optional requirement ownership, purpose (`kind`), archive lifecycle, how far
   along their status is, and whether a person has pinned them to the front of
   listings.
 
@@ -69,11 +69,16 @@ defmodule RintoPMO.Documents.Document do
   @type status :: :draft | :formal | :applied
 
   @statuses [:draft, :formal, :applied]
+  @kinds [:general, :rfc, :spec, :plan, :task]
+
+  def kinds, do: @kinds
 
   schema "documents" do
     field :archived_at, :utc_datetime_usec
     field :status, Ecto.Enum, values: @statuses, default: :draft
     field :pin, :boolean, default: false
+    field :kind, Ecto.Enum, values: @kinds, default: :general
+    belongs_to :requirement, RintoPMO.Requirements.Requirement
     field :latest_revision, :any, virtual: true
 
     belongs_to :project, Project
@@ -93,15 +98,32 @@ defmodule RintoPMO.Documents.Document do
   @doc false
   def creation_changeset(%__MODULE__{} = document, attrs) do
     document
-    |> cast(nest_initial_revision(attrs), [:project_id])
+    |> cast(nest_initial_revision(attrs), [:project_id, :requirement_id, :kind])
+    |> classification_constraints()
     |> foreign_key_constraint(:project_id)
     |> cast_assoc(:revisions, with: &DocumentRevision.initial_changeset/2, required: true)
+  end
+
+  @doc false
+  def metadata_changeset(document, attrs) do
+    document
+    |> cast(attrs, [:kind, :requirement_id])
+    |> classification_constraints()
+  end
+
+  defp classification_constraints(changeset) do
+    changeset
+    |> validate_required([:kind])
+    |> foreign_key_constraint(:requirement_id, name: :documents_requirement_id_fkey)
+    |> check_constraint(:requirement_id, name: :documents_requirement_project_check)
+    |> check_constraint(:kind, name: :documents_kind_check)
   end
 
   @doc false
   def refile_changeset(%__MODULE__{} = document, project_id) do
     document
     |> cast(%{project_id: project_id}, [:project_id])
+    |> classification_constraints()
     |> validate_required([:project_id])
     |> foreign_key_constraint(:project_id)
   end

@@ -78,6 +78,7 @@ defmodule RintoPMO.Tasks do
   alias RintoPMO.References
   alias RintoPMO.References.Guard
   alias RintoPMO.References.Reference
+  alias RintoPMO.Requirements.Requirement
   alias RintoPMO.Schedule
   alias RintoPMO.Tasks.Breakdown
   alias RintoPMO.Tasks.Dependency
@@ -268,7 +269,7 @@ defmodule RintoPMO.Tasks do
   """
   @impl true
   def get_task!(id) do
-    case Repo.get!(Task, id) do
+    case Repo.get!(Task.with_priority(), id) do
       %Task{kind: :work} = task ->
         task
 
@@ -325,9 +326,9 @@ defmodule RintoPMO.Tasks do
   defp description_of(attrs), do: Map.get(attrs, :description) || Map.get(attrs, "description")
 
   defp insert_task(repo, chset) do
-    with {:ok, task} <- repo.insert(chset) do
+    with {:ok, task} <- chset |> validate_requirement() |> repo.insert() do
       index(repo, task)
-      {:ok, task}
+      inherited_priority({:ok, task})
     end
   end
 
@@ -335,7 +336,7 @@ defmodule RintoPMO.Tasks do
     with {:ok, updated} <- repo.update(chset) do
       demote_if_emptied(repo, old_parent_id, updated.parent_id)
       index(repo, updated)
-      {:ok, updated}
+      inherited_priority({:ok, updated})
     end
   end
 
@@ -400,6 +401,7 @@ defmodule RintoPMO.Tasks do
       task
       |> Task.assignment_changeset(actor_id)
       |> Repo.update()
+      |> inherited_priority()
     end
   end
 
@@ -429,7 +431,7 @@ defmodule RintoPMO.Tasks do
         |> Repo.update_all(set: [assignee_id: actor_id, assigned_at: now, updated_at: now])
 
       case claimed do
-        {1, [task]} -> {:ok, task}
+        {1, [task]} -> inherited_priority({:ok, task})
         {0, _none} -> claim_refusal(task.id)
       end
     end
@@ -454,6 +456,7 @@ defmodule RintoPMO.Tasks do
       task
       |> Task.assignment_changeset(nil)
       |> Repo.update()
+      |> inherited_priority()
     end
   end
 
@@ -506,6 +509,7 @@ defmodule RintoPMO.Tasks do
       task
       |> Task.transition_changeset(event, attrs)
       |> Repo.update()
+      |> inherited_priority()
     end
   end
 
@@ -674,14 +678,20 @@ defmodule RintoPMO.Tasks do
   end
 
   defp insert_node(node, kind, %Document{} = breakdown, spec, repo, parent \\ nil) do
-    %Task{project_id: breakdown.project_id, parent_id: parent && parent.id}
+    %Task{
+      project_id: breakdown.project_id,
+      requirement_id: breakdown.requirement_id,
+      parent_id: parent && parent.id
+    }
     |> Task.creation_changeset(%{
       kind: kind,
       title: node.title,
       description: node.description,
       document_id: spec && spec.id
     })
+    |> validate_requirement()
     |> repo.insert()
+    |> inherited_priority()
   end
 
   # Which heading failed, said the way the document says it. An index into a
@@ -725,7 +735,7 @@ defmodule RintoPMO.Tasks do
     Repo.transact(fn repo ->
       with {:ok, summary} <- repo.update(Task.split_changeset(task)),
            {:ok, inserted} <- insert_children(summary, children, repo) do
-        {:ok, %{summary | children: inserted}}
+        inherited_priority({:ok, %{summary | children: inserted}})
       end
     end)
     |> unwrap_refusal()
@@ -760,9 +770,15 @@ defmodule RintoPMO.Tasks do
     with {:ok, attrs} <- put_estimate(attrs),
          {:ok, attrs} <- put_difficulty(attrs),
          {:ok, attrs} <- put_actual(attrs) do
-      %Task{project_id: summary.project_id, parent_id: summary.id}
-      |> Task.changeset(attrs)
+      %Task{
+        project_id: summary.project_id,
+        requirement_id: summary.requirement_id,
+        parent_id: summary.id
+      }
+      |> Task.split_child_changeset(attrs)
+      |> validate_requirement()
       |> repo.insert()
+      |> inherited_priority()
     end
   end
 
@@ -956,11 +972,9 @@ defmodule RintoPMO.Tasks do
   synchronously, because both are conditions of asking rather than outcomes of
   the answer.
 
-  Asking twice is not refused. This is a helper for somebody who has an empty
-  field and does not feel like filling it in, so a second ask is a second ask;
-  it overwrites, and neither answer claims to be the better one. What it does
-  not do is fire twice for one double-click: while a job of this kind is still
-  in flight on this task, `Oban` hands back the job already queued.
+  Only missing values are targeted. While a job of this kind is still in flight
+  on this task, `Oban` hands back the job already queued. Once every value is
+  filled, another request returns `:nothing_to_estimate`.
 
   The two kinds are separate slots. One of each may be in flight on the same
   task -- they are different questions.
@@ -1202,9 +1216,79 @@ defmodule RintoPMO.Tasks do
     }
 
     case put_estimate(%{"estimate" => estimate}) do
-      {:ok, attrs} -> task |> Task.changeset(attrs) |> Repo.update()
+      {:ok, attrs} -> write_estimate_if_unchanged(task, attrs)
       _invalid -> :invalid
     end
+  end
+
+  @doc "Validates a complete AI batch and writes it atomically without replacing changed tasks."
+  def apply_time_estimates(targets, items) when is_list(items) do
+    expected = Enum.sort(Enum.map(targets, & &1.id))
+    actual = Enum.map(items, fn item -> if is_map(item), do: Map.get(item, "id") end)
+
+    if Enum.sort(actual) == expected do
+      by_id = Map.new(items, &{&1["id"], &1})
+
+      Repo.transact(fn -> write_estimation_batch(targets, by_id) end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, "the model must estimate every requested task exactly once, with no extra IDs"}
+    end
+  end
+
+  def apply_time_estimates(_targets, _items),
+    do: {:error, "the model did not return an estimate list"}
+
+  defp write_estimation_batch(targets, by_id) do
+    Enum.reduce_while(targets, {:ok, :ok}, fn task, _acc ->
+      case write_estimate(task, Map.fetch!(by_id, task.id)) do
+        {:ok, _updated} ->
+          {:cont, {:ok, :ok}}
+
+        :invalid ->
+          {:halt,
+           {:error,
+            "invalid estimate for #{task.id}; use ordered whole minutes up to #{Task.estimate_ceiling()}, or split the task"}}
+
+        _changed ->
+          {:halt, {:error, "task #{task.id} changed during estimation; run it again"}}
+      end
+    end)
+  end
+
+  defp write_estimate_if_unchanged(task, attrs) do
+    Repo.transact(fn ->
+      current =
+        Repo.one(from candidate in Task, where: candidate.id == ^task.id, lock: "FOR UPDATE")
+
+      if same_estimation_target?(current, task) do
+        current |> Task.changeset(attrs) |> Repo.update()
+      else
+        {:error, :changed}
+      end
+    end)
+  end
+
+  defp same_estimation_target?(nil, _task), do: false
+
+  defp same_estimation_target?(current, task) do
+    fields = [
+      :updated_at,
+      :title,
+      :description,
+      :difficulty,
+      :status,
+      :kind,
+      :requirement_id,
+      :estimate_optimistic,
+      :estimate_likely,
+      :estimate_pessimistic
+    ]
+
+    Map.take(current, fields) == Map.take(task, fields) and is_nil(current.estimate_optimistic)
   end
 
   defp succeed(job_id, task_id, kind) do
@@ -1253,6 +1337,7 @@ defmodule RintoPMO.Tasks do
     tasks =
       query
       |> order_by([task], asc: task.id)
+      |> Task.with_priority()
       |> Repo.all()
 
     children = Enum.group_by(tasks, & &1.parent_id)
@@ -1553,6 +1638,7 @@ defmodule RintoPMO.Tasks do
     |> join(:inner, [prerequisite], edge in Dependency, on: edge.depends_on_id == prerequisite.id)
     |> where([_prerequisite, edge], edge.task_id == ^task.id)
     |> order_by([prerequisite], asc: prerequisite.inserted_at)
+    |> Task.with_priority()
     |> Repo.all()
   end
 
@@ -1603,6 +1689,7 @@ defmodule RintoPMO.Tasks do
     |> join(:inner, [waiting], edge in Dependency, on: edge.task_id == waiting.id)
     |> where([_waiting, edge], edge.depends_on_id == ^task.id)
     |> order_by([waiting], asc: waiting.inserted_at)
+    |> Task.with_priority()
     |> Repo.all()
   end
 
@@ -1790,6 +1877,47 @@ defmodule RintoPMO.Tasks do
 
   defp complete_attrs(_event, _attrs), do: {:ok, %{}}
 
+  # Called inside the task-creation transaction. Requirement child creation
+  # locks the same row, so task ownership and leaf status cannot race.
+  defp validate_requirement(%Changeset{valid?: false} = chset), do: chset
+
+  defp validate_requirement(chset) do
+    id = Changeset.get_field(chset, :requirement_id)
+    project_id = Changeset.get_field(chset, :project_id)
+
+    requirement =
+      Repo.one(from requirement in Requirement, where: requirement.id == ^id, lock: "FOR UPDATE")
+
+    case requirement do
+      %Requirement{project_id: ^project_id, archived_at: nil, status: status}
+      when status in [:draft, :active] ->
+        if Repo.exists?(
+             from child in Requirement,
+               where: child.parent_id == ^id and is_nil(child.archived_at)
+           ) do
+          Changeset.add_error(chset, :requirement_id, "must be a leaf requirement")
+        else
+          chset
+        end
+
+      _other ->
+        Changeset.add_error(chset, :requirement_id, "must be an open requirement in this project")
+    end
+  end
+
+  defp inherited_priority({:ok, %Task{} = task}) do
+    priority =
+      Repo.one!(
+        from requirement in Requirement,
+          where: requirement.id == ^task.requirement_id,
+          select: requirement.priority
+      )
+
+    {:ok, %{task | priority: priority}}
+  end
+
+  defp inherited_priority(result), do: result
+
   # ---------------------------------------------------------------- parenting
 
   # A parent has to be a summary node in the same project, and it must not sit
@@ -1816,7 +1944,11 @@ defmodule RintoPMO.Tasks do
         {:ok, Changeset.add_error(chset, :parent_id, "must be a summary node")}
 
       %Task{} = parent ->
-        detect_cycle(chset, parent, task_id)
+        if parent.requirement_id == Changeset.get_field(chset, :requirement_id) do
+          detect_cycle(chset, parent, task_id)
+        else
+          {:ok, Changeset.add_error(chset, :parent_id, "belongs to another requirement")}
+        end
     end
   end
 

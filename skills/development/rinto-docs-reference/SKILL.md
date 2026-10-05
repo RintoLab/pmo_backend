@@ -107,7 +107,8 @@ rinto-pmo task show <task-id>
 - `parent_id`：它在工作分解中的位置
 - `due_on`、`estimate`：期限和估算
 - `assignee_id`：确实是当前 actor
-- `priority`、`planned_start_on`：它在计划里的位置。
+- `priority`：从所属 Requirement 实时读取，只读；在需求上调整。`planned_start_on`：任务选入计划的日期。
+- 创建任务必须提供叶子需求 `requirement_id`，创建后归属不可修改。
   `planned_start_on: none (backlog)` 表示这条活不在任何一周里——**你正在计划之外干活**，
   这本身不一定错（用户点名的活照做），但要知道自己在做什么
 - `difficulty`：Fibonacci 故事点，是对工作的评级，不是工时；工时看 `estimate`

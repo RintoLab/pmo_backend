@@ -76,7 +76,15 @@ block 是这个系统里批注、讨论、修改的最小单位，所以分节�
 长文本里的引号和换行在 shell 里会被吃掉，而且失败是静默的
 —— 内容少了一半，命令还是成功退出。始终写文件、传 `--body`。
 
-**落在哪个项目。** 省略 `--project-id` 会进默认项目，那是「不属于任何具体项目」的收容处，不是你正在谈的那个项目。
+**需求文档。** 先用 `rinto-pmo requirement show <requirement-id>` 查看需求及其 documents 摘要，再用 `rinto-pmo doc show <document-id>` 读取已有文档。创建关联需求的文档时，传 `--requirement-id`，Project 会从需求推导，不需要再传 `--project-id`：
+
+```sh
+rinto-pmo doc create --requirement-id <requirement-id> --kind spec --title "登录规格" --body spec.md
+```
+
+文档类型为 `general`、`rfc`、`spec`、`plan`、`task`，任务清单类型用单数 `task`。需要筛选时用 `doc list --requirement-id <requirement-id> --kind spec`。同一类型可能有多篇文档，先检查已有内容，避免重复创建；已有文档的修改仍走提案审阅。
+
+**独立文档落在哪个项目。** 没有指定 `--requirement-id` 时，省略 `--project-id` 会进默认项目，那是「不属于任何具体项目」的收容处，不是你正在谈的那个项目。
 
 话题里引用了文档时，展开带着 `project_id`：
 
