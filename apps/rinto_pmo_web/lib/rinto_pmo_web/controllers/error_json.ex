@@ -107,12 +107,10 @@ defmodule RintoPMOWeb.ErrorJSON do
     invalid_estimate: {422, "The task estimate is invalid."},
     invalid_difficulty: {422, "The task difficulty is invalid."},
     invalid_actual: {422, "The recorded actual duration is invalid."},
-    task_not_splittable: {422, "The task cannot be split in its current state."},
     # Scheduling a task ahead of work it waits for. Carries both ends and both
     # days, because "which one do I move" is the next question either way.
     dependency_out_of_order:
       {422, "A task cannot be scheduled before the work it is waiting for."},
-    task_not_dependable: {422, "A summary node cannot take part in a dependency."},
     # Filing a document as a work breakdown, and adopting one. Both ends of the
     # same axis: a document has to be adopted before it can be filed, and a
     # document already filed cannot be filed again.

@@ -42,29 +42,6 @@ defmodule RintoPMO.TasksDependenciesTest do
       assert {:error, :task_not_found, _details} =
                Tasks.add_dependency(task(project), UUIDv7.generate())
     end
-
-    test "allows an edge across two projects, unlike a parent" do
-      release = task(insert(:project))
-      infrastructure = task(insert(:project))
-
-      # Deliberate, and not the same rule as `parent_id`, which refuses this.
-      # A parent decides where a task lives; a dependency only constrains when
-      # it happens, and scheduling here spans every project on purpose.
-      assert {:ok, _} = Tasks.add_dependency(release, infrastructure.id)
-
-      assert {:error, changeset} =
-               Tasks.update_task(release, %{"parent_id" => insert(:summary_task).id})
-
-      assert %{parent_id: ["belongs to another project"]} = errors_on(changeset)
-    end
-
-    test "refuses a summary node at either end", %{project: project} do
-      cover = insert(:summary_task, project: project)
-      work = task(project)
-
-      assert {:error, :task_not_dependable, _} = Tasks.add_dependency(cover, work.id)
-      assert {:error, :task_not_dependable, _} = Tasks.add_dependency(work, cover.id)
-    end
   end
 
   describe "cycles" do

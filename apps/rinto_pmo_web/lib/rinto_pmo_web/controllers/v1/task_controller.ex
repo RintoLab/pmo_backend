@@ -9,7 +9,6 @@ defmodule RintoPMOWeb.V1.TaskController do
   alias RintoPMOWeb.V1.TaskSchemaJSON
 
   @statuses Map.new(Task.statuses(), &{Atom.to_string(&1), &1})
-  @kinds Map.new(Task.kinds(), &{Atom.to_string(&1), &1})
   @priorities Task.priorities()
   @estimation_kinds %{"difficulty" => :difficulty, "time" => :time}
 
@@ -223,22 +222,6 @@ defmodule RintoPMOWeb.V1.TaskController do
   end
 
   @doc """
-  Turns a job into the cover over the jobs it turned out to be.
-
-  The one thing that moves `kind`. `children` is optional -- the promotion is
-  the operation, and existing tasks can be moved under it afterwards.
-  """
-  def split(conn, %{"id" => id} = params) do
-    context = tasks_context()
-    task = context.get_task!(id)
-
-    with {:ok, children} <- split_children(params),
-         {:ok, summary} <- context.split_task(task, children) do
-      render(conn, :split, task: summary)
-    end
-  end
-
-  @doc """
   Moves a task to `:in_progress`. Refuses when nobody owns it.
   """
   def start(conn, %{"id" => id}), do: transition(conn, id, :start)
@@ -320,22 +303,6 @@ defmodule RintoPMOWeb.V1.TaskController do
     end
   end
 
-  defp split_children(params) do
-    case Map.get(params, "children") do
-      nil -> {:ok, []}
-      children when is_list(children) -> validate_children(children)
-      _invalid -> {:error, :bad_request, %{"children" => ["must be an array"]}}
-    end
-  end
-
-  defp validate_children(children) do
-    if Enum.all?(children, &is_map/1) do
-      {:ok, children}
-    else
-      {:error, :bad_request, %{"children" => ["each child must be an object"]}}
-    end
-  end
-
   defp repo_filter(params, filter) do
     case Map.get(params, "repo_id") do
       nil -> {:ok, filter}
@@ -343,11 +310,17 @@ defmodule RintoPMOWeb.V1.TaskController do
     end
   end
 
+  defp reject_wbs_filters(params) do
+    case Enum.find(["kind", "parent_id"], &Map.has_key?(params, &1)) do
+      nil -> :ok
+      field -> {:error, :bad_request, %{field => ["is no longer supported"]}}
+    end
+  end
+
   defp task_filter(params) do
-    with {:ok, filter} <- enum_filter(params, %{}, "kind", :kind, @kinds),
-         {:ok, filter} <- enum_filter(params, filter, "status", :status, @statuses),
+    with :ok <- reject_wbs_filters(params),
+         {:ok, filter} <- enum_filter(params, %{}, "status", :status, @statuses),
          {:ok, filter} <- assignee_filter(params, filter),
-         {:ok, filter} <- parent_filter(params, filter),
          {:ok, filter} <- document_filter(params, filter),
          {:ok, filter} <- repo_filter(params, filter),
          {:ok, filter} <- boolean_filter(params, filter, "live", :live),
@@ -391,18 +364,7 @@ defmodule RintoPMOWeb.V1.TaskController do
     end
   end
 
-  # `parent_id=none` is the set of roots -- the top level of the WBS. Like
-  # `assignee_id`, it has to be spelled, because absent means "no filter".
-  defp parent_filter(params, filter) do
-    case Map.get(params, "parent_id") do
-      nil -> {:ok, filter}
-      "none" -> {:ok, Map.put(filter, :parent_id, nil)}
-      value -> uuid_filter(value, filter, :parent_id, "parent_id")
-    end
-  end
-
-  # `assignee_id=none` is the claimable pool. It has to be spelled rather than
-  # left as an absent parameter, because absent already means "no filter".
+  # `none` selects unassigned tasks; an absent parameter leaves ownership unfiltered.
   defp assignee_filter(params, filter) do
     case Map.get(params, "assignee_id") do
       nil -> {:ok, filter}

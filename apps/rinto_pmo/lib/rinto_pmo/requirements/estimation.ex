@@ -23,7 +23,7 @@ defmodule RintoPMO.Requirements.Estimation do
     Repo.all(
       from task in Task,
         where:
-          task.requirement_id == ^id and task.kind == :work and
+          task.requirement_id == ^id and
             task.status in [:open, :in_progress] and is_nil(task.estimate_optimistic),
         order_by: task.id
     )
@@ -70,9 +70,7 @@ defmodule RintoPMO.Requirements.Estimation do
 
   defp entry(requirement) do
     work =
-      Repo.all(
-        from task in Task, where: task.requirement_id == ^requirement.id and task.kind == :work
-      )
+      Repo.all(from task in Task, where: task.requirement_id == ^requirement.id)
 
     pending = Enum.filter(work, &(&1.status in [:open, :in_progress]))
 

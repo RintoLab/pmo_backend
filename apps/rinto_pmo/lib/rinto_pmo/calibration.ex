@@ -128,7 +128,6 @@ defmodule RintoPMO.Calibration do
     finished_after = DateTime.new!(from, ~T[00:00:00.000000])
 
     Task
-    |> where([task], task.kind == :work)
     |> where([task], not is_nil(task.completed_at))
     |> where([task], task.completed_at >= ^finished_after)
     |> where([task], task.completed_at < ^finished_before)

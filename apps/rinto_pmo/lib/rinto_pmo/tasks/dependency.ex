@@ -6,15 +6,7 @@ defmodule RintoPMO.Tasks.Dependency do
   `20260824120000_create_task_dependencies` migration for why the edge points
   at the prerequisite and why this is not a `RintoPMO.Links` row.
 
-  ## An edge may cross projects, and a parent may not
-
-  This looks like an inconsistency with `RintoPMO.Tasks.validate_parent/3`,
-  which refuses a parent in another project. It is not: the two relations
-  answer different questions.
-
-  A parent decides *where a task lives*. The WBS is one project's breakdown,
-  and letting a task hang under another project's cover would put one
-  project's work inside another project's tree.
+  ## Dependencies may cross projects
 
   A dependency moves nothing and changes nothing about what a task belongs to.
   It is a scheduling constraint, and scheduling here is deliberately

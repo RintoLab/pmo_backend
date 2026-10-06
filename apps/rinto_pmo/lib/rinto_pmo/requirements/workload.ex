@@ -34,7 +34,7 @@ defmodule RintoPMO.Requirements.Workload do
   defp rows(project_ids) do
     Repo.all(
       from task in Task,
-        where: task.project_id in ^project_ids and task.kind == :work,
+        where: task.project_id in ^project_ids,
         group_by: [task.requirement_id, task.status],
         select: %{
           requirement_id: task.requirement_id,

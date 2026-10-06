@@ -1,71 +1,5 @@
 defmodule RintoPMO.Tasks do
-  @moduledoc """
-  The context for a project's work breakdown: its structure, its distribution,
-  and its counts.
-
-  ## Structure
-
-  One tree of one resource. A summary node is a task row with `kind: :summary`,
-  and it is a cover over work rather than work itself: it takes no assignee and
-  no transitions, and its status is `RintoPMO.Tasks.Task.rollup/1` over its
-  children.
-
-  That rollup is *derived at read time*, never stored. A cached status would
-  have to be recomputed on every transition of every descendant, and the first
-  path that forgot would leave a chunk claiming to be done over children that
-  are not. The stored `status` column on a `:summary` row is inert; every read
-  in this module overwrites it.
-
-  `kind` moves both ways, and never as a field a client writes. Up through
-  `split_task/2` when a job turns out to be several; down automatically the
-  moment a cover loses its last child, because the two ways to empty one --
-  deleting a child, or moving it elsewhere -- both leave a node that can
-  neither be worked nor roll anything up.
-
-  ## Distribution
-
-  Two ways in, one field out. `assign_task/2` is a PM pushing work at someone;
-  `claim_task/2` is an actor -- a developer, or the pi CLI on one's behalf --
-  pulling from the pool. Both land in `assignee_id`, so nothing downstream has
-  to know which happened.
-
-  The difference between them is who may lose. Assigning is authoritative and
-  overwrites whoever held it. Claiming is a race between equals, so it is a
-  single conditional `UPDATE ... WHERE assignee_id IS NULL`, and the loser is
-  told it lost rather than quietly stealing the task. Reading first and writing
-  second would hand the same task to two agents under any real concurrency.
-
-  ## Estimates
-
-  Three-point, in minutes, and never written as raw columns: `estimate` comes
-  in as one object so that "all three or none", "optimistic <= likely <=
-  pessimistic", and the one-working-day ceiling can be checked as one thing and
-  refused as `invalid_estimate`. The ceiling is what lets `RintoPMO.Schedule`
-  assume every work item fits in a day, so an estimate over it is a task to
-  split rather than a number to accept.
-  A cover's estimate is the sum over its descendants, rolled up on read exactly
-  like its status, and carries a count of the descendants it had to skip so a
-  partial sum can never pass for a whole one.
-
-  ## Scheduling
-
-  `planned_start_on` is the day a task was selected into a week, and null is
-  the backlog. It is an ordinary edit here; what a week actually holds is
-  `RintoPMO.Schedule`'s question, not this module's, because the answer depends
-  on every other task competing for the same minutes across every project.
-
-  A cover carries no `planned_start_on` of its own. On read it is given the
-  earliest one under it, plus `unscheduled_tasks` -- how many jobs in the chunk
-  are still in the backlog -- for the same reason the estimate carries
-  `unestimated_tasks`: a span that quietly skipped the unplanned half would
-  read as a schedule while being a fragment of one.
-
-  ## Counts
-
-  `project_stats/1` counts work, not covers. A summary node is its children
-  restated, so counting it would tally every job twice and inflate a board's
-  totals by however finely someone chose to break the project down.
-  """
+  @moduledoc "Executable tasks: assignment, state transitions, estimates, dependencies and scheduling."
 
   use RintoPMO, :context
 
@@ -81,6 +15,7 @@ defmodule RintoPMO.Tasks do
   alias RintoPMO.References.Reference
   alias RintoPMO.Requirements.Requirement
   alias RintoPMO.Schedule
+  alias RintoPMO.Tasks.Behaviour
   alias RintoPMO.Tasks.Breakdown
   alias RintoPMO.Tasks.Dependency
   alias RintoPMO.Tasks.DependencyGraph
@@ -100,143 +35,8 @@ defmodule RintoPMO.Tasks do
   # asks it which design it came from.
   defp documents, do: Utils.module(:documents)
 
-  # A parent chain deeper than this is a corrupt tree, not a breakdown. The
-  # bound exists so a cycle written by some future path fails loudly here
-  # instead of spinning.
-  @max_depth 64
-
-  defmodule Behaviour do
-    @moduledoc false
-
-    alias RintoPMO.Projects.Project
-    alias RintoPMO.Tasks.Task
-
-    @typedoc """
-    Which of the two questions a model is being asked about a task.
-    """
-    @type estimation_kind :: :difficulty | :time
-
-    @type filter :: %{
-            optional(:kind) => Task.kind(),
-            optional(:status) => Task.status(),
-            optional(:assignee_id) => UUIDv7.t() | nil,
-            optional(:document_id) => UUIDv7.t(),
-            optional(:repo_id) => UUIDv7.t(),
-            optional(:parent_id) => UUIDv7.t() | nil,
-            optional(:live) => boolean(),
-            optional(:overdue) => boolean(),
-            optional(:priority) => pos_integer(),
-            optional(:scheduled) => boolean(),
-            optional(:sort) => sort()
-          }
-
-    @typedoc """
-    Which order a list comes back in.
-
-    `:oldest` is a backlog read from the front. `:plan` is the order the packer
-    fills a week in -- priority, then the day the task was selected for, then
-    age -- so the first row is the one the plan would reach next.
-    """
-    @type sort :: :oldest | :plan
-
-    @type estimate :: %{
-            optimistic: non_neg_integer(),
-            likely: non_neg_integer(),
-            pessimistic: non_neg_integer(),
-            expected: non_neg_integer()
-          }
-
-    @type stats :: %{
-            total: non_neg_integer(),
-            unassigned: non_neg_integer(),
-            overdue: non_neg_integer(),
-            by_status: %{Task.status() => non_neg_integer()},
-            by_assignee: [
-              %{actor_id: UUIDv7.t(), counts: %{Task.status() => non_neg_integer()}}
-            ],
-            estimate: %{
-              total: estimate() | nil,
-              remaining: estimate() | nil,
-              unestimated_tasks: non_neg_integer(),
-              unestimated_tasks_remaining: non_neg_integer()
-            },
-            actual: %{
-              total: non_neg_integer() | nil,
-              unmeasured_tasks: non_neg_integer()
-            }
-          }
-
-    @typedoc """
-    A refusal the API layer turns into an `error` code rather than a field-level
-    validation message. The shape `RintoPMOWeb.FallbackController` understands.
-    """
-    @type refusal :: {:error, atom()} | {:error, atom(), map()}
-
-    @callback list_tasks(Project.t(), filter()) :: [Task.t()]
-    @callback list_tasks(filter()) :: [Task.t()]
-    @callback get_task!(UUIDv7.t()) :: Task.t()
-    @callback create_task(Project.t(), map()) ::
-                {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-    @callback update_task(Task.t(), map()) ::
-                {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-
-    @callback assign_task(Task.t(), term()) ::
-                {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-    @callback claim_task(Task.t(), term()) ::
-                {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-    @callback release_task(Task.t(), term()) ::
-                {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-
-    @callback transition_task(Task.t(), Task.event(), term()) ::
-                {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-    @callback transition_task(Task.t(), Task.event(), term(), map()) ::
-                {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-
-    @callback request_estimation(Task.t(), estimation_kind()) ::
-                {:ok, Oban.Job.t()} | refusal()
-    @callback run_estimation(integer(), UUIDv7.t(), estimation_kind()) ::
-                :ok | {:cancel, String.t()}
-
-    @callback split_task(Task.t(), [map()]) ::
-                {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-
-    @callback sync_document(RintoPMO.Documents.Document.t(), map()) ::
-                {:ok, map()} | {:error, Ecto.Changeset.t()} | refusal()
-
-    @callback file_breakdown(RintoPMO.Documents.Document.t()) ::
-                {:ok, [Task.t()]} | {:error, Ecto.Changeset.t()} | refusal()
-
-    @callback delete_task(Task.t()) ::
-                {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
-
-    @callback project_stats(Project.t()) :: stats()
-
-    @callback add_dependency(Task.t(), UUIDv7.t()) ::
-                {:ok, RintoPMO.Tasks.Dependency.t()} | {:error, Ecto.Changeset.t()} | refusal()
-    @callback remove_dependency(Task.t(), UUIDv7.t()) :: :ok
-    @callback list_dependencies(Task.t()) :: [Task.t()]
-    @callback list_dependents(Task.t()) :: [Task.t()]
-    @callback list_edges(UUIDv7.t() | nil) ::
-                [%{task_id: UUIDv7.t(), depends_on_id: UUIDv7.t()}]
-  end
-
   @behaviour Behaviour
 
-  @doc """
-  Lists a project's tasks, oldest first, with summary nodes rolled up.
-
-  Ascending order, unlike annotations and conversations: a backlog is worked
-  from the front, and the oldest outstanding task is the one that has been
-  waiting longest. Flat order, not tree order -- `parent_id` is on every row,
-  so a client that wants the WBS shape builds it once and keeps it, while a
-  client that wants a queue is not made to unpick a tree first.
-
-  The project is read whole and filtered in memory, because a summary's status
-  depends on children a `WHERE` clause may have just excluded: filtering in SQL
-  would make `?status=done` hide exactly the children that decide whether the
-  cover above them is done. Lists here are unpaginated by design, so this reads
-  no more rows than the unfiltered call already did.
-  """
   @impl true
   def list_tasks(%Project{} = project, filter) when is_map(filter) do
     project.id
@@ -245,21 +45,6 @@ defmodule RintoPMO.Tasks do
     |> sort_tasks(filter)
   end
 
-  @doc """
-  Lists every project's tasks at once.
-
-  The pool a person pulls from is not a project's. Capacity is one pool across
-  everything they are working on -- `RintoPMO.Schedule` says so and refuses to
-  filter by project for that reason -- so "what is there to pick up" and "what
-  is the most worth starting" are questions about all of it. Answering them by
-  listing each project in turn makes the client sort the union itself, using
-  whatever order it invented, which is exactly the rule it should not own.
-
-  Everything is read and rolled up together, which is what a rollup needs
-  anyway: a cover's status comes from children a `WHERE` clause might have
-  excluded. These lists are unpaginated by design, and the corpus is one
-  person's plan.
-  """
   @impl true
   def list_tasks(filter) when is_map(filter) do
     all_tasks()
@@ -274,55 +59,34 @@ defmodule RintoPMO.Tasks do
   that picked a task out of the pool has the id and not the project slug.
   """
   @impl true
-  def get_task!(id) do
-    case Repo.get!(Task.with_priority(), id) do
-      %Task{kind: :work} = task ->
-        task
+  def get_task!(id), do: Repo.get!(Task.with_priority(), id)
 
-      %Task{kind: :summary} = task ->
-        task.project_id
-        |> project_tasks()
-        |> Enum.find(task, &(&1.id == task.id))
-    end
-  end
-
-  @doc """
-  Creates a task under a project.
-
-  It starts `:open`, with or without an assignee -- creating work and deciding
-  whose it is are separate acts, and a PM filing a backlog does only the first.
-  Pass `kind: "summary"` for a cover node; `kind` cannot be changed afterwards.
-  """
+  @doc "Creates an open executable task under a leaf requirement and repository."
   @impl true
   def create_task(%Project{} = project, attrs) do
-    kind = kind_of(attrs)
-
     with :ok <- Guard.check(description_of(attrs)),
-         {:ok, attrs} <- put_estimate(attrs, kind),
-         {:ok, attrs} <- put_difficulty(attrs, kind),
-         {:ok, attrs} <- put_actual(attrs, kind),
-         chset = Task.creation_changeset(%Task{project_id: project.id}, attrs),
-         {:ok, chset} <- validate_parent(chset, project.id, nil) do
+         {:ok, attrs} <- put_estimate(attrs),
+         {:ok, attrs} <- put_difficulty(attrs),
+         {:ok, attrs} <- put_actual(attrs) do
+      chset = Task.creation_changeset(%Task{project_id: project.id}, attrs)
       Repo.transact(&insert_task(&1, chset))
     end
   end
 
   @doc """
-  Updates a task's wording, spec pointer, place in the tree, owner, or due date.
+  Updates a task's wording, spec pointer, owner, estimates, schedule or due date.
 
-  Neither `status` nor `kind` is accepted here. Status moves only through
-  `transition_task/2`; `kind` never moves at all.
+  Status moves only through `transition_task/3` or `transition_task/4`.
   """
   @impl true
   def update_task(%Task{} = task, attrs) do
     with :ok <- Guard.check(description_of(attrs)),
-         {:ok, attrs} <- put_estimate(attrs, task.kind),
-         {:ok, attrs} <- put_difficulty(attrs, task.kind),
-         {:ok, attrs} <- put_actual(attrs, task.kind),
+         {:ok, attrs} <- put_estimate(attrs),
+         {:ok, attrs} <- put_difficulty(attrs),
+         {:ok, attrs} <- put_actual(attrs),
          chset = Task.changeset(task, attrs),
-         {:ok, chset} <- validate_parent(chset, task.project_id, task.id),
          :ok <- check_schedule_move(task, chset) do
-      Repo.transact(&apply_move(&1, chset, task.parent_id))
+      Repo.transact(&apply_update(&1, chset))
     end
   end
 
@@ -338,9 +102,8 @@ defmodule RintoPMO.Tasks do
     end
   end
 
-  defp apply_move(repo, chset, old_parent_id) do
+  defp apply_update(repo, chset) do
     with {:ok, updated} <- chset |> validate_repo() |> repo.update() do
-      demote_if_emptied(repo, old_parent_id, updated.parent_id)
       index(repo, updated)
       inherited_priority({:ok, updated})
     end
@@ -350,20 +113,7 @@ defmodule RintoPMO.Tasks do
     Links.sync(repo, "task", task.id, task.description)
   end
 
-  @doc """
-  Deletes a task outright.
-
-  The one place in this domain where something is really removed. `cancel` is
-  the record that work was dropped and stays in the tree; delete is for rows
-  that should never have been there -- a breakdown an agent got wrong, filed
-  and rejected in the same sitting.
-
-  Refuses a node that still has children rather than scattering them: the
-  foreign key would silently reparent them to the root, and a WBS quietly
-  flattening itself is worse than being told to empty the cover first.
-
-  Deleting the last child of a cover demotes that cover back to a job.
-  """
+  @doc "Deletes a task and its links, cascading dependency edges and refreshing the graph."
   @impl true
   def delete_task(%Task{} = task) do
     # The edges go with the row, in the database, by cascade -- which the
@@ -377,20 +127,8 @@ defmodule RintoPMO.Tasks do
   end
 
   defp remove(repo, %Task{} = task) do
-    if child_count(repo, task.id) > 0 do
-      {:error, {:task_state_conflict, %{kind: task.kind, reason: "task still has children"}}}
-    else
-      detach(repo, task)
-    end
-  end
-
-  defp detach(repo, %Task{} = task) do
     Links.purge(repo, "task", task.id)
-
-    with {:ok, deleted} <- repo.delete(task) do
-      demote_if_emptied(repo, task.parent_id, nil)
-      {:ok, deleted}
-    end
+    repo.delete(task)
   end
 
   @doc """
@@ -402,8 +140,7 @@ defmodule RintoPMO.Tasks do
   """
   @impl true
   def assign_task(%Task{} = task, actor_id) do
-    with :ok <- require_work(task),
-         {:ok, actor_id} <- validate_assignee(actor_id) do
+    with {:ok, actor_id} <- validate_assignee(actor_id) do
       task
       |> Task.assignment_changeset(actor_id)
       |> Repo.update()
@@ -411,26 +148,16 @@ defmodule RintoPMO.Tasks do
     end
   end
 
-  @doc """
-  Claims an unassigned, unfinished task for an actor.
-
-  Returns `{:error, :task_already_claimed, details}` when someone else got
-  there first, and `{:error, :task_state_conflict, details}` when the task is
-  finished or is a summary node. The check and the write are one statement, so
-  two agents claiming at once produce one winner and one refusal rather than
-  two winners.
-  """
+  @doc "Atomically claims an unassigned live task; concurrent losers receive a refusal."
   @impl true
   def claim_task(%Task{} = task, actor_id) do
-    with :ok <- require_work(task),
-         {:ok, actor_id} <- validate_assignee(actor_id) do
+    with {:ok, actor_id} <- validate_assignee(actor_id) do
       now = DateTime.utc_now()
       live_statuses = Task.live_statuses()
 
       claimed =
         Task
         |> where([candidate], candidate.id == ^task.id)
-        |> where([candidate], candidate.kind == :work)
         |> where([candidate], is_nil(candidate.assignee_id))
         |> where([candidate], candidate.status in ^live_statuses)
         |> select([candidate], candidate)
@@ -457,8 +184,7 @@ defmodule RintoPMO.Tasks do
   """
   @impl true
   def release_task(%Task{} = task, actor_id) do
-    with :ok <- require_work(task),
-         :ok <- require_owner(task, actor_id) do
+    with :ok <- require_owner(task, actor_id) do
       task
       |> Task.assignment_changeset(nil)
       |> Repo.update()
@@ -466,41 +192,7 @@ defmodule RintoPMO.Tasks do
     end
   end
 
-  @doc """
-  Moves a task through the status machine, on behalf of `actor_id`.
-
-  Refuses with `{:error, :task_state_conflict, details}` when the event does
-  not apply to the current status, when the task is a summary node whose status
-  is not its own to move, or when `:start` or `:complete` is asked of a task
-  nobody owns -- working with no owner is how a task ends up in progress with
-  nobody on it.
-
-  ## Two of the four events belong to the assignee
-
-  `:start` and `:complete` are the acts of doing the work, so `actor_id` has to
-  be the actor the task is assigned to, and anyone else gets
-  `{:error, :task_not_yours, details}`. Until now this rule existed only as a
-  line in the executor's skill telling the agent to check `assignee_id` with
-  its own eyes; a rule that lives in a prompt is a suggestion, and this is the
-  same rule where it can be enforced.
-
-  `:cancel` and `:reopen` are deliberately left open. They decide whether work
-  happens at all rather than who does it, and dropping a piece of work somebody
-  else is holding is an ordinary planning act -- the whole point of `cancel`
-  keeping the record is that the decision was made from outside the work.
-
-  Completing derives a still-empty `actual_minutes` from the execution clock.
-  An `actual_minutes` in `attrs` is an explicit override, and a value already on
-  the task survives an empty completion request.
-
-  > #### One token, for now {: .info}
-  >
-  > `actor_id` comes from the token, so today it is always this installation's
-  > owner (see `RintoPMO.Actors`). That does not make the check idle: it is
-  > what stops work assigned to a *different* actor from being started or
-  > finished by the one holding the token. When tokens become per-actor, this
-  > rule needs no revisiting -- it is already asking the right question.
-  """
+  @doc "Moves task state. Starting and completing require the assignee; completion records duration."
   @impl true
   def transition_task(%Task{} = task, event, actor_id) when is_atom(event) do
     transition_task(task, event, actor_id, %{})
@@ -543,8 +235,7 @@ defmodule RintoPMO.Tasks do
     do: do_transition_task(task, event, actor_id, attrs)
 
   defp do_transition_task(task, event, actor_id, attrs) do
-    with :ok <- require_work(task),
-         {:ok, _next} <- allowed_transition(task, event),
+    with {:ok, _next} <- allowed_transition(task, event),
          :ok <- require_owner(task, event, actor_id),
          {:ok, attrs} <- complete_attrs(event, attrs) do
       task
@@ -557,52 +248,7 @@ defmodule RintoPMO.Tasks do
   @impl true
   def sync_document(document, attrs), do: DocumentSync.sync(document, attrs)
 
-  @doc """
-  Files a task document as this project's work breakdown.
-
-  The other end of the breakdown prompt shortcut: a topic turned a plan into a
-  document somebody could read and argue with, and this turns the document they
-  settled on into the work itself. Between the two sits the only gate that
-  matters -- a person adopted it. Nothing a model does files work.
-
-  ## What it makes
-
-  A chunk with tasks under it becomes a summary covering them; a chunk with
-  none becomes one piece of work. Nothing else is read out of the document:
-  no estimates, because how long something takes is decided by whoever is
-  going to do it, and no ordering beyond the order they were written in, which
-  is the order they come back in.
-
-  ## Which document the tasks point at
-
-  The **source**, not the breakdown: `document_id` is the spec somebody
-  implements against, and that is the design that was broken down, not the list
-  of work it produced.
-
-  It is read out of the breakdown's own preamble -- the line above the first
-  heading, which the shortcut's prompt writes as a `rinto://document/{id}`
-  link. The provenance is therefore a claim the document makes in its own text,
-  which is why it survives being written by a topic through the ordinary
-  document API: there is no attempt row recording who broke down what, because
-  there is no attempt.
-
-  A breakdown that names no source, or names one that has since gone, files
-  tasks pointing at nothing. That is allowed and always was -- somebody may
-  write a breakdown by hand, and it is no less fileable for having no spec.
-
-  ## Once, and all of it
-
-  The document has to be `:formal` and comes out `:applied`, so a second call
-  is refused rather than filing the same breakdown twice. Tasks and that
-  transition are one transaction: either the work exists and the document is
-  spent, or neither happened and the document is still there to fix and file.
-
-  Changing what got filed is not this function's business and never becomes
-  it. Editing the document afterwards changes nothing here, deliberately --
-  see `docs/implementation-plan-task-decomposition.md`. Work that turns out to
-  be wrong is cancelled; work that is missing comes from breaking down another
-  document.
-  """
+  @doc "Files an adopted task document as executable tasks and marks it applied in one transaction."
   @impl true
   def file_breakdown(%Document{} = breakdown) do
     with {:ok, blocks} <- breakdown_blocks(breakdown),
@@ -691,10 +337,6 @@ defmodule RintoPMO.Tasks do
 
   defp fetch_document(_other_type), do: nil
 
-  # Answered flat, in the order things were written, with `parent_id` on every
-  # row -- the same shape `list_tasks/2` gives and for the same reason: a
-  # caller that wants the tree builds it once, and one that wants a queue is
-  # not made to unpick a tree first.
   defp insert_chunks(chunks, %Document{} = breakdown, spec, repo) do
     chunks
     |> Enum.reduce_while({:ok, []}, fn chunk, {:ok, filed} ->
@@ -710,43 +352,24 @@ defmodule RintoPMO.Tasks do
     end
   end
 
-  # A chunk nobody broke down further is one job, not a cover over one job.
-  # Writing it as a `##` with no `###` is how the document says so.
-  defp insert_chunk(%{tasks: []} = chunk, breakdown, spec, repo) do
-    with {:ok, task} <- insert_node(chunk, :work, breakdown, spec, repo), do: {:ok, [task]}
-  end
-
   defp insert_chunk(chunk, breakdown, spec, repo) do
-    with {:ok, summary} <- insert_node(chunk, :summary, breakdown, spec, repo) do
-      insert_tasks(chunk.tasks, summary, breakdown, spec, repo)
-    end
-  end
+    nodes = if chunk.tasks == [], do: [chunk], else: chunk.tasks
 
-  # The summary leads the list it covers, so what comes back reads in document
-  # order whether or not a chunk had tasks under it.
-  defp insert_tasks(tasks, summary, breakdown, spec, repo) do
-    tasks
-    |> Enum.reduce_while({:ok, [summary]}, fn task, {:ok, created} ->
-      case insert_node(task, :work, breakdown, spec, repo, summary) do
-        {:ok, child} -> {:cont, {:ok, [child | created]}}
+    Enum.reduce_while(nodes, {:ok, []}, fn node, {:ok, created} ->
+      case insert_node(node, breakdown, spec, repo) do
+        {:ok, task} -> {:cont, {:ok, created ++ [task]}}
         error -> {:halt, error}
       end
     end)
-    |> case do
-      {:ok, created} -> {:ok, Enum.reverse(created)}
-      error -> error
-    end
   end
 
-  defp insert_node(node, kind, %Document{} = breakdown, spec, repo, parent \\ nil) do
+  defp insert_node(node, %Document{} = breakdown, spec, repo) do
     %Task{
       project_id: breakdown.project_id,
       requirement_id: breakdown.requirement_id,
-      repo_id: sole_repo_id(breakdown.project_id),
-      parent_id: parent && parent.id
+      repo_id: sole_repo_id(breakdown.project_id)
     }
     |> Task.creation_changeset(%{
-      kind: kind,
       title: node.title,
       description: node.description,
       document_id: spec && spec.id
@@ -763,116 +386,7 @@ defmodule RintoPMO.Tasks do
     %{"chunk" => chunk.title, "errors" => Changeset.traverse_errors(chset, &elem(&1, 0))}
   end
 
-  @doc """
-  Turns a job into the cover over the jobs it turned out to be.
-
-  This is the one thing that moves `kind`, and it moves in one direction. A
-  breakdown discovers that a task is really several, and refusing that would
-  refuse what a WBS is for -- but it is an operation rather than a field,
-  because the flip drops the assignee and the clocks, and that should never
-  ride along with an edit of the wording.
-
-  Refuses a task that is already a cover, and one that is `:done` or
-  `:cancelled`: a finished job is not a container for unfinished work, and
-  promoting it would leave a `completed_at` claiming a chunk was delivered
-  before anyone knew what was in it.
-
-  `children` may be empty. The promotion is the operation; a cover with nothing
-  under it reads `:open`, which is exactly true -- nobody has broken it down
-  yet -- and existing tasks can be moved in afterwards with `update_task/2`.
-  Everything here happens in one transaction, so a split never half-lands.
-  """
-  @impl true
-  def split_task(task, children \\ [])
-
-  def split_task(%Task{kind: :summary} = task, _children) do
-    {:error, :task_not_splittable, %{kind: :summary, current_status: task.status}}
-  end
-
-  def split_task(%Task{status: status} = task, _children)
-      when status in [:done, :cancelled] do
-    {:error, :task_not_splittable, %{kind: task.kind, current_status: status}}
-  end
-
-  def split_task(%Task{} = task, children) when is_list(children) do
-    Repo.transact(fn repo ->
-      with {:ok, summary} <- repo.update(Task.split_changeset(task)),
-           {:ok, inserted} <- insert_children(summary, children, repo) do
-        inherited_priority({:ok, %{summary | children: inserted}})
-      end
-    end)
-    |> unwrap_refusal()
-  end
-
-  # `Repo.transact/1` only speaks two-tuples, so a refusal travels wrapped and
-  # is unpacked here rather than being flattened into a changeset it is not.
-  defp unwrap_refusal({:error, {code, details}}), do: {:error, code, details}
-  defp unwrap_refusal(result), do: result
-
-  defp insert_children(%Task{} = summary, children, repo) do
-    children
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {attrs, index}, {:ok, acc} ->
-      case insert_child(summary, attrs, repo) do
-        {:ok, child} -> {:cont, {:ok, [child | acc]}}
-        {:error, chset} -> {:halt, {:error, {:validation_error, child_errors(index, chset)}}}
-        {:error, code, details} -> {:halt, {:error, {code, Map.put(details, :child, index)}}}
-      end
-    end)
-    |> case do
-      {:ok, inserted} -> {:ok, Enum.reverse(inserted)}
-      error -> error
-    end
-  end
-
-  # Children go through the same estimate gate as any other write. Handing
-  # `Task.changeset/2` the raw attrs would make `estimate_likely` castable
-  # here and nowhere else, which is exactly the hole an agent generating a
-  # breakdown would fall into.
-  defp insert_child(%Task{} = summary, attrs, repo) do
-    with {:ok, attrs} <- put_estimate(attrs),
-         {:ok, attrs} <- put_difficulty(attrs),
-         {:ok, attrs} <- put_actual(attrs) do
-      %Task{
-        project_id: summary.project_id,
-        requirement_id: summary.requirement_id,
-        repo_id: summary.repo_id,
-        parent_id: summary.id
-      }
-      |> Task.split_child_changeset(attrs)
-      |> validate_requirement()
-      |> validate_repo()
-      |> repo.insert()
-      |> inherited_priority()
-    end
-  end
-
-  # Which child failed matters: a caller that sent five of them -- an agent
-  # that just generated a breakdown, say -- cannot act on "title is blank"
-  # without knowing whose title.
-  defp child_errors(index, chset) do
-    translated =
-      Changeset.traverse_errors(chset, fn {message, opts} ->
-        Regex.replace(~r"%{(\w+)}", message, fn _whole, key ->
-          opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-        end)
-      end)
-
-    %{"children" => %{Integer.to_string(index) => translated}}
-  end
-
-  @doc """
-  Counts a project's work by status and by assignee.
-
-  Summary nodes are excluded from every number here. A cover is its children
-  restated, so counting it would tally each job twice and make a board's totals
-  a function of how finely someone chose to break the project down.
-
-  `by_status` always carries every status, including the ones at zero: a board
-  that hides its empty columns changes shape as work moves through it.
-  `by_assignee` covers only actors that hold at least one task, and excludes
-  the unassigned -- those are their own number, not an actor with a null id.
-  """
+  @doc "Counts tasks by status and assignee, with estimates and actual durations."
   @impl true
   def project_stats(%Project{} = project) do
     rows =
@@ -988,62 +502,9 @@ defmodule RintoPMO.Tasks do
   defp work_tasks(%Project{} = project) do
     Task
     |> where([task], task.project_id == ^project.id)
-    |> where([task], task.kind == :work)
   end
 
-  # A cover is a cover over something. The moment the last child leaves -- by
-  # deletion or by being moved elsewhere -- there is nothing left to cover, and
-  # the node would otherwise sit in the tree unable to be worked and with
-  # nothing to roll up.
-  #
-  # Not fired for a cover that never had children: creating one top-down, or
-  # splitting with an empty payload, is a breakdown that has not been filled in
-  # yet, and demoting it would undo the intent in the same breath as recording
-  # it. This is a rule about *emptying*, not about being empty.
-  defp demote_if_emptied(_repo, nil, _new_parent_id), do: :ok
-  defp demote_if_emptied(_repo, same, same), do: :ok
-
-  defp demote_if_emptied(repo, old_parent_id, _new_parent_id) do
-    with %Task{kind: :summary} = parent <- repo.get(Task, old_parent_id),
-         0 <- child_count(repo, old_parent_id) do
-      {:ok, _demoted} = repo.update(Task.demote_changeset(parent))
-      :ok
-    else
-      _still_covering -> :ok
-    end
-  end
-
-  defp child_count(repo, task_id) do
-    Task
-    |> where([task], task.parent_id == ^task_id)
-    |> repo.aggregate(:count, :id)
-  end
-
-  @doc """
-  Asks a model to fill in what this subtree is missing.
-
-  `:difficulty` rates work in Fibonacci story points; `:time` produces a
-  three-point estimate, calibrated with completed work from the same project.
-  One function and not two, because the two differ in the question put to the
-  model and in nothing else: same target, same targeting, same refusals, same
-  answer.
-
-  The target is one node. A work item is estimated itself; a summary is
-  estimated as the work under it that still has no value. Answers with the
-  *job*, before the model has been asked -- the call takes as long as it takes.
-
-  Refused when there is nothing left to estimate, or when the
-  `"task_estimation"` role has not been configured. Both are answered here,
-  synchronously, because both are conditions of asking rather than outcomes of
-  the answer.
-
-  Only missing values are targeted. While a job of this kind is still in flight
-  on this task, `Oban` hands back the job already queued. Once every value is
-  filled, another request returns `:nothing_to_estimate`.
-
-  The two kinds are separate slots. One of each may be in flight on the same
-  task -- they are different questions.
-  """
+  @doc "Queues an estimate for this task when its requested value is missing."
   @impl true
   def request_estimation(%Task{} = task, kind) when kind in @estimation_kinds do
     with :ok <- something_to_estimate(task, kind),
@@ -1087,49 +548,14 @@ defmodule RintoPMO.Tasks do
     end
   end
 
-  defp something_to_estimate(%Task{} = task, kind) do
-    case subtree_work(task) do
-      [] ->
-        {:error, :nothing_to_estimate, %{kind: kind, reason: "no work items to estimate"}}
-
-      work ->
-        case unfilled(work, kind) do
-          [] ->
-            {:error, :nothing_to_estimate,
-             %{kind: kind, reason: nothing_to_estimate_reason(kind)}}
-
-          _targets ->
-            :ok
-        end
-    end
+  defp something_to_estimate(task, kind) do
+    if unfilled_work(task, kind) == [],
+      do: {:error, :nothing_to_estimate, %{kind: kind, reason: "the task already has a value"}},
+      else: :ok
   end
 
-  defp nothing_to_estimate_reason(:difficulty),
-    do: "every work item already has a difficulty"
-
-  defp nothing_to_estimate_reason(:time),
-    do: "every work item already has an estimate"
-
-  defp unfilled_work(%Task{} = task, kind), do: unfilled(subtree_work(task), kind)
-
-  defp unfilled(tasks, :difficulty), do: Enum.filter(tasks, &is_nil(&1.difficulty))
-  defp unfilled(tasks, :time), do: Enum.filter(tasks, &is_nil(&1.estimate_optimistic))
-
-  defp subtree_work(%Task{kind: :work} = task), do: [task]
-
-  defp subtree_work(%Task{kind: :summary} = task) do
-    children = Enum.group_by(project_tasks(task.project_id), & &1.parent_id)
-    collect_work(task.id, children)
-  end
-
-  defp collect_work(id, children) do
-    children
-    |> Map.get(id, [])
-    |> Enum.flat_map(fn
-      %Task{kind: :work} = task -> [task]
-      %Task{kind: :summary, id: child_id} -> collect_work(child_id, children)
-    end)
-  end
+  defp unfilled_work(task, :difficulty), do: if(is_nil(task.difficulty), do: [task], else: [])
+  defp unfilled_work(task, :time), do: if(is_nil(task.estimate_optimistic), do: [task], else: [])
 
   # Refused rather than fallen back on. Estimation belongs to no conversation,
   # so unlike naming there is no other configuration standing there to inherit
@@ -1201,7 +627,6 @@ defmodule RintoPMO.Tasks do
   defp history(project_id) do
     Task
     |> where([task], task.project_id == ^project_id)
-    |> where([task], task.kind == :work)
     |> where([task], task.status == :done)
     |> where([task], not is_nil(task.actual_minutes))
     |> order_by([task], desc: task.completed_at)
@@ -1316,7 +741,7 @@ defmodule RintoPMO.Tasks do
         :invalid ->
           {:halt,
            {:error,
-            "invalid estimate for #{task.id}; use ordered whole minutes up to #{Task.estimate_ceiling()}, or split the task"}}
+            "invalid estimate for #{task.id}; use ordered whole minutes up to #{Task.estimate_ceiling()}, or create smaller tasks"}}
 
         _changed ->
           {:halt, {:error, "task #{task.id} changed during estimation; run it again"}}
@@ -1346,7 +771,6 @@ defmodule RintoPMO.Tasks do
       :description,
       :difficulty,
       :status,
-      :kind,
       :requirement_id,
       :estimate_optimistic,
       :estimate_likely,
@@ -1383,131 +807,14 @@ defmodule RintoPMO.Tasks do
 
   defp task_estimator, do: Utils.module(:task_estimator)
 
-  # ---------------------------------------------------------------- rollup
-
   defp project_tasks(project_id) do
-    Task
-    |> where([task], task.project_id == ^project_id)
-    |> rolled_up()
+    Task |> where([task], task.project_id == ^project_id) |> read_tasks()
   end
 
-  # No project at all. A parent is always in the same project as its child --
-  # `validate_parent/3` enforces it -- so rolling the whole table up at once
-  # gives every cover the same children it would have had project by project.
-  defp all_tasks do
-    rolled_up(Task)
-  end
+  defp all_tasks, do: read_tasks(Task)
 
-  defp rolled_up(query) do
-    tasks =
-      query
-      |> order_by([task], asc: task.id)
-      |> Task.with_priority()
-      |> Repo.all()
-
-    children = Enum.group_by(tasks, & &1.parent_id)
-
-    Enum.map(tasks, &roll_up(&1, children, []))
-  end
-
-  defp roll_up(%Task{kind: :work} = task, _children, _ancestors), do: task
-
-  defp roll_up(%Task{kind: :summary} = task, children, ancestors) do
-    if task.id in ancestors do
-      # Only reachable if a cycle survived `validate_parent/3`. Yielding the
-      # row untouched breaks the loop rather than recursing forever.
-      task
-    else
-      rolled =
-        children
-        |> Map.get(task.id, [])
-        |> Enum.map(&roll_up(&1, children, [task.id | ancestors]))
-
-      %{
-        task
-        | status: rolled |> Enum.map(& &1.status) |> Task.rollup(),
-          unestimated_tasks: Enum.sum_by(rolled, &count_unestimated/1),
-          unrated_tasks: Enum.sum_by(rolled, &count_unrated/1),
-          unmeasured_tasks: Enum.sum_by(rolled, &count_unmeasured/1),
-          unscheduled_tasks: Enum.sum_by(rolled, &count_unscheduled/1)
-      }
-      |> put_summed_estimate(rolled)
-      |> put_summed_actual(rolled)
-      |> put_earliest_planned_start(rolled)
-    end
-  end
-
-  defp count_unestimated(%Task{kind: :summary} = task), do: task.unestimated_tasks
-  defp count_unestimated(%Task{estimate_optimistic: nil}), do: 1
-  defp count_unestimated(%Task{}), do: 0
-
-  defp count_unrated(%Task{kind: :summary} = task), do: task.unrated_tasks
-  defp count_unrated(%Task{difficulty: nil}), do: 1
-  defp count_unrated(%Task{}), do: 0
-
-  defp count_unmeasured(%Task{kind: :summary} = task), do: task.unmeasured_tasks
-  defp count_unmeasured(%Task{actual_minutes: nil}), do: 1
-  defp count_unmeasured(%Task{}), do: 0
-
-  defp count_unscheduled(%Task{kind: :summary} = task), do: task.unscheduled_tasks
-  defp count_unscheduled(%Task{planned_start_on: nil}), do: 1
-  defp count_unscheduled(%Task{}), do: 0
-
-  # The earliest day any part of the chunk was selected for. A cover stores no
-  # `planned_start_on` of its own -- the column is forbidden on a summary row --
-  # so this is written onto the struct on read, the same way the status and the
-  # summed estimate are.
-  #
-  # There is deliberately no matching end. Where the work *lands*, and therefore
-  # when the chunk finishes, is `RintoPMO.Schedule`'s answer and depends on
-  # every other task competing for the same weeks; a max taken over selections
-  # would look like that answer without being it.
-  #
-  # `first_planned_on` rolls up the same way and has to: a cover whose current
-  # selection was rolled up while its baseline stayed null would report a chunk
-  # that has never slipped, which is the one thing the baseline exists to stop.
-  defp put_earliest_planned_start(%Task{} = task, rolled) do
-    task
-    |> put_earliest(rolled, :planned_start_on)
-    |> put_earliest(rolled, :first_planned_on)
-  end
-
-  defp put_earliest(%Task{} = task, rolled, field) do
-    case rolled |> Enum.map(&Map.fetch!(&1, field)) |> Enum.reject(&is_nil/1) do
-      [] -> task
-      days -> Map.put(task, field, Enum.min(days, Date))
-    end
-  end
-
-  # Summed over the descendants that actually carry one. A cover with nothing
-  # estimated under it reports no estimate rather than zero: zero is a claim
-  # that the chunk is free, and nobody made it.
-  defp put_summed_estimate(%Task{} = task, rolled) do
-    case Enum.reject(rolled, &is_nil(&1.estimate_optimistic)) do
-      [] ->
-        task
-
-      estimated ->
-        %{
-          task
-          | estimate_optimistic: Enum.sum_by(estimated, & &1.estimate_optimistic),
-            estimate_likely: Enum.sum_by(estimated, & &1.estimate_likely),
-            estimate_pessimistic: Enum.sum_by(estimated, & &1.estimate_pessimistic)
-        }
-    end
-  end
-
-  # Summed over the descendants that actually carry one. Same rule as the
-  # estimate: a cover with nothing measured under it reports no actual rather
-  # than zero, because zero is a claim that the chunk took no time.
-  defp put_summed_actual(%Task{} = task, rolled) do
-    case Enum.reject(rolled, &is_nil(&1.actual_minutes)) do
-      [] ->
-        task
-
-      measured ->
-        %{task | actual_minutes: Enum.sum_by(measured, & &1.actual_minutes)}
-    end
+  defp read_tasks(query) do
+    query |> order_by([task], asc: task.id) |> Task.with_priority() |> Repo.all()
   end
 
   # ---------------------------------------------------------------- filtering
@@ -1518,12 +825,10 @@ defmodule RintoPMO.Tasks do
 
     Enum.filter(tasks, fn task ->
       Enum.all?(filter, fn
-        {:kind, kind} -> task.kind == kind
         {:status, status} -> task.status == status
         {:assignee_id, assignee_id} -> task.assignee_id == assignee_id
         {:document_id, document_id} -> task.document_id == document_id
         {:repo_id, repo_id} -> task.repo_id == repo_id
-        {:parent_id, parent_id} -> task.parent_id == parent_id
         {:live, live} -> task.status in live_statuses == live
         {:overdue, overdue} -> overdue?(task, live_statuses, today) == overdue
         {:priority, priority} -> task.priority == priority
@@ -1563,19 +868,14 @@ defmodule RintoPMO.Tasks do
   # `estimate` object, get checked as one thing, and are written back flat --
   # otherwise a client could set `estimate_likely` alone and slip past every
   # rule about the shape being whole and ordered.
-  defp put_estimate(attrs, kind \\ :work) do
+  defp put_estimate(attrs) do
     attrs = attrs |> stringify_keys() |> Map.drop(@estimate_columns)
 
     case Map.fetch(attrs, "estimate") do
       :error -> {:ok, attrs}
       {:ok, nil} -> {:ok, Map.merge(attrs, clear_estimate())}
-      {:ok, _estimate} when kind == :summary -> {:error, :invalid_estimate, summary_refusal()}
       {:ok, estimate} -> cast_estimate(attrs, estimate)
     end
-  end
-
-  defp summary_refusal do
-    %{field: "estimate", reason: "a summary node takes its estimate from its children"}
   end
 
   defp clear_estimate, do: Map.new(@estimate_columns, &{&1, nil})
@@ -1622,19 +922,14 @@ defmodule RintoPMO.Tasks do
     end
   end
 
-  # Only the pessimistic leg is checked. `validate_estimate_order/1` has already
-  # run, so it is the largest of the three; capping the other two would restate
-  # the ordering rather than add to it.
-  #
-  # The ceiling is what makes `RintoPMO.Schedule` total: no work item is larger
-  # than a working day, so none can fail to fit in some week, and the packer
-  # needs no branch for the task that lands nowhere. A task that wants more than
-  # a day was not broken down far enough, which is what `split_task/2` is for.
   defp validate_estimate_ceiling([_optimistic, _likely, {_, pessimistic}]) do
     ceiling = Task.estimate_ceiling()
 
     if pessimistic > ceiling do
-      estimate_error("pessimistic", "must be at most #{ceiling} minutes; split the task instead")
+      estimate_error(
+        "pessimistic",
+        "must be at most #{ceiling} minutes; create smaller tasks instead"
+      )
     else
       :ok
     end
@@ -1644,22 +939,6 @@ defmodule RintoPMO.Tasks do
     {:error, :invalid_estimate, %{field: field, reason: reason}}
   end
 
-  @doc """
-  Records that `task` cannot start until `depends_on_id` is done.
-
-  Refuses three things, each for a reason the database cannot see:
-
-    * `:dependency_cycle` -- the edge would close a loop. `:digraph` decides:
-      a graph opened `[:acyclic]` rejects the closing edge and hands back the
-      path it would have closed, so the refusal names the loop rather than
-      merely asserting one. The same code the WBS uses when a parent would sit
-      under its own child, and with the same `cycle` detail: one shape that
-      loops, one answer, whichever graph it was.
-    * `:dependency_out_of_order` -- the prerequisite is scheduled after the
-      work waiting on it, or is not scheduled at all while that work is.
-    * `:task_not_dependable` -- a summary node. A cover holds no work of its
-      own, so ordering it against work would be ordering a heading.
-  """
   @spec add_dependency(Task.t(), UUIDv7.t()) ::
           {:ok, Dependency.t()} | {:error, Changeset.t()} | Behaviour.refusal()
   @impl Behaviour
@@ -1759,13 +1038,9 @@ defmodule RintoPMO.Tasks do
     |> Repo.all()
   end
 
-  defp fetch_dependable(%Task{kind: :summary} = task, _depends_on_id),
-    do: {:error, :task_not_dependable, %{id: task.id, kind: :summary}}
-
   defp fetch_dependable(%Task{}, depends_on_id) do
     case Repo.get(Task, depends_on_id) do
       nil -> {:error, :task_not_found, %{depends_on_id: depends_on_id}}
-      %Task{kind: :summary} = cover -> {:error, :task_not_dependable, %{id: cover.id}}
       %Task{} = prerequisite -> {:ok, prerequisite}
     end
   end
@@ -1861,16 +1136,9 @@ defmodule RintoPMO.Tasks do
     Map.new(map, fn {key, value} -> {to_string(key), value} end)
   end
 
-  defp kind_of(attrs) do
-    case attrs |> stringify_keys() |> Map.get("kind") do
-      kind when kind in ["summary", :summary] -> :summary
-      _other -> :work
-    end
-  end
-
   @difficulties [1, 2, 3, 5, 8, 13, 21]
 
-  defp put_difficulty(attrs, kind \\ :work) do
+  defp put_difficulty(attrs) do
     attrs = stringify_keys(attrs)
 
     case Map.fetch(attrs, "difficulty") do
@@ -1879,10 +1147,6 @@ defmodule RintoPMO.Tasks do
 
       {:ok, nil} ->
         {:ok, attrs}
-
-      {:ok, _value} when kind == :summary ->
-        {:error, :invalid_difficulty,
-         %{field: "difficulty", reason: "a summary node does not carry a difficulty"}}
 
       {:ok, value} when value in @difficulties ->
         {:ok, attrs}
@@ -1896,7 +1160,7 @@ defmodule RintoPMO.Tasks do
     end
   end
 
-  defp put_actual(attrs, kind \\ :work) do
+  defp put_actual(attrs) do
     attrs = stringify_keys(attrs)
 
     case Map.fetch(attrs, "actual_minutes") do
@@ -1905,13 +1169,6 @@ defmodule RintoPMO.Tasks do
 
       {:ok, nil} ->
         {:ok, attrs}
-
-      {:ok, _value} when kind == :summary ->
-        {:error, :invalid_actual,
-         %{
-           field: "actual_minutes",
-           reason: "a summary node takes its actual duration from its children"
-         }}
 
       {:ok, value} when is_integer(value) and value >= 0 ->
         {:ok, attrs}
@@ -2011,70 +1268,8 @@ defmodule RintoPMO.Tasks do
 
   defp inherited_priority(result), do: result
 
-  # ---------------------------------------------------------------- parenting
-
-  # A parent has to be a summary node in the same project, and it must not sit
-  # underneath the task it is being given. The first two are field errors; the
-  # cycle is not -- nothing about the submitted value is malformed, the tree
-  # simply cannot hold that shape, which is what `dependency_cycle` says.
-  defp validate_parent(chset, project_id, task_id) do
-    case Changeset.fetch_change(chset, :parent_id) do
-      :error -> {:ok, chset}
-      {:ok, nil} -> {:ok, chset}
-      {:ok, parent_id} -> validate_parent_id(chset, parent_id, project_id, task_id)
-    end
-  end
-
-  defp validate_parent_id(chset, parent_id, project_id, task_id) do
-    case Repo.get(Task, parent_id) do
-      nil ->
-        {:ok, Changeset.add_error(chset, :parent_id, "does not exist")}
-
-      %Task{project_id: other} when other != project_id ->
-        {:ok, Changeset.add_error(chset, :parent_id, "belongs to another project")}
-
-      %Task{kind: :work} ->
-        {:ok, Changeset.add_error(chset, :parent_id, "must be a summary node")}
-
-      %Task{} = parent ->
-        if parent.requirement_id == Changeset.get_field(chset, :requirement_id) do
-          detect_cycle(chset, parent, task_id)
-        else
-          {:ok, Changeset.add_error(chset, :parent_id, "belongs to another requirement")}
-        end
-    end
-  end
-
-  defp detect_cycle(chset, _parent, nil), do: {:ok, chset}
-
-  defp detect_cycle(chset, %Task{} = parent, task_id) do
-    case ancestor_chain(parent, task_id) do
-      {:ok, _chain} -> {:ok, chset}
-      {:cycle, chain} -> {:error, :dependency_cycle, %{cycle: chain}}
-    end
-  end
-
-  # Walks from the proposed parent up to the root looking for `task_id`.
-  # Finding it means the task is already an ancestor of its own new parent, so
-  # attaching would close a loop and orphan the subtree from every root.
-  defp ancestor_chain(%Task{} = parent, task_id), do: climb(parent, [], task_id, @max_depth)
-
-  defp climb(%Task{id: id}, chain, _task_id, 0), do: {:cycle, Enum.reverse([id | chain])}
-
-  defp climb(%Task{id: id}, chain, task_id, _depth) when id == task_id do
-    {:cycle, Enum.reverse([id | chain])}
-  end
-
-  defp climb(%Task{id: id, parent_id: nil}, chain, _task_id, _depth) do
-    {:ok, Enum.reverse([id | chain])}
-  end
-
-  defp climb(%Task{id: id, parent_id: parent_id}, chain, task_id, depth) do
-    case Repo.get(Task, parent_id) do
-      nil -> {:ok, Enum.reverse([id | chain])}
-      %Task{} = ancestor -> climb(ancestor, [id | chain], task_id, depth - 1)
-    end
-  end
+  defp unwrap_refusal({:error, {code, details}}), do: {:error, code, details}
+  defp unwrap_refusal(result), do: result
 
   # ---------------------------------------------------------------- refusals
 
@@ -2093,13 +1288,6 @@ defmodule RintoPMO.Tasks do
         {:error, :task_state_conflict, %{status: task.status, expected: Task.live_statuses()}}
     end
   end
-
-  defp require_work(%Task{kind: :summary}) do
-    {:error, :task_state_conflict,
-     %{kind: :summary, reason: "a summary node holds no work of its own"}}
-  end
-
-  defp require_work(%Task{}), do: :ok
 
   defp allowed_transition(%Task{status: status}, event) do
     case Task.next_status(status, event) do

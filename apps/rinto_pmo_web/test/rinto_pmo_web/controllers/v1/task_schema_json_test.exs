@@ -16,16 +16,16 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
   alias RintoPMOWeb.V1.TaskSchemaJSON
 
   describe "GET /tasks/schema" do
-    test "serves the four shapes a write can take", %{conn: conn} do
+    test "serves the three shapes a write can take", %{conn: conn} do
       conn = get(conn, ~p"/api/v1/tasks/schema")
 
-      assert %{"create" => create, "update" => _update, "split" => split, "sync" => sync} =
+      assert %{"create" => create, "update" => _update, "sync" => sync} =
                json_response(conn, 200)["data"]
 
       assert sync["required"] == ["base_revision_id", "tasks"]
       assert create["required"] == ["title", "requirement_id", "repo_id"]
-      assert create["properties"]["kind"]["enum"] == ["work", "summary"]
-      assert split["properties"]["children"]["items"]["required"] == ["title"]
+      refute Map.has_key?(create["properties"], "kind")
+      refute Map.has_key?(create["properties"], "parent_id")
     end
 
     test "the update shape omits what only an event may move", %{conn: conn} do
@@ -35,15 +35,6 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
       refute Map.has_key?(update["properties"], "status")
       refute Map.has_key?(update["properties"], "kind")
       assert update["description"] =~ "writes are refused"
-    end
-
-    test "a child of a split carries no parent, because the split answered that", %{conn: conn} do
-      conn = get(conn, ~p"/api/v1/tasks/schema")
-      child = json_response(conn, 200)["data"]["split"]["properties"]["children"]["items"]
-
-      refute Map.has_key?(child["properties"], "parent_id")
-      refute Map.has_key?(child["properties"], "kind")
-      assert Map.has_key?(child["properties"], "planned_start_on")
     end
 
     test "the numbers are the domain's, not a copy of them", %{conn: conn} do
@@ -68,8 +59,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
 
       written = [
         shapes["create"]["properties"],
-        shapes["update"]["properties"],
-        shapes["split"]["properties"]["children"]["items"]["properties"]
+        shapes["update"]["properties"]
       ]
 
       for properties <- written, {field, _schema} <- properties do
@@ -127,17 +117,6 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
       assert {:ok, task} = Tasks.update_task(task, example)
       assert task.priority == 3
       assert task.planned_start_on == nil
-    end
-
-    test "split's example is a body the domain accepts", %{project: project, shapes: shapes} do
-      [example] = shapes.split.examples
-      task = insert(:task, project: project)
-
-      assert {:ok, summary} = Tasks.split_task(task, example["children"])
-      assert summary.kind == :summary
-
-      assert Enum.map(summary.children, & &1.title) ==
-               Enum.map(example["children"], & &1["title"])
     end
   end
 end

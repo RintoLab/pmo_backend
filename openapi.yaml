@@ -39,130 +39,85 @@ servers:
   - url: https://pmo-api.kenton.wang/api/v1
     description: Production
 tags:
-  - name: Actors
-    description: Global human participants and AI personas.
-  - name: AI Models
-    description: Providers and models available from the local pi RPC runtime for AI actor configuration.
-  - name: AI Authentication
-    description: >
-      Backend-owned provider authorization. Only display-safe device-code data
-      crosses the API; OAuth credentials remain in Pi's auth.json.
-  - name: Projects
-    description: Projects and their archive lifecycle.
-  - name: Project Repositories
-    description: Read-only Git repositories scoped to a project.
-  - name: Requirements
-    description: Project-scoped development requirements. Repository scope is derived from tasks.
-  - name: Documents
-    description: Top-level, block-based documents and their immutable revision history.
-  - name: Annotations
-    description: Document annotations and flat follow-up replies (not review workflow, not AI chat logs).
-  - name: Proposals
-    description: >
-      Proposed changes and what a person does with them. An agent writes here
-      rather than straight to a revision, because a revision is what a person
-      agreed to.
+- name: Actors
+  description: Global human participants and AI personas.
+- name: AI Models
+  description: Providers and models available from the local pi RPC runtime for AI
+    actor configuration.
+- name: AI Authentication
+  description: 'Backend-owned provider authorization. Only display-safe device-code
+    data crosses the API; OAuth credentials remain in Pi''s auth.json.
 
+'
+- name: Projects
+  description: Projects and their archive lifecycle.
+- name: Project Repositories
+  description: Read-only Git repositories scoped to a project.
+- name: Requirements
+  description: Project-scoped development requirements. Repository scope is derived
+    from tasks.
+- name: Documents
+  description: Top-level, block-based documents and their immutable revision history.
+- name: Annotations
+  description: Document annotations and flat follow-up replies (not review workflow,
+    not AI chat logs).
+- name: Proposals
+  description: |
+    Proposed changes and what a person does with them. An agent writes here rather than straight to a revision, because a revision is what a person agreed to.
 
-      One proposal is one local change -- a block rewritten, inserted, deleted
-      or moved, or the title. Whole-body Markdown is an input format that comes
-      back as several of them, because a rewrite that tightens two paragraphs
-      and drops a third is three things a person will have three opinions
-      about.
+    One proposal is one local change -- a block rewritten, inserted, deleted or moved, or the title. Whole-body Markdown is an input format that comes back as several of them, because a rewrite that tightens two paragraphs and drops a third is three things a person will have three opinions about.
 
+    Four verbs, deliberately not one. `PATCH` saves a checkbox, `adopt` settles which of several competing candidates a person wants, `reject` says no, and `POST /commit` publishes exactly what it was given. Two proposals claiming the same thing is a question for a human, never a merge.
+- name: Schedule
+  description: 'What each week holds and what did not fit. An iteration is a week
+    and is stored nowhere -- it is computed from the tasks selected into it, so there
+    is nothing to open, close, or keep in step with the calendar. Deliberately not
+    scoped to a project: a week''s minutes are shared across every project, so a per-project
+    view filters these results rather than asking for a project''s own schedule.
 
-      Four verbs, deliberately not one. `PATCH` saves a checkbox, `adopt`
-      settles which of several competing candidates a person wants, `reject`
-      says no, and `POST /commit` publishes exactly what it was given. Two
-      proposals claiming the same thing is a question for a human, never a
-      merge.
-  - name: Schedule
-    description: >
-      What each week holds and what did not fit. An iteration is a week and is
-      stored nowhere -- it is computed from the tasks selected into it, so
-      there is nothing to open, close, or keep in step with the calendar.
-      Deliberately not scoped to a project: a week's minutes are shared across
-      every project, so a per-project view filters these results rather than
-      asking for a project's own schedule.
-  - name: Calendar
-    description: >
-      Which days are not what the weekend rule says, and how many minutes each
-      one is left holding. Statutory holidays and the weekends worked to make up
-      for them are fetched daily from published State Council announcements and
-      are read-only here; leave is the half a person writes, and it is measured
-      in minutes rather than in whole days.
+'
+- name: Calendar
+  description: |
+    Which days are not what the weekend rule says, and how many minutes each one is left holding. Statutory holidays and the weekends worked to make up for them are fetched daily from published State Council announcements and are read-only here; leave is the half a person writes, and it is measured in minutes rather than in whole days.
+    The two are independent, and the order matters: the announcement sets what a day starts with, and leave subtracts from it. Neither can overwrite the other, so an amended holiday finds the leave still there and a deleted leave gives the day its minutes back.
+- name: Conversations
+  description: 'Topics: the process layer of collaborative review, as opposed to the
+    conclusions annotations carry. A conversation belongs to no document -- a topic
+    can span several -- and what it touches is derived from the refs on its messages.
 
-      The two are independent, and the order matters: the announcement sets what
-      a day starts with, and leave subtracts from it. Neither can overwrite the
-      other, so an amended holiday finds the leave still there and a deleted
-      leave gives the day its minutes back.
-  - name: Conversations
-    description: >
-      Topics: the process layer of collaborative review, as opposed to the
-      conclusions annotations carry. A conversation belongs to no document --
-      a topic can span several -- and what it touches is derived from the refs
-      on its messages.
-  - name: Tasks
-    description: >
-      The execution layer: a project's work breakdown, its distribution, and
-      its counts. A task consumes documents; it does not carry the process of
-      editing them. One tree of one resource -- a summary node is a task row
-      with `kind: summary`, and its status is the rollup over its children
-      rather than anything it can be told. Assignment and status are separate
-      questions, and status moves one endpoint per event rather than as a
-      settable field.
-  - name: Repo Credentials
-    description: Reusable HTTPS username and token credentials.
-  - name: References
-    description: >
-      The `rinto://` addressing scheme: how a body of text points at anything
-      else in this system. A reference is written into the text as an ordinary
-      Markdown link whose destination is `rinto://{type}/{key}`, so it survives
-      a model rewriting the block that carries it -- there is no sidecar array
-      the way a chat message has one.
+'
+- name: Tasks
+  description: Executable tasks owned by leaf requirements and repositories. Tasks
+    have assignment, status, estimates, schedules and dependencies. Requirement ancestry
+    provides grouping; tasks have no WBS hierarchy.
+- name: Repo Credentials
+  description: Reusable HTTPS username and token credentials.
+- name: References
+  description: |
+    The `rinto://` addressing scheme: how a body of text points at anything else in this system. A reference is written into the text as an ordinary Markdown link whose destination is `rinto://{type}/{key}`, so it survives a model rewriting the block that carries it -- there is no sidecar array the way a chat message has one.
 
+    **A body whose references point at nothing is refused.** Any endpoint taking a document body, a proposal, an annotation, a reply or a task description answers `422 unresolvable_references`, with the offending addresses in `details.uris`. Addresses are bare UUIDs handed out by search or by the call that created the thing, so one that resolves to nothing is a typo rather than a link to something not yet written -- and a body that saved with a dead link in it would fail silently, which is the case this exists to prevent.
 
-      **A body whose references point at nothing is refused.** Any endpoint
-      taking a document body, a proposal, an annotation, a reply or a task
-      description answers `422 unresolvable_references`, with the offending
-      addresses in `details.uris`. Addresses are bare UUIDs handed out by search
-      or by the call that created the thing, so one that resolves to nothing is
-      a typo rather than a link to something not yet written -- and a body that
-      saved with a dead link in it would fail silently, which is the case this
-      exists to prevent.
+    Two things are **not** refused. A type this build has never heard of is stored and ignored, so that adding a resource type later does not invalidate text already written. A malformed URI is not a reference at all -- refusing over one would make this a validator of link syntax.
 
+    Messages are never refused. A conversation is somebody thinking out loud, and losing a message over a mistyped link would trade the thing that matters for the index.
+- name: Attachments
+  description: 'Uploaded images, referenced from AI chat messages. Validated once
+    at upload so that expanding a reference later is a plain read.
 
-      Two things are **not** refused. A type this build has never heard of is
-      stored and ignored, so that adding a resource type later does not
-      invalidate text already written. A malformed URI is not a reference at all
-      -- refusing over one would make this a validator of link syntax.
+'
+- name: Jobs
+  description: 'Background work, looked up by the id the endpoint that started it
+    handed back. Read-only and deliberately thin: this is not a queue console, it
+    is the way back for a client that lost its connection while something was running.
+    Absent means finished -- pruning only ever reaches jobs that are over.
 
+'
+- name: AI roles
+  description: |
+    How the two jobs that happen outside a conversation call a model: naming a topic, and estimating a task. Each carries a provider, a model, a thinking level and an optional standing instruction.
 
-      Messages are never refused. A conversation is somebody thinking out loud,
-      and losing a message over a mistyped link would trade the thing that
-      matters for the index.
-  - name: Attachments
-    description: >
-      Uploaded images, referenced from AI chat messages. Validated once at
-      upload so that expanding a reference later is a plain read.
-  - name: Jobs
-    description: >
-      Background work, looked up by the id the endpoint that started it handed
-      back. Read-only and deliberately thin: this is not a queue console, it is
-      the way back for a client that lost its connection while something was
-      running. Absent means finished -- pruning only ever reaches jobs that are
-      over.
-  - name: AI roles
-    description: >
-      How the two jobs that happen outside a conversation call a model: naming a
-      topic, and estimating a task. Each carries a provider, a model, a thinking
-      level and an optional standing instruction.
-
-
-      Deliberately runtime state rather than deploy configuration: which model
-      does a job is tuned by reading what came back, and a config file would
-      make each adjustment a release. The set of jobs is fixed -- a role exists
-      because code reads it by name -- so there is no `POST`.
+    Deliberately runtime state rather than deploy configuration: which model does a job is tuned by reading what came back, and a config file would make each adjustment a release. The set of jobs is fixed -- a role exists because code reads it by name -- so there is no `POST`.
 paths:
   /actors:
     get:
@@ -1095,91 +1050,83 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-  /projects/{slug}/tasks:
+  "/projects/{slug}/tasks":
     parameters:
-      - $ref: "#/components/parameters/ProjectSlug"
+    - "$ref": "#/components/parameters/ProjectSlug"
     get:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: listTasks
       summary: List a project's tasks
-      description: >
-        Oldest first, unlike annotations and conversations: a backlog is worked
-        from the front. Flat order, not tree order -- every row carries
-        `parent_id`, so a client that wants the WBS shape builds it once, and
-        one that wants a queue is not made to unpick a tree first. Summary
-        nodes come back with their rolled-up status. Every filter combines with
-        the others.
+      description: List executable tasks oldest first by default. Supports status, owner,
+        document, repository, live, overdue, priority, scheduled and sort filters. kind
+        and parent_id filters are rejected with 400.
       parameters:
-        - $ref: "#/components/parameters/TaskKindFilter"
-        - $ref: "#/components/parameters/TaskStatusFilter"
-        - $ref: "#/components/parameters/TaskParentFilter"
-        - $ref: "#/components/parameters/TaskAssigneeFilter"
-        - $ref: "#/components/parameters/TaskDocumentFilter"
-        - $ref: "#/components/parameters/TaskRepoFilter"
-        - $ref: "#/components/parameters/TaskLiveFilter"
-        - $ref: "#/components/parameters/TaskOverdueFilter"
-        - $ref: "#/components/parameters/TaskPriorityFilter"
-        - $ref: "#/components/parameters/TaskScheduledFilter"
-        - $ref: "#/components/parameters/TaskSortFilter"
+      - "$ref": "#/components/parameters/TaskStatusFilter"
+      - "$ref": "#/components/parameters/TaskAssigneeFilter"
+      - "$ref": "#/components/parameters/TaskDocumentFilter"
+      - "$ref": "#/components/parameters/TaskRepoFilter"
+      - "$ref": "#/components/parameters/TaskLiveFilter"
+      - "$ref": "#/components/parameters/TaskOverdueFilter"
+      - "$ref": "#/components/parameters/TaskPriorityFilter"
+      - "$ref": "#/components/parameters/TaskScheduledFilter"
+      - "$ref": "#/components/parameters/TaskSortFilter"
       responses:
-        "200":
+        '200':
           description: Task list
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskListResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
+                "$ref": "#/components/schemas/TaskListResponse"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '404':
+          "$ref": "#/components/responses/NotFound"
     post:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: createTask
       summary: File a task under a project
-      description: >
-        The task starts `open`. An assignee is optional: creating work and
-        deciding whose it is are separate acts. Pass `kind: summary` for a
-        cover node -- it takes no assignee, accepts no events, and draws its
-        status from its children.
+      description: Create an open executable task in an open leaf requirement and repository
+        belonging to this project. kind and parent_id are rejected with 422.
       requestBody:
-        $ref: "#/components/requestBodies/TaskCreate"
+        "$ref": "#/components/requestBodies/TaskCreate"
       responses:
-        "201":
+        '201':
           description: Task created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/TaskCycle"
-        "422":
-          $ref: "#/components/responses/TaskInvalidInput"
-  /projects/{slug}/tasks/stats:
+                "$ref": "#/components/schemas/TaskResponse"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          description: Task dependencies conflict with the requested change.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/APIError"
+        '422':
+          "$ref": "#/components/responses/TaskInvalidInput"
+  "/projects/{slug}/tasks/stats":
     parameters:
-      - $ref: "#/components/parameters/ProjectSlug"
+    - "$ref": "#/components/parameters/ProjectSlug"
     get:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: getTaskStats
       summary: Count a project's work by status and by assignee
-      description: >
-        Aggregated server-side so a board does not have to pull every row to
-        draw a header. Summary nodes are excluded from every number: a cover is
-        its children restated, so counting it would tally each job twice and
-        make the totals a function of how finely someone broke the project
-        down. `by_status` always carries every status, including the ones at
-        zero -- a board that hides its empty columns changes shape as work
-        moves through it.
+      description: Counts tasks by status and assignee, with total and remaining estimates
+        and missing measurement counts.
       responses:
-        "200":
+        '200':
           description: Task counts and estimate totals
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskStatsResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
+                "$ref": "#/components/schemas/TaskStatsResponse"
+        '404':
+          "$ref": "#/components/responses/NotFound"
   /documents:
     get:
       tags: [Documents]
@@ -1979,74 +1926,31 @@ paths:
                 $ref: "#/components/schemas/APIError"
         "422":
           $ref: "#/components/responses/ValidationError"
-  /documents/{document_id}/file_breakdown:
+  "/documents/{document_id}/file_breakdown":
     parameters:
-      - $ref: "#/components/parameters/DocumentId"
+    - "$ref": "#/components/parameters/DocumentId"
     post:
-      tags: [Documents, Tasks]
+      tags:
+      - Documents
+      - Tasks
       operationId: fileDocumentBreakdown
       summary: File an adopted task document as the project's work breakdown
-      description: >
-        The source document must belong to an open leaf requirement in its project.
-        Created tasks inherit that requirement and its priority. This legacy importer
-        assigns the project's only repository; projects with zero or multiple
-        repositories receive a repo_id validation error and no tasks are created.
-        The other end of the breakdown prompt shortcut. A topic turned a plan
-        into a task document somebody could argue with; this turns the document
-        they settled on into the work itself. Between them sits the only gate
-        that matters -- a person adopted it, with
-        `POST /documents/{document_id}/formalize`. Nothing a model does files
-        work.
-
-
-        **Which document the tasks point at.** Each task's `document_id` is the
-        *source* -- the design that was broken down, not the list of work it
-        produced -- read from the breakdown's own preamble, the line above the
-        first heading naming a `rinto://document/{id}`. A breakdown that names
-        no source files tasks pointing at nothing, which is allowed: somebody
-        may write one by hand.
-
-
-        **What it reads.** A `##` with `###` under it becomes a summary node
-        covering them; a `##` with none becomes one piece of work. Everything
-        written under either heading becomes that task's `description`,
-        acceptance criteria included -- there is no separate field for them and
-        no marker inside the text. Descriptions are Markdown and have to be
-        rendered as such: they contain lists, and a literal underscore in them
-        is written `\_`.
-
-
-        **What it does not read.** No estimates -- how long work takes is
-        decided by whoever is going to do it. No ordering beyond the order
-        things were written, which is the order they come back in.
-
-
-        Every task's `document_id` points at the document that was *broken
-        down*, not at this one: the spec somebody implements against is the
-        design, not the list of work. A breakdown written by hand rather than
-        generated has no source, and its tasks carry `null`.
-
-
-        **Once.** The document comes out `applied` and a second call is
-        refused. Tasks and that transition are one transaction, so a breakdown
-        never half-lands: a task the domain rejects leaves nothing filed and
-        the document still `formal`, there to be fixed and filed. Editing the
-        document afterwards changes nothing about the tasks -- work that turned
-        out wrong is cancelled, work that is missing comes from breaking down
-        another document.
+      description: File a formal task document as executable tasks and mark it applied
+        atomically. A section with child headings contributes those tasks; a section
+        without children contributes one task. No container tasks are created. Task
+        ownership comes from the document requirement and the project must have exactly
+        one repository. Prefer task sync for revision-aware imports.
       responses:
-        "201":
-          description: >-
-            Every task created, flat and in document order with `parent_id` on
-            each -- the same shape `GET /projects/{slug}/tasks` answers with.
+        '201':
+          description: Executable tasks in request/document order.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskListResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/ValidationError"
+                "$ref": "#/components/schemas/TaskListResponse"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/ValidationError"
   /documents/{document_id}/revisions:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -3261,178 +3165,145 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIError"
-  /tasks:
+  "/tasks":
     get:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: listAllTasks
       summary: List every project's tasks as one pool
-      description: >
-        The same list as `GET /projects/{project_slug}/tasks`, over everything
-        rather than one project, with the same filters and the same rendering.
-
-
-        It exists because the pool a person pulls from is not a project's. A
-        week's minutes are one pool spanning every project they work in --
-        which is why `GET /schedule` refuses to filter by project -- so "what
-        is there to pick up" and "what is most worth starting" are questions
-        about all of it. Asking them project by project would leave the client
-        to merge and sort the union using an order it invented.
-
-
-        Two queries worth knowing. The claimable pool in the order the board
-        would reach it: `?kind=work&assignee_id=none&live=true&sort=plan`. What
-        is not in any plan at all, most important first:
-        `?live=true&scheduled=false&sort=plan`.
-
-
-        Unpaginated, like every list here.
+      description: List executable tasks across projects, with the same filters as the
+        project task list. Use assignee_id=none&live=true&sort=plan for the claimable
+        pool, or live=true&scheduled=false for backlog. kind and parent_id are rejected
+        with 400.
       parameters:
-        - $ref: "#/components/parameters/TaskKindFilter"
-        - $ref: "#/components/parameters/TaskStatusFilter"
-        - $ref: "#/components/parameters/TaskParentFilter"
-        - $ref: "#/components/parameters/TaskAssigneeFilter"
-        - $ref: "#/components/parameters/TaskDocumentFilter"
-        - $ref: "#/components/parameters/TaskRepoFilter"
-        - $ref: "#/components/parameters/TaskLiveFilter"
-        - $ref: "#/components/parameters/TaskOverdueFilter"
-        - $ref: "#/components/parameters/TaskPriorityFilter"
-        - $ref: "#/components/parameters/TaskScheduledFilter"
-        - $ref: "#/components/parameters/TaskSortFilter"
+      - "$ref": "#/components/parameters/TaskStatusFilter"
+      - "$ref": "#/components/parameters/TaskAssigneeFilter"
+      - "$ref": "#/components/parameters/TaskDocumentFilter"
+      - "$ref": "#/components/parameters/TaskRepoFilter"
+      - "$ref": "#/components/parameters/TaskLiveFilter"
+      - "$ref": "#/components/parameters/TaskOverdueFilter"
+      - "$ref": "#/components/parameters/TaskPriorityFilter"
+      - "$ref": "#/components/parameters/TaskScheduledFilter"
+      - "$ref": "#/components/parameters/TaskSortFilter"
       responses:
-        "200":
+        '200':
           description: Task list
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskListResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-  /tasks/schema:
+                "$ref": "#/components/schemas/TaskListResponse"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+  "/tasks/schema":
     get:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: getTaskSchema
       summary: Get the JSON Schema for a task write
-      description: >
-        The shapes `POST /projects/{project_slug}/tasks`, `PATCH /tasks/{id}`
-        and `POST /tasks/{id}/split` accept, as four JSON Schema documents
-        keyed `create`, `update`, `split` and `sync`. Same content as the
-        `TaskCreateInput` / `TaskUpdateInput` / `TaskSplitInput` components
-        below, said in a form a client can fetch: it exists for the CLI's
-        `task schema`, whose caller has this API but not this file.
-
-
-        Built from `RintoPMO.Tasks.Task` as the request is answered, so the
-        difficulty ladder and the estimate ceiling are the
-        values the server will enforce rather than a copy of them. Each shape
-        carries an `examples` entry that the server's own test suite feeds
-        back through the domain, so an example that stopped being accepted
-        fails the build.
-
-
-        `additionalProperties: false` is an instruction to whoever writes the
-        body, not a description of the server: unlisted keys are ignored, not
-        refused. A `PATCH` carrying `status` answers `200` and changes
-        nothing.
-
-
-        The sync shape rejects unlisted fields, unlike the older write shapes.
-
-        Describes no row, so it takes no id and no project slug, and it is
-        declared ahead of `/tasks/{id}` -- `schema` is a shape name, never a
-        task id.
+      description: Returns create, update and sync JSON Schemas, with domain enums,
+        estimate limits and tested examples. No split schema is provided. Task creation
+        and updates reject kind and parent_id.
       responses:
-        "200":
+        '200':
           description: One JSON Schema per write shape
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskSchemaResponse"
-  /tasks/{id}:
+                "$ref": "#/components/schemas/TaskSchemaResponse"
+  "/tasks/{id}":
     parameters:
-      - $ref: "#/components/parameters/TaskId"
+    - "$ref": "#/components/parameters/TaskId"
     get:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: getTask
       summary: Get a task
-      description: >
-        Not nested under its project: a task id is enough to name one, and an
-        agent that pulled a task out of the pool holds the id, not the slug.
+      description: 'Not nested under its project: a task id is enough to name one, and
+        an agent that pulled a task out of the pool holds the id, not the slug.
+
+  '
       responses:
-        "200":
+        '200':
           description: Task details
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
+                "$ref": "#/components/schemas/TaskResponse"
+        '404':
+          "$ref": "#/components/responses/NotFound"
     patch:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: updateTask
       summary: Update a task's wording, spec pointer, parent, owner, or due date
-      description: >
-        Neither `status` nor `kind` is accepted here. Status moves only through
-        the event endpoints, and `kind` only through `split`, so that fixing a
-        typo cannot also complete a task or turn it into a cover.
+      description: Update task wording, repository, document, assignment, measurements
+        or schedule. Priority and requirement ownership cannot be changed here. kind
+        and parent_id are retired and rejected. Use event endpoints for status changes.
       requestBody:
-        $ref: "#/components/requestBodies/TaskUpdate"
+        "$ref": "#/components/requestBodies/TaskUpdate"
       responses:
-        "200":
+        '200':
           description: Task updated
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/TaskCycle"
-        "422":
-          $ref: "#/components/responses/ValidationError"
+                "$ref": "#/components/schemas/TaskResponse"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          description: Task dependencies conflict with the requested change.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/APIError"
+        '422':
+          "$ref": "#/components/responses/ValidationError"
     put:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: replaceTask
       summary: Update a task
-      description: Alias of PATCH.
+      description: Update supplied task fields with the same semantics as PATCH. kind
+        and parent_id are retired and rejected. Use event endpoints for status changes.
       requestBody:
-        $ref: "#/components/requestBodies/TaskUpdate"
+        "$ref": "#/components/requestBodies/TaskUpdate"
       responses:
-        "200":
+        '200':
           description: Task updated
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/TaskCycle"
-        "422":
-          $ref: "#/components/responses/TaskInvalidInput"
-    delete:
-      tags: [Tasks]
-      operationId: deleteTask
-      summary: Remove a task outright
-      description: >
-        Not the opposite of create. `cancel` is what records that work was
-        dropped and keeps it in the tree; this is for rows that should never
-        have existed, such as a breakdown an agent got wrong.
-
-        Refuses a node that still has children rather than scattering them to
-        the root. Deleting the last child of a cover demotes that cover back to
-        a `work` task, so re-read the WBS afterwards.
-      responses:
-        "204":
-          description: Task deleted
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          description: >
-            `task_state_conflict`: the node still has children. Empty it first.
+                "$ref": "#/components/schemas/TaskResponse"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          description: Task dependencies conflict with the requested change.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/APIError"
+                "$ref": "#/components/schemas/APIError"
+        '422':
+          "$ref": "#/components/responses/TaskInvalidInput"
+    delete:
+      tags:
+      - Tasks
+      operationId: deleteTask
+      summary: Remove a task outright
+      description: Permanently delete a task and its outgoing resource links and dependency
+        edges. Cancel retains a record instead. Imported task document entries retain
+        a tombstone to prevent accidental recreation.
+      responses:
+        '204':
+          description: Task deleted
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          description: "`task_state_conflict`: the node still has children. Empty it
+            first.\n"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/APIError"
   /tasks/{id}/assign:
     parameters:
       - $ref: "#/components/parameters/TaskId"
@@ -3525,49 +3396,42 @@ paths:
           $ref: "#/components/responses/TaskStateConflict"
         "422":
           $ref: "#/components/responses/ValidationError"
-  /tasks/{id}/dependencies:
+  "/tasks/{id}/dependencies":
     parameters:
-      - $ref: "#/components/parameters/TaskId"
+    - "$ref": "#/components/parameters/TaskId"
     get:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: listTaskDependencies
       summary: What a task waits for, and what waits for it
-      description: >
-        Both directions in one response. "Can I start this" and "what breaks if
-        I move it" are the two questions asked of an edge, and a client made to
-        call twice would draw half a graph.
-
-        A prerequisite that is `done` or `cancelled` still appears -- the edge
-        is still a true statement about the work -- but holds nothing up, which
-        the reader can see from its `status`.
+      description: |
+        Both directions in one response. "Can I start this" and "what breaks if I move it" are the two questions asked of an edge, and a client made to call twice would draw half a graph.
+        A prerequisite that is `done` or `cancelled` still appears -- the edge is still a true statement about the work -- but holds nothing up, which the reader can see from its `status`.
       responses:
-        "200":
+        '200':
           description: Both ends of the task's edges
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskDependenciesResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
+                "$ref": "#/components/schemas/TaskDependenciesResponse"
+        '404':
+          "$ref": "#/components/responses/NotFound"
     post:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: addTaskDependency
       summary: Record that this task cannot start until another is done
-      description: >
-        Answers with the graph around the task, the same shape as `GET`, so a
-        caller that just drew an edge does not have to re-read to redraw.
-
-        An edge may cross projects, where a `parent_id` may not. The two
-        relations answer different questions: a parent decides where a task
-        lives, a dependency only constrains when it happens, and scheduling
-        here spans every project on purpose.
+      description: Add a dependency on another task, including across projects. Rejects
+        cycles with dependency_cycle and invalid scheduling with dependency_out_of_order.
+        Missing tasks return task_not_found.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [depends_on_id]
+              required:
+              - depends_on_id
               properties:
                 depends_on_id:
                   type: string
@@ -3575,49 +3439,33 @@ paths:
                   description: The task that must finish first.
               additionalProperties: false
       responses:
-        "200":
+        '200':
           description: Edge recorded
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskDependenciesResponse"
-        "404":
-          description: >
-            `not_found` when the task in the path is absent, `task_not_found`
-            when `depends_on_id` is.
+                "$ref": "#/components/schemas/TaskDependenciesResponse"
+        '404':
+          description: "`not_found` when the task in the path is absent, `task_not_found`
+            when `depends_on_id` is.\n"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/APIError"
-        "409":
-          description: >
-            `dependency_cycle` -- the edge would close a loop. "A depends on B"
-            loops exactly when B already depends on A, through any chain, so
-            `details.cycle` carries the chain by task id rather than merely
-            asserting that one exists. The same code the WBS uses when a parent
-            would sit under its own child.
+                "$ref": "#/components/schemas/APIError"
+        '409':
+          description: The task request is invalid or conflicts with current state;
+            see the returned error code and details.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/APIError"
-        "422":
-          description: >
-            `dependency_out_of_order` when the prerequisite is scheduled after
-            the work waiting on it, or is in the backlog while that work is
-            scheduled. `details` carries both ends and both days, because
-            "which one do I move" is the next question either way. Only live
-            prerequisites constrain: `done` and `cancelled` ones never do.
-
-            `task_not_dependable` for a summary node at either end -- a cover
-            holds no work of its own, so ordering it against work would be
-            ordering a heading.
-
-            `validation_error` when the edge already exists or points at the
-            task itself.
+                "$ref": "#/components/schemas/APIError"
+        '422':
+          description: The task request is invalid or conflicts with current state;
+            see the returned error code and details.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/APIError"
+                "$ref": "#/components/schemas/APIError"
   /tasks/{id}/dependencies/{depends_on_id}:
     parameters:
       - $ref: "#/components/parameters/TaskId"
@@ -4014,117 +3862,59 @@ paths:
           description: Leave gone, or was never there
         "400":
           $ref: "#/components/responses/BadRequest"
-  /tasks/{id}/split:
+  "/tasks/{id}/start":
     parameters:
-      - $ref: "#/components/parameters/TaskId"
+    - "$ref": "#/components/parameters/TaskId"
     post:
-      tags: [Tasks]
-      operationId: splitTask
-      summary: Turn a job into the cover over the jobs it turned out to be
-      description: >
-        The one thing that moves `kind`, and an operation rather than a field:
-        promoting a job to a cover drops its assignee and its clocks, and that
-        must not be able to ride along with an edit of the title.
-
-        `children` is optional. The promotion is the operation -- a cover with
-        nothing under it reads `open`, which is exactly true -- and existing
-        tasks can be moved in afterwards by PATCHing their `parent_id`.
-        Everything happens in one transaction, so a split never half-lands.
-
-        A cover that never received children stays a cover; only *emptying* one
-        demotes it. Splitting with no payload is a breakdown waiting to be
-        filled in, not a no-op.
-
-        The response carries `children` beside `data`: a caller that just broke
-        a job into five needs the ids it created.
-      requestBody:
-        $ref: "#/components/requestBodies/TaskSplit"
-      responses:
-        "200":
-          description: Task promoted, children created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TaskSplitResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          description: >
-            `task_not_splittable` when the task is already a cover, or is
-            `done` or `cancelled` -- a finished job is not a container for
-            unfinished work. `details.current_status` is what it actually is.
-            `validation_error` when a child is invalid; `details.children` is
-            keyed by the child's index in the request. `invalid_estimate` when
-            a child's estimate is malformed; `details.child` is its index.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIError"
-  /tasks/{id}/start:
-    parameters:
-      - $ref: "#/components/parameters/TaskId"
-    post:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: startTask
       summary: Move a task to in_progress
-      description: >
-        A successful start also marks its unarchived draft requirement active atomically.
-        Other requirement states do not block execution and are not changed. Completion never auto-completes a requirement.
-        Only from `open`, and only by the actor holding the task: starting
-        ownerless work is how a task ends up in progress with nobody on it, and
-        starting somebody else's is `403`. Stamps `started_at`. Never applies
-        to a summary node.
+      description: Start an open task owned by the authenticated actor. Requires ownership
+        and changes status to in_progress.
       responses:
-        "200":
+        '200':
           description: Task started
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskResponse"
-        "403":
-          $ref: "#/components/responses/TaskNotYours"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/TaskStateConflict"
-  /tasks/{id}/complete:
+                "$ref": "#/components/schemas/TaskResponse"
+        '403':
+          "$ref": "#/components/responses/TaskNotYours"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/TaskStateConflict"
+  "/tasks/{id}/complete":
     parameters:
-      - $ref: "#/components/parameters/TaskId"
+    - "$ref": "#/components/parameters/TaskId"
     post:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: completeTask
       summary: Mark a task done
-      description: >
-        Only from `in_progress`, only by the actor holding the task, and never
-        on a summary node. Stamps `completed_at`. An explicit
-        `actual_minutes` records an override. When it is absent or
-        null, an existing duration is preserved; if none exists, whole minutes
-        are derived from `started_at`, rounding a positive partial minute up.
-
-
-        A task that was released while in progress has no owner, so finishing
-        it means claiming it first.
+      description: Complete an in-progress task owned by the authenticated actor. Sets
+        completed_at and derives actual_minutes if none were recorded; an explicit duration
+        takes precedence.
       requestBody:
         required: false
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TaskCompleteInput"
+              "$ref": "#/components/schemas/TaskCompleteInput"
       responses:
-        "200":
+        '200':
           description: Task completed
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskResponse"
-        "403":
-          $ref: "#/components/responses/TaskNotYours"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/TaskStateConflict"
+                "$ref": "#/components/schemas/TaskResponse"
+        '403':
+          "$ref": "#/components/responses/TaskNotYours"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/TaskStateConflict"
   /tasks/{id}/cancel:
     parameters:
       - $ref: "#/components/parameters/TaskId"
@@ -4170,88 +3960,38 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/TaskStateConflict"
-  /tasks/{id}/estimate:
+  "/tasks/{id}/estimate":
     parameters:
-      - $ref: "#/components/parameters/TaskId"
+    - "$ref": "#/components/parameters/TaskId"
     post:
-      tags: [Tasks]
+      tags:
+      - Tasks
       operationId: estimateTask
       summary: Have a model fill in what this node is missing
-      description: >
-        `kind: difficulty` rates unfilled work in Fibonacci story points;
-        `kind: time` produces a three-point estimate, calibrated with completed
-        work from the same project (difficulty, the estimate given then, and
-        `actual_minutes`). One endpoint rather than two: the two differ in the
-        question put to the model and in nothing else.
-
-
-        Unlike `start` / `complete` / `cancel` above, which are events on a
-        state machine and get a route each, this is one operation with a
-        parameter. `kind` is required -- there is no sensible default between
-        the two, and guessing would spend a model call on the question nobody
-        asked.
-
-
-        The target is the task in the path. A work item is estimated itself; a
-        summary is estimated as the work under it that still has no value.
-        Which work is targeted is decided when the job *starts*, so a value
-        somebody types while the model is thinking will be written over --
-        deliberate, and a `PATCH` away from fixed.
-
-
-        Answers `202` with the *job*, not the numbers. Note the two ids: the
-        one in the path is the task's `uuid`, the one in `data` is an integer
-        Oban job id.
-
-
-        **Nothing records the asking.** There is no attempt resource and no
-        history: what an estimation leaves behind is the numbers on the tasks.
-        The job id is the only handle there is -- keep it.
-
-
-        **Watching is the socket**: join `task:{id}` on `/socket` (see
-        `RintoPMOWeb.TaskChannel`). One `estimation` frame arrives when the job
-        is over, for both kinds, told apart by `kind`. There is no progress
-        frame and no output frame -- the answer is numbers, not prose.
-
-
-        **If you were not listening**, ask `GET /jobs/{job_id}`. A `404` there
-        means the job has been pruned, which only happens to jobs that are
-        over: stop waiting and re-read the task.
-
-
-        Asking twice is allowed. This is a helper for somebody looking at an
-        empty field, not an authority on what belongs in it -- a later answer
-        may overwrite an earlier one, and neither claims to be the better one.
-        A double-click is not two model calls, though: while one of this kind
-        is in flight, this answers with the job already queued. The two kinds
-        are separate slots and one of each may run at once.
-
-
-        Refused before anything is queued: `bad_request` (no `kind`, or one
-        that is not `difficulty` or `time`), `nothing_to_estimate` (every work
-        item already has a value, or the cover has no work), and
-        `no_estimation_ai` (the `task_estimation` role is not configured, and
-        unlike naming there is no fallback -- see `PUT /ai_roles/{key}`).
+      description: Estimate missing difficulty or time for this task only. kind is required
+        and must be difficulty or time. Returns a deduplicated Oban job with 202; follow
+        task:{id} estimation events or poll GET /jobs/{job_id}. Already filled fields
+        return nothing_to_estimate; no configured role returns no_estimation_ai. Time
+        estimates are applied only if the task is unchanged.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TaskEstimationInput"
+              "$ref": "#/components/schemas/TaskEstimationInput"
       responses:
-        "202":
+        '202':
           description: The queued job
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JobResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/ValidationError"
+                "$ref": "#/components/schemas/JobResponse"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/ValidationError"
   /jobs/{id}:
     parameters:
       - name: id
@@ -4532,12 +4272,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/TaskUpdateInput"
-    TaskSplit:
-      required: false
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/TaskSplitInput"
     TaskActor:
       required: true
       content:
@@ -4611,38 +4345,13 @@ components:
     # The task filters are shared by `GET /tasks` and
     # `GET /projects/{project_slug}/tasks`: the two lists differ only in what
     # they read, and a filter that existed on one of them would be a trap.
-    TaskKindFilter:
-      name: kind
-      in: query
-      required: false
-      description: >
-        Filter to real work or to summary nodes. The claimable pool is
-        `kind=work&assignee_id=none&live=true` -- without `kind`, covers come
-        back too, and nobody can pick one up.
-      schema:
-        $ref: "#/components/schemas/TaskKind"
     TaskStatusFilter:
       name: status
       in: query
       required: false
-      description: >
-        Filter by exactly one status. On summary nodes this matches the
-        rollup, not the stored column.
+      description: Filter by task status.
       schema:
-        $ref: "#/components/schemas/TaskStatus"
-    TaskParentFilter:
-      name: parent_id
-      in: query
-      required: false
-      description: >
-        Filter by position in the tree. Use `none` for the roots -- the top
-        level of the WBS.
-      schema:
-        oneOf:
-          - type: string
-            format: uuid
-          - type: string
-            enum: [none]
+        "$ref": "#/components/schemas/TaskStatus"
     TaskAssigneeFilter:
       name: assignee_id
       in: query
@@ -4898,16 +4607,12 @@ components:
           schema:
             $ref: "#/components/schemas/NotFoundError"
     TaskStateConflict:
-      description: >
-        `task_state_conflict`: the event does not apply to the task's current
-        status, `start` or `complete` was asked of a task nobody owns, or the
-        target is a summary node, whose status is not its own to move.
-        `details` carries the observed `status`, and `kind` when a summary node
-        was the cause.
+      description: 'task_state_conflict: invalid status transition or start/complete without
+        an owner. Details describe the current status or required ownership.'
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/APIError"
+            "$ref": "#/components/schemas/APIError"
     TaskNotYours:
       description: >
         `task_not_yours`: the work is assigned to a different actor, and
@@ -4925,22 +4630,12 @@ components:
           schema:
             $ref: "#/components/schemas/APIError"
     TaskInvalidInput:
-      description: >
-        `validation_error` for a field-level problem, or `invalid_estimate`
-        when the three-point estimate is partial, out of order, negative, or
-        set on a summary node. `details` carries `field` and `reason`.
+      description: validation_error for invalid fields, including retired kind and parent_id.
+        invalid_estimate for partial, unordered, negative or oversized estimates.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/APIError"
-    TaskCycle:
-      description: >
-        `dependency_cycle`: the parent would sit underneath the task being
-        given it. `details.cycle` is the chain that would close.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/APIError"
+            "$ref": "#/components/schemas/APIError"
     ImageTooLarge:
       description: The image exceeds the byte or pixel limit accepted for inline use
       content:
@@ -5347,14 +5042,18 @@ components:
     RequirementWorkload:
       type: object
       readOnly: true
-      required: [task_count, remaining_task_count, unplanned_requirement_count, estimate]
-      description: >-
-        Derived effort minutes across this requirement and all descendants; summary tasks are
-        excluded. Total includes finished/cancelled tasks and archived descendants for history.
-        Remaining includes open/in_progress tasks only. Missing estimates are excluded from
-        numeric sums and counted separately. Null means no known estimate, never zero.
-        PERT expected is computed from the summed three-point values, rounded once.
-        No independent requirement estimate is stored; these are not delivery dates.
+      required:
+      - task_count
+      - remaining_task_count
+      - unplanned_requirement_count
+      - estimate
+      description: Derived effort minutes across this requirement and all descendants,
+        counting each task once. Total includes finished/cancelled tasks and archived
+        descendants for history. Remaining includes open/in_progress tasks only. Missing
+        estimates are excluded from numeric sums and counted separately. Null means no
+        known estimate, never zero. PERT expected is computed from the summed three-point
+        values, rounded once. No independent requirement estimate is stored; these are
+        not delivery dates.
       properties:
         task_count:
           type: integer
@@ -5365,23 +5064,30 @@ components:
         unplanned_requirement_count:
           type: integer
           minimum: 0
-          description: Open leaf requirements in open descendant branches with no work tasks.
+          description: Open leaf requirements in open descendant branches with no work
+            tasks.
         estimate:
           type: object
-          required: [total, remaining, unestimated_tasks, unestimated_tasks_remaining]
+          required:
+          - total
+          - remaining
+          - unestimated_tasks
+          - unestimated_tasks_remaining
           properties:
             total:
               oneOf:
-                - $ref: "#/components/schemas/TaskEstimate"
-                - type: object
-                  nullable: true
-                  enum: [null]
+              - "$ref": "#/components/schemas/TaskEstimate"
+              - type: object
+                nullable: true
+                enum:
+                -
             remaining:
               oneOf:
-                - $ref: "#/components/schemas/TaskEstimate"
-                - type: object
-                  nullable: true
-                  enum: [null]
+              - "$ref": "#/components/schemas/TaskEstimate"
+              - type: object
+                nullable: true
+                enum:
+                -
             unestimated_tasks:
               type: integer
               minimum: 0
@@ -6489,42 +6195,35 @@ components:
           items:
             $ref: "#/components/schemas/ProjectRepo"
       additionalProperties: false
-    TaskKind:
-      type: string
-      enum: [work, summary]
-      description: >
-        `work` is a job someone does. `summary` is a cover over jobs: it takes
-        no assignee, accepts no events, and its `status` is the rollup over its
-        children. Never settable, but it moves both ways:
-        `POST /tasks/{id}/split` turns a job into a cover, and emptying a cover
-        of its last child -- by deleting that child or by moving it elsewhere
-        -- turns it back into a job automatically. It is not a status value,
-        because a summary node's status is the most informative thing on it and
-        needs the slot.
     TaskStatus:
       type: string
-      enum: [open, in_progress, done, cancelled]
-      description: >
-        `open` -> `in_progress` (start) -> `done` (complete), with `cancel`
-        from either live status and `reopen` from `done` or `cancelled` back to
-        `open`. Assignment is not a status: a task with an owner that nobody
-        has started is still `open`. On a summary node this is derived: all
-        children untouched is `open`, all finished is `done` (a mix of done and
-        cancelled counts as done -- the chunk landed), all dropped is
-        `cancelled`, anything else is `in_progress`, and an empty cover is
-        `open`.
+      enum:
+      - open
+      - in_progress
+      - done
+      - cancelled
+      description: open -> in_progress -> done, with cancel from either live status and
+        reopen from done or cancelled. Assignment is independent of status.
     Task:
       type: object
-      required: [id, project_id, requirement_id, repo_id, kind, title, status, priority]
+      required:
+      - id
+      - project_id
+      - requirement_id
+      - repo_id
+      - title
+      - status
+      - priority
       properties:
         repo_id:
           type: string
           format: uuid
-          description: The single repository for this task. Must belong to the task's project; cannot be cleared. Split children inherit it unless explicitly overridden.
+          description: The single repository for this task, in the same project. Cannot
+            be cleared.
         requirement_id:
           type: string
           format: uuid
-          description: Required open leaf requirement in this project; immutable after creation. Split children inherit it.
+          description: An open leaf requirement in this project. Immutable after creation.
         id:
           type: string
           format: uuid
@@ -6532,29 +6231,22 @@ components:
         project_id:
           type: string
           format: uuid
-        parent_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: >
-            Position in the WBS. Null is a root. A parent must be a summary
-            node in the same project and requirement.
-        kind:
-          $ref: "#/components/schemas/TaskKind"
         document_id:
           type: string
           format: uuid
           nullable: true
-          description: >
-            The document this task implements against. A pointer, not
-            ownership -- deleting the document leaves the task standing.
+          description: 'The document this task implements against. A pointer, not ownership
+            -- deleting the document leaves the task standing.
+
+    '
         assignee_id:
           type: string
           format: uuid
           nullable: true
-          description: >
-            Whose it is. Written by both `assign` and `claim`, so nothing
+          description: 'Whose it is. Written by both `assign` and `claim`, so nothing
             downstream has to know which happened.
+
+    '
         title:
           type: string
           maxLength: 255
@@ -6562,141 +6254,73 @@ components:
           type: string
           nullable: true
         status:
-          $ref: "#/components/schemas/TaskStatus"
+          "$ref": "#/components/schemas/TaskStatus"
         due_on:
           type: string
           format: date
           nullable: true
         estimate:
           allOf:
-            - $ref: "#/components/schemas/TaskEstimate"
+          - "$ref": "#/components/schemas/TaskEstimate"
           nullable: true
           readOnly: true
-          description: >
-            Written through `estimate` on create/update as an object of
-            `optimistic` / `likely` / `pessimistic`; `expected` is derived and
-            never sent. On a summary node this is the sum over its estimated
-            descendants, or null when none of them carry one -- zero would be a
-            claim that the chunk is free.
-        unestimated_tasks:
-          type: integer
-          minimum: 0
-          nullable: true
-          readOnly: true
-          description: >
-            How many work descendants under a cover carry no estimate. A count
-            of tasks, not minutes -- everything else nearby is minutes, which
-            is why the name says so. Null on a `work` row, where the estimate
-            itself answers the question. A summed estimate that quietly skipped
-            half the tree reads exactly like a complete one; this is what tells
-            them apart.
+          description: Three ordered whole-minute estimates (optimistic, likely, pessimistic),
+            or null. Each is at most 480 minutes. Expected minutes are derived using PERT.
         difficulty:
           type: integer
           nullable: true
-          enum: [1, 2, 3, 5, 8, 13, 21]
-          description: >
-            Fibonacci story point. A rating of the work, not a duration --
-            duration is `estimate`, and this is the knob later estimates are
-            calibrated against. Null until rated. A summary node stores none
-            and reports none: difficulty does not sum.
-        unrated_tasks:
-          type: integer
-          minimum: 0
-          nullable: true
-          readOnly: true
-          description: >
-            How many work descendants under a cover carry no difficulty. Null
-            on a `work` row. Same honesty rule as `unestimated_tasks`.
+          enum:
+          - 1
+          - 2
+          - 3
+          - 5
+          - 8
+          - 13
+          - 21
+          description: Fibonacci story points, or null when unrated.
         actual_minutes:
           type: integer
           minimum: 0
           nullable: true
-          description: >
-            How long the work actually took, in minutes. Completion derives a
-            still-empty value from `started_at`, rounding a positive partial
-            minute up; create, update, or complete can report a more accurate
-            value. Cleared on reopen. On a summary node this is the sum over
-            its measured descendants, or null when none carry one.
-        unmeasured_tasks:
-          type: integer
-          minimum: 0
-          nullable: true
-          readOnly: true
-          description: >
-            How many work descendants under a cover carry no `actual_minutes`.
-            Null on a `work` row.
+          description: Actual duration in whole minutes. Completion derives a still-empty
+            value from the execution clock; an explicit value takes precedence. Cleared
+            on reopen.
         planned_start_on:
           type: string
           format: date
           nullable: true
-          description: >
-            The earliest day this task may be worked, and at the same time the
-            whole of "put it in that iteration": set it to a day in some week
-            and the task is selected into that week. **Null is the backlog** --
-            never a candidate for any week, which is how work nobody intends to
-            do is kept out without a mechanism of its own.
-
-            It is not where the task lands. That is `GET /schedule`'s answer,
-            because it depends on every other task competing for the same
-            minutes. A task can land later than this day, and can spill across
-            days, when the day it was selected for was already partly full.
-
-            A summary node holds none; on one this reports the earliest day
-            underneath it. There is deliberately no matching end -- see
-            `/schedule`.
+          description: The earliest day this task can be scheduled. Null means backlog.
+            The schedule endpoint determines its actual placement. Updates must respect
+            live dependencies.
         first_planned_on:
           type: string
           format: date
           nullable: true
           readOnly: true
-          description: >
-            The day this task was **first** selected into any week. Written
-            once, the first time `planned_start_on` goes from null to a day,
-            and never moved again -- returning the task to the backlog and
-            planning it afresh does not reset it.
-
-
-            It exists so that slip survives replanning. `planned_start_on` is
-            the current plan and moving it is the ordinary way to reschedule,
-            so slip measured against it is zero for every task however many
-            times the task was pushed. `GET /history` reports `slip_weeks`
-            against this column.
-
-
-            Not writable. On a summary node it is the earliest one underneath,
-            like `planned_start_on`; a cover stores neither.
-        unscheduled_tasks:
-          type: integer
-          minimum: 0
-          nullable: true
-          readOnly: true
-          description: >
-            How many work descendants under a cover are still in the backlog.
-            Null on a `work` row. Same honesty rule as `unestimated_tasks`: a
-            chunk reporting "starts in week 12" while half of it is unplanned
-            reads like a schedule while being a fragment of one.
+          description: The first day selected for the task. Read-only and preserved across
+            replanning; null if never planned.
         priority:
           readOnly: true
           type: integer
-          enum: [1, 2, 3, 4, 5]
+          enum:
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
           default: 3
-          description: >
-            Inherited live from the requirement. 1 is highest, 3 is normal, and never null -- "no opinion" *is*
-            "normal", so unlike an estimate a missing priority carries nothing
-            worth counting.
-
-            It decides who gets cut when a week is over-filled, and sorts ahead
-            of everything else including how long a task has been waiting: work
-            carried over from last week has no claim to jump the queue. It
-            never decides that work happens before its own prerequisite.
+          description: |
+            Inherited live from the requirement. 1 is highest, 3 is normal, and never null -- "no opinion" *is* "normal", so unlike an estimate a missing priority carries nothing worth counting.
+            It decides who gets cut when a week is over-filled, and sorts ahead of everything else including how long a task has been waiting: work carried over from last week has no claim to jump the queue. It never decides that work happens before its own prerequisite.
         assigned_at:
           type: string
           format: date-time
           nullable: true
           readOnly: true
-          description: >
-            When the current assignee got it. Restamped on reassignment, and
+          description: 'When the current assignee got it. Restamped on reassignment, and
             cleared on release.
+
+    '
         started_at:
           type: string
           format: date-time
@@ -6716,6 +6340,7 @@ components:
           format: date-time
           nullable: true
       additionalProperties: false
+      description: An executable task. Priority is inherited from its owning requirement.
     TaskSyncInput:
       type: object
       required: [base_revision_id, tasks]
@@ -6779,22 +6404,20 @@ components:
                     $ref: "#/components/schemas/Task"
     TaskCreateInput:
       type: object
-      required: [title, requirement_id, repo_id]
+      required:
+      - title
+      - requirement_id
+      - repo_id
       properties:
         repo_id:
           type: string
           format: uuid
-          description: The single repository for this task. Must belong to the task's project; cannot be cleared. Split children inherit it unless explicitly overridden.
+          description: The single repository for this task, in the same project. Cannot
+            be cleared.
         requirement_id:
           type: string
           format: uuid
-          description: Required open leaf requirement in this project; immutable after creation. Split children inherit it.
-        kind:
-          $ref: "#/components/schemas/TaskKind"
-        parent_id:
-          type: string
-          format: uuid
-          nullable: true
+          description: An open leaf requirement in this project. Immutable after creation.
         title:
           type: string
           minLength: 1
@@ -6816,61 +6439,51 @@ components:
           nullable: true
         estimate:
           allOf:
-            - $ref: "#/components/schemas/TaskEstimateInput"
+          - "$ref": "#/components/schemas/TaskEstimateInput"
           nullable: true
-          description: >
-            Send all three points or null to clear. The flat
-            `estimate_optimistic` / `estimate_likely` / `estimate_pessimistic`
-            columns are never writable -- setting one alone would slip past
-            every rule about the shape being whole and ordered.
+          description: Three ordered whole-minute estimates (optimistic, likely, pessimistic),
+            or null. Each is at most 480 minutes. Expected minutes are derived using PERT.
         difficulty:
           type: integer
           nullable: true
-          enum: [1, 2, 3, 5, 8, 13, 21]
-          description: >
-            Fibonacci story point, or null to clear. Refused on a summary node
-            (`invalid_difficulty`).
+          enum:
+          - 1
+          - 2
+          - 3
+          - 5
+          - 8
+          - 13
+          - 21
+          description: Fibonacci story points, or null when unrated.
         actual_minutes:
           type: integer
           minimum: 0
           nullable: true
-          description: >
-            Duration in minutes, or null to clear. Refused on a summary node
-            (`invalid_actual`). An explicit value takes precedence over the
-            completion clock's automatic default.
+          description: Actual duration in whole minutes. Completion derives a still-empty
+            value from the execution clock; an explicit value takes precedence. Cleared
+            on reopen.
         planned_start_on:
           type: string
           format: date
           nullable: true
-          description: >
-            Selects the task into the week this day falls in, and bounds where
-            inside that week it may land. Null is the backlog. Refused on a
-            summary node.
+          description: The earliest day this task can be scheduled. Null means backlog.
+            The schedule endpoint determines its actual placement. Updates must respect
+            live dependencies.
       additionalProperties: false
+      description: Task write fields. kind and parent_id are retired and rejected. Priority
+        is inherited from the requirement. Status changes use event endpoints. Unlisted
+        fields other than the explicitly rejected fields are ignored.
     TaskUpdateInput:
       type: object
-      description: >
-        Priority and requirement_id cannot be set here. Edit the requirement to change priority.
-        `status` and `kind` are absent on purpose. Use the event endpoints for
-        status and `POST /tasks/{id}/split` for `kind`; neither belongs in the
-        same request as an edit of the wording. Moving `parent_id` away from a
-        cover's last child demotes that cover to `work` as a side effect, so
-        re-read the WBS after a structural move.
-
-
-        `additionalProperties: false` binds the caller, not the server: a key
-        that is not listed here is ignored rather than refused, so a body
-        carrying `status` is answered `200` and changes nothing. Read the
-        returned task rather than the status code.
+      description: Task write fields. kind and parent_id are retired and rejected. Priority
+        is inherited from the requirement. Status changes use event endpoints. Unlisted
+        fields other than the explicitly rejected fields are ignored.
       properties:
         repo_id:
           type: string
           format: uuid
-          description: The single repository for this task. Must belong to the task's project; cannot be cleared. Split children inherit it unless explicitly overridden.
-        parent_id:
-          type: string
-          format: uuid
-          nullable: true
+          description: The single repository for this task, in the same project. Cannot
+            be cleared.
         title:
           type: string
           minLength: 1
@@ -6892,41 +6505,36 @@ components:
           nullable: true
         estimate:
           allOf:
-            - $ref: "#/components/schemas/TaskEstimateInput"
+          - "$ref": "#/components/schemas/TaskEstimateInput"
           nullable: true
-          description: >
-            Send all three points or null to clear. The flat
-            `estimate_optimistic` / `estimate_likely` / `estimate_pessimistic`
-            columns are never writable -- setting one alone would slip past
-            every rule about the shape being whole and ordered.
+          description: Three ordered whole-minute estimates (optimistic, likely, pessimistic),
+            or null. Each is at most 480 minutes. Expected minutes are derived using PERT.
         difficulty:
           type: integer
           nullable: true
-          enum: [1, 2, 3, 5, 8, 13, 21]
-          description: >
-            Fibonacci story point, or null to clear. Refused on a summary node
-            (`invalid_difficulty`).
+          enum:
+          - 1
+          - 2
+          - 3
+          - 5
+          - 8
+          - 13
+          - 21
+          description: Fibonacci story points, or null when unrated.
         actual_minutes:
           type: integer
           minimum: 0
           nullable: true
-          description: >
-            Duration in minutes, or null to clear. Refused on a summary node
-            (`invalid_actual`). A manual value can replace the automatically
-            calculated duration.
+          description: Actual duration in whole minutes. Completion derives a still-empty
+            value from the execution clock; an explicit value takes precedence. Cleared
+            on reopen.
         planned_start_on:
           type: string
           format: date
           nullable: true
-          description: >
-            Moves the task into the week this day falls in; null returns it to
-            the backlog.
-
-            Refused with `dependency_out_of_order` when the move would put the
-            task ahead of live work it waits for, or would push a prerequisite
-            past something waiting on it. Both ends of every edge the task sits
-            on are checked, and only when the day actually changes -- editing a
-            title never fails over a scheduling conflict.
+          description: The earliest day this task can be scheduled. Null means backlog.
+            The schedule endpoint determines its actual placement. Updates must respect
+            live dependencies.
       additionalProperties: false
     TaskCompleteInput:
       type: object
@@ -7033,83 +6641,6 @@ components:
         pessimistic:
           type: integer
           minimum: 0
-      additionalProperties: false
-    TaskSplitInput:
-      type: object
-      properties:
-        children:
-          type: array
-          description: >
-            Jobs to file under the new cover. Each is created as `kind: work`
-            with its `parent_id` set; a child that should itself be a cover is
-            split in turn.
-          items:
-            $ref: "#/components/schemas/TaskSplitChildInput"
-      additionalProperties: false
-    TaskSplitChildInput:
-      description: A work task inheriting the split task's requirement and priority. Explicit parent_id and requirement_id writes are refused.
-      type: object
-      required: [title]
-      properties:
-        repo_id:
-          type: string
-          format: uuid
-          description: The single repository for this task. Must belong to the task's project; cannot be cleared. Split children inherit it unless explicitly overridden.
-        title:
-          type: string
-          minLength: 1
-          maxLength: 255
-        description:
-          type: string
-          nullable: true
-        document_id:
-          type: string
-          format: uuid
-          nullable: true
-        assignee_id:
-          type: string
-          format: uuid
-          nullable: true
-        due_on:
-          type: string
-          format: date
-          nullable: true
-        estimate:
-          allOf:
-            - $ref: "#/components/schemas/TaskEstimateInput"
-          nullable: true
-          description: >
-            Send all three points or null to clear. The flat
-            `estimate_optimistic` / `estimate_likely` / `estimate_pessimistic`
-            columns are never writable -- setting one alone would slip past
-            every rule about the shape being whole and ordered.
-        difficulty:
-          type: integer
-          nullable: true
-          enum: [1, 2, 3, 5, 8, 13, 21]
-        actual_minutes:
-          type: integer
-          minimum: 0
-          nullable: true
-        planned_start_on:
-          type: string
-          format: date
-          nullable: true
-          description: >
-            Selects the child into the week this day falls in. Null is the
-            backlog. A breakdown that already knows when its parts are worked
-            can say so here rather than PATCHing each child afterwards.
-      additionalProperties: false
-    TaskSplitResponse:
-      type: object
-      required: [data, children]
-      properties:
-        data:
-          $ref: "#/components/schemas/Task"
-        children:
-          type: array
-          items:
-            $ref: "#/components/schemas/Task"
       additionalProperties: false
     TaskDependenciesResponse:
       type: object
@@ -7680,17 +7211,17 @@ components:
       additionalProperties: false
     TaskSchemaResponse:
       type: object
-      required: [data]
+      required:
+      - data
       properties:
         data:
           type: object
-          required: [create, update, split, sync]
-          description: >
-            One JSON Schema (2020-12) per write shape, keyed by the write it
-            describes. The bodies themselves are the `TaskCreateInput`,
-            `TaskUpdateInput`, `TaskSplitInput` and `TaskSyncInput` components; what is served
-            here is those shapes rendered as schema documents, with a worked
-            example attached to each.
+          required:
+          - create
+          - update
+          - sync
+          description: JSON Schemas for create, update and sync, using the same fields
+            as TaskCreateInput, TaskUpdateInput and TaskSyncInput.
           properties:
             create:
               type: object
@@ -7698,9 +7229,6 @@ components:
             update:
               type: object
               description: The shape of `PATCH /tasks/{id}`.
-            split:
-              type: object
-              description: The shape of `POST /tasks/{id}/split`.
             sync:
               type: object
               description: The shape of `POST /documents/{document_id}/tasks/sync`.
@@ -9264,48 +8792,47 @@ components:
       type: string
       description: Stable machine-readable error code.
       enum:
-        - bad_request
-        - unauthorized
-        - token_not_configured
-        - not_found
-        - image_too_large
-        - unsupported_image
-        - stale_document
-        - task_already_claimed
-        - task_not_yours
-        - task_state_conflict
-        - task_sync_conflict
-        - codex_auth_not_pending
-        - dependency_cycle
-        - validation_error
-        - task_blocked
-        - review_round_open
-        - duplicate_document
-        - invalid_block_op
-        - invalid_markdown
-        - default_project_missing
-        - invalid_estimate
-        - invalid_difficulty
-        - invalid_actual
-        - task_not_splittable
-        - document_not_formal
-        - no_estimation_ai
-        - no_prioritization_ai
-        - nothing_to_estimate
-        - no_chunks
-        - task_before_chunk
-        - corrupt_image
-        - invalid_branch
-        - unknown_branch
-        - no_default_branch
-        - unusable_repo_name
-        - internal_server_error
-        - codex_auth_unavailable
-        - workspace_unwritable
-        - workspace_not_configured
-        - repo_unavailable
-        - attachment_unwritable
-        - attachment_unreadable
+      - bad_request
+      - unauthorized
+      - token_not_configured
+      - not_found
+      - image_too_large
+      - unsupported_image
+      - stale_document
+      - task_already_claimed
+      - task_not_yours
+      - task_state_conflict
+      - task_sync_conflict
+      - codex_auth_not_pending
+      - dependency_cycle
+      - validation_error
+      - task_blocked
+      - review_round_open
+      - duplicate_document
+      - invalid_block_op
+      - invalid_markdown
+      - default_project_missing
+      - invalid_estimate
+      - invalid_difficulty
+      - invalid_actual
+      - document_not_formal
+      - no_estimation_ai
+      - no_prioritization_ai
+      - nothing_to_estimate
+      - no_chunks
+      - task_before_chunk
+      - corrupt_image
+      - invalid_branch
+      - unknown_branch
+      - no_default_branch
+      - unusable_repo_name
+      - internal_server_error
+      - codex_auth_unavailable
+      - workspace_unwritable
+      - workspace_not_configured
+      - repo_unavailable
+      - attachment_unwritable
+      - attachment_unreadable
     APIError:
       type: object
       required: [error, message, details]

@@ -137,32 +137,6 @@ defmodule RintoPMO.TaskRequirementsTest do
     assert Enum.map(plan.allocations, & &1.task.id) == [second.id, first.id]
   end
 
-  test "splits inherit ownership and cannot override it; moves stay in one requirement" do
-    project = insert(:project)
-    task = insert(:task, project: project, priority: 2)
-    assert {:ok, cover} = Tasks.split_task(task, [%{title: "Part"}])
-    assert [%{requirement_id: requirement_id, priority: 2}] = cover.children
-    assert requirement_id == task.requirement_id
-
-    elsewhere = insert(:requirement, project: project)
-    other = insert(:task, project: project, requirement: elsewhere)
-    assert {:error, chset} = Tasks.update_task(other, %{parent_id: cover.id})
-    assert errors_on(chset).parent_id == ["belongs to another requirement"]
-    assert {:error, chset} = Tasks.update_task(other, %{requirement_id: requirement_id})
-    assert errors_on(chset).requirement_id == ["cannot be changed"]
-
-    assert {:error, :validation_error, _} =
-             Tasks.split_task(other, [%{title: "Part", priority: 1}])
-
-    assert {:error, :validation_error, _} =
-             Tasks.split_task(other, [%{title: "Part", requirement_id: requirement_id}])
-
-    assert {:error, :validation_error, _} =
-             Tasks.split_task(other, [%{title: "Part", parent_id: cover.id}])
-
-    assert Tasks.get_task!(other.id).kind == :work
-  end
-
   test "a requirement with tasks cannot acquire child requirements" do
     project = insert(:project)
     task = insert(:task, project: project)

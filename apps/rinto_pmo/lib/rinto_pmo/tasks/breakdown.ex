@@ -13,10 +13,9 @@ defmodule RintoPMO.Tasks.Breakdown do
       ### 加监控看板          another
       ## 把回滚做成一个开关    a chunk that is one task, with no `###` under it
 
-  A chunk with tasks under it becomes a summary node covering them. A chunk
-  with none is a single piece of work and becomes one task, said that way
-  rather than left for this module to infer from a summary and a task that
-  happen to share a title.
+  A chunk with tasks under it contributes those tasks directly. A chunk with
+  none contributes one task of its own. Chunk headings only group the source
+  text; filing never creates container tasks or task hierarchy.
 
   Everything under either heading is that node's description, acceptance
   criteria included. There is no marker separating criteria from anything else,

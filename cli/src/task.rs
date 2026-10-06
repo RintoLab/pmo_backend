@@ -16,7 +16,7 @@ pub enum TaskCommand {
     Show(TaskIdArgs),
     /// Show a project's task counts and estimates
     Stats(ProjectArgs),
-    /// Print the JSON shape that create, update, split and sync read
+    /// Print the JSON shape that create, update and sync read
     Schema(SchemaArgs),
     /// Synchronize structured tasks from an adopted task document
     Sync(SyncArgs),
@@ -30,8 +30,6 @@ pub enum TaskCommand {
     Claim(TaskIdArgs),
     /// Return a task to the unassigned pool without changing its status
     Release(TaskIdArgs),
-    /// Turn a work task into a summary, optionally creating children
-    Split(SplitArgs),
     /// Move an assigned open task to in_progress
     Start(TaskIdArgs),
     /// Move an in_progress task to done, deriving its duration unless overridden
@@ -61,17 +59,9 @@ pub struct ListArgs {
     /// Project slug; omit to list every project's tasks as one pool
     project_slug: Option<String>,
 
-    /// Only work or summary nodes
-    #[arg(long, value_name = "work|summary")]
-    kind: Option<String>,
-
     /// Only one status
     #[arg(long, value_name = "open|in_progress|done|cancelled")]
     status: Option<String>,
-
-    /// Only children of this task; pass `none` for WBS roots
-    #[arg(long, value_name = "UUID|none")]
-    parent_id: Option<String>,
 
     /// Only tasks owned by this actor; pass `none` for unassigned tasks
     #[arg(long, value_name = "UUID|none", conflicts_with = "mine")]
@@ -112,7 +102,7 @@ pub struct ListArgs {
 
 #[derive(Args)]
 pub struct SchemaArgs {
-    /// Which write to describe: create, update, split or sync; omit for all of them
+    /// Which write to describe: create, update or sync; omit for all of them
     #[arg(value_name = "SHAPE")]
     shape: Option<String>,
 }
@@ -157,17 +147,6 @@ pub struct AssignArgs {
 }
 
 #[derive(Args)]
-pub struct SplitArgs {
-    /// Task id
-    task_id: String,
-
-    /// JSON object shaped as {"children": [...]}; omit to create an empty summary.
-    /// Run `task schema split` for the fields a child takes
-    #[arg(long, value_name = "FILE")]
-    input: Option<PathBuf>,
-}
-
-#[derive(Args)]
 pub struct CompleteArgs {
     /// Task id
     task_id: String,
@@ -192,7 +171,6 @@ pub fn run(command: TaskCommand) -> Result<()> {
         TaskCommand::Assign(args) => assign(client, args),
         TaskCommand::Claim(args) => claim(client, args),
         TaskCommand::Release(args) => release(client, args),
-        TaskCommand::Split(args) => split(client, args),
         TaskCommand::Start(args) => transition(client, args, "start", "started"),
         TaskCommand::Complete(args) => complete(client, args),
         TaskCommand::Cancel(args) => transition(client, args, "cancel", "cancelled"),
@@ -248,9 +226,7 @@ fn list(client: &Client, config: &Config, args: ListArgs) -> Result<()> {
 /// (`conflicts_with`), so at most one of them ever fills `assignee_id`.
 fn list_query(args: &ListArgs, mine: Option<&str>) -> Vec<(String, String)> {
     let mut query = Vec::new();
-    push_query(&mut query, "kind", args.kind.as_deref());
     push_query(&mut query, "status", args.status.as_deref());
-    push_query(&mut query, "parent_id", args.parent_id.as_deref());
     push_query(
         &mut query,
         "assignee_id",
@@ -410,37 +386,6 @@ fn release(client: &Client, args: TaskIdArgs) -> Result<()> {
     Ok(())
 }
 
-fn split(client: &Client, args: SplitArgs) -> Result<()> {
-    let payload = match args.input {
-        Some(path) => read_object(&path)?,
-        None => json!({}),
-    };
-    let path = format!("/tasks/{}/split", args.task_id);
-    let response = client.post(&path, payload)?;
-    let task = response
-        .get("data")
-        .ok_or_else(|| Error::Network("response had no \"data\" field".to_string()))?;
-    let children = response
-        .get("children")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-
-    println!(
-        "split task {} into {} child task(s)",
-        string(task, "id", "?"),
-        children.len()
-    );
-    for child in children {
-        println!(
-            "  {}  {}",
-            string(child, "id", "?"),
-            string(child, "title", "(untitled)")
-        );
-    }
-    Ok(())
-}
-
 /// Finishing and overriding what the execution clock measured are one act.
 ///
 /// The server derives a still-empty duration from start to completion. The
@@ -505,9 +450,8 @@ fn print_result(verb: &str, task: &Value) {
 
 fn task_summary(task: &Value) -> String {
     format!(
-        "{}  {}/{}  assignee={}  {}",
+        "{}  {}  assignee={}  {}",
         string(task, "id", "?"),
-        string(task, "kind", "?"),
         string(task, "status", "?"),
         nullable_string(task, "assignee_id"),
         string(task, "title", "(untitled)")
@@ -529,10 +473,8 @@ fn task_detail(task: &Value) -> String {
         ("project_id", text(task, "project_id", "?")),
         ("requirement_id", text(task, "requirement_id", "?")),
         ("repo_id", text(task, "repo_id", "?")),
-        ("kind", text(task, "kind", "?")),
         ("status", text(task, "status", "?")),
         ("assignee_id", text(task, "assignee_id", "none")),
-        ("parent_id", text(task, "parent_id", "none")),
         ("document_id", text(task, "document_id", "none")),
         ("due_on", text(task, "due_on", "none")),
         ("priority", number(task, "priority")),
@@ -552,19 +494,6 @@ fn task_detail(task: &Value) -> String {
 
     for (label, value) in fields {
         let _ = writeln!(output, "{label}: {value}");
-    }
-
-    // Only a cover carries these, and only a cover's reader can act on them.
-    // Four lines of "none" on every job would bury the fields above.
-    for (label, field) in [
-        ("unestimated_tasks", "unestimated_tasks"),
-        ("unrated_tasks", "unrated_tasks"),
-        ("unmeasured_tasks", "unmeasured_tasks"),
-        ("unscheduled_tasks", "unscheduled_tasks"),
-    ] {
-        if let Some(count) = task.get(field).and_then(Value::as_i64) {
-            let _ = writeln!(output, "{label}: {count}");
-        }
     }
 
     let description = task
@@ -630,7 +559,19 @@ fn nullable_string<'a>(value: &'a Value, field: &str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::{complete_body, list_query, select_shape, task_detail, task_summary, ListArgs};
+    use clap::Parser;
     use serde_json::json;
+
+    #[test]
+    fn retired_wbs_commands_and_filters_are_rejected() {
+        for args in [
+            vec!["rinto-pmo", "task", "split", "task-1"],
+            vec!["rinto-pmo", "task", "list", "--kind", "work"],
+            vec!["rinto-pmo", "task", "list", "--parent-id", "task-1"],
+        ] {
+            assert!(crate::Cli::try_parse_from(args).is_err());
+        }
+    }
 
     /// An empty body lets the server preserve a stored value or derive one
     /// from the task's execution clock.
@@ -652,7 +593,7 @@ mod tests {
 
     #[test]
     fn no_shape_prints_every_one_of_them() {
-        let schemas = json!({"create": {}, "update": {}, "split": {}});
+        let schemas = json!({"create": {}, "update": {}, "sync": {}});
 
         assert_eq!(select_shape(&schemas, None).unwrap(), &schemas);
     }
@@ -661,19 +602,17 @@ mod tests {
     /// shape can be asked for it without a new binary.
     #[test]
     fn an_unknown_shape_answers_with_the_ones_the_server_sent() {
-        let schemas = json!({"create": {}, "update": {}, "split": {}});
+        let schemas = json!({"create": {}, "update": {}, "sync": {}});
         let error = select_shape(&schemas, Some("complete")).unwrap_err();
 
-        assert!(error.to_string().contains("create, split, update"));
+        assert!(error.to_string().contains("create, sync, update"));
     }
 
     /// Every filter off, so a test names only what it is about.
     fn no_filters() -> ListArgs {
         ListArgs {
             project_slug: Some("demo".to_string()),
-            kind: None,
             status: None,
-            parent_id: None,
             assignee_id: None,
             mine: false,
             document_id: None,
@@ -689,9 +628,7 @@ mod tests {
     #[test]
     fn list_passes_every_filter_using_the_api_names() {
         let args = ListArgs {
-            kind: Some("work".to_string()),
             status: Some("open".to_string()),
-            parent_id: Some("none".to_string()),
             assignee_id: Some("none".to_string()),
             document_id: Some("doc-id".to_string()),
             repo_id: Some("repo-id".to_string()),
@@ -706,9 +643,7 @@ mod tests {
         assert_eq!(
             list_query(&args, None),
             vec![
-                ("kind".to_string(), "work".to_string()),
                 ("status".to_string(), "open".to_string()),
-                ("parent_id".to_string(), "none".to_string()),
                 ("assignee_id".to_string(), "none".to_string()),
                 ("document_id".to_string(), "doc-id".to_string()),
                 ("repo_id".to_string(), "repo-id".to_string()),
@@ -739,7 +674,6 @@ mod tests {
     #[test]
     fn mine_uses_the_configured_human_actor() {
         let args = ListArgs {
-            kind: Some("work".to_string()),
             mine: true,
             live: Some(true),
             ..no_filters()
@@ -748,7 +682,6 @@ mod tests {
         assert_eq!(
             list_query(&args, Some("human-id")),
             vec![
-                ("kind".to_string(), "work".to_string()),
                 ("assignee_id".to_string(), "human-id".to_string()),
                 ("live".to_string(), "true".to_string())
             ]
@@ -767,7 +700,7 @@ mod tests {
 
         assert_eq!(
             task_summary(&task),
-            "task-id  work/open  assignee=none  Implement login"
+            "task-id  open  assignee=none  Implement login"
         );
     }
 
@@ -779,9 +712,9 @@ mod tests {
     /// in production. The stub server is real HTTP -- see `crate::testing`.
     mod api {
         use super::super::{
-            assign, claim, complete, create, delete, list, release, schema, split, stats, sync,
+            assign, claim, complete, create, delete, list, release, schema, stats, sync,
             transition, update, AssignArgs, CompleteArgs, CreateArgs, ListArgs, ProjectArgs,
-            SchemaArgs, SplitArgs, SyncArgs, TaskIdArgs, UpdateArgs,
+            SchemaArgs, SyncArgs, TaskIdArgs, UpdateArgs,
         };
         use crate::config::Config;
         use crate::testing::{client, json_file, Reply, StubServer};
@@ -1078,40 +1011,6 @@ mod tests {
         }
 
         #[test]
-        fn split_sends_the_children_or_nothing_at_all() {
-            let server = StubServer::start(vec![
-                Reply::json(
-                    200,
-                    json!({"data": {"id": "task-id"}, "children": [{"id": "child", "title": "One"}]}),
-                ),
-                Reply::json(200, json!({"data": {"id": "task-id"}, "children": []})),
-            ]);
-            let client = client(&server);
-
-            split(
-                &client,
-                SplitArgs {
-                    task_id: "task-id".to_string(),
-                    input: Some(json_file(json!({"children": [{"title": "One"}]}))),
-                },
-            )
-            .unwrap();
-            split(
-                &client,
-                SplitArgs {
-                    task_id: "task-id".to_string(),
-                    input: None,
-                },
-            )
-            .unwrap();
-
-            let requests = server.requests();
-            assert_eq!(requests[0].target, "/api/v1/tasks/task-id/split");
-            assert_eq!(requests[0].json(), json!({"children": [{"title": "One"}]}));
-            assert_eq!(requests[1].json(), json!({}));
-        }
-
-        #[test]
         fn delete_uses_the_method_rather_than_a_body() {
             let server = StubServer::start(vec![Reply::empty(204)]);
 
@@ -1213,29 +1112,13 @@ mod tests {
     /// An unplanned task is in the backlog, which is a fact about it rather
     /// than a field nobody filled in.
     #[test]
-    fn detail_says_the_backlog_in_words_and_hides_a_covers_counts_on_a_job() {
+    fn detail_says_the_backlog_in_words() {
         let detail = task_detail(&json!({"kind": "work", "planned_start_on": null}));
 
         assert!(detail.contains("planned_start_on: none (backlog)"));
         assert!(detail.contains("difficulty: none"));
         refute_contains(&detail, "unestimated_tasks");
         refute_contains(&detail, "unscheduled_tasks");
-    }
-
-    #[test]
-    fn detail_shows_a_covers_rollup_counts() {
-        let detail = task_detail(&json!({
-            "kind": "summary",
-            "unestimated_tasks": 2,
-            "unrated_tasks": 1,
-            "unmeasured_tasks": 3,
-            "unscheduled_tasks": 0
-        }));
-
-        assert!(detail.contains("unestimated_tasks: 2"));
-        assert!(detail.contains("unrated_tasks: 1"));
-        assert!(detail.contains("unmeasured_tasks: 3"));
-        assert!(detail.contains("unscheduled_tasks: 0"));
     }
 
     fn refute_contains(haystack: &str, needle: &str) {

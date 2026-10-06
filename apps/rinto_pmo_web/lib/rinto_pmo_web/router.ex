@@ -272,7 +272,6 @@ defmodule RintoPMOWeb.Router do
     # The one thing that moves `kind`, and an operation rather than a field:
     # promoting a job to a cover drops its assignee and its clocks, which must
     # not be able to ride along with an edit of the title.
-    post "/tasks/:id/split", TaskController, :split
 
     # "This cannot start until that is done." Not a field on the task, because
     # an edge belongs to neither end of itself; and not a `rinto://` reference

@@ -59,15 +59,6 @@ defmodule RintoPMO.CalibrationTest do
 
     # A cover's estimate and actual are sums over its children, so counting it
     # too would count the same work twice.
-    test "a cover is never counted beside its children" do
-      project = insert(:project)
-      cover = insert(:task, project: project, kind: :summary)
-
-      finished([project: project, parent: cover, actual_minutes: 90] ++ estimated(60))
-
-      assert [%{completed: 1, comparable: 1, actual_minutes: 90}] =
-               Calibration.weeks(~D[2026-06-08], ~D[2026-06-14])
-    end
 
     test "narrows to one project when asked" do
       mine = insert(:project)

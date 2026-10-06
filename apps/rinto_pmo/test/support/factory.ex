@@ -213,20 +213,18 @@ defmodule RintoPMO.Factory do
   end
 
   def task_factory(attrs) do
-    parent = Map.get(attrs, :parent) || fixture_row(Task, attrs[:parent_id])
-    project = task_project(attrs, parent)
-    requirement = task_owner(attrs, parent, project)
+    project = task_project(attrs)
+    requirement = task_owner(attrs, project)
 
     repo =
       Map.get(attrs, :repo) || fixture_row(ProjectRepo, attrs[:repo_id]) ||
-        fixture_row(ProjectRepo, parent && parent.repo_id) || task_repo(project)
+        task_repo(project)
 
     %Task{
       project_id: project.id,
       requirement_id: requirement.id,
       repo_id: repo.id,
       priority: requirement.priority,
-      kind: :work,
       title: sequence(:task_title, &"Task #{&1}"),
       status: :open
     }
@@ -234,21 +232,18 @@ defmodule RintoPMO.Factory do
     |> evaluate_lazy_attributes()
   end
 
-  defp task_project(attrs, parent) do
+  defp task_project(attrs) do
     Map.get(attrs, :project) || fixture_row(Project, attrs[:project_id]) ||
-      fixture_row(Project, parent && parent.project_id) || insert(:project)
+      insert(:project)
   end
 
-  defp task_owner(attrs, parent, project) do
+  defp task_owner(attrs, project) do
     Map.get(attrs, :requirement) || fixture_row(Requirement, attrs[:requirement_id]) ||
-      fixture_row(Requirement, parent && parent.requirement_id) ||
       task_requirement(project, Map.get(attrs, :priority, 3))
   end
 
   defp fixture_row(_schema, nil), do: nil
   defp fixture_row(schema, id), do: RintoPMO.Repo.get!(schema, id)
-
-  def summary_task_factory(attrs), do: task_factory(Map.put(attrs, :kind, :summary))
 
   def message_ref_factory do
     %MessageRef{

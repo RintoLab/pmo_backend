@@ -211,17 +211,6 @@ defmodule RintoPMO.TasksTest do
 
     # A cover's status is rolled up from children, and the whole table is read
     # at once, so a summary must not lose its rollup by crossing a project.
-    test "rolls a cover up the same way the project-scoped list does" do
-      project = insert(:project)
-      insert(:task, project: insert(:project))
-      cover = insert(:task, project: project, kind: :summary)
-      insert(:task, project: project, parent: cover, status: :done)
-      insert(:task, project: project, parent: cover, status: :in_progress)
-
-      listed = Enum.find(Tasks.list_tasks(%{}), &(&1.id == cover.id))
-
-      assert listed.status == :in_progress
-    end
   end
 
   describe "list_edges/1" do
@@ -487,232 +476,6 @@ defmodule RintoPMO.TasksTest do
     end
   end
 
-  describe "summary nodes" do
-    test "a summary takes its status from its children" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-
-      assert status_of(project, chunk) == :open
-
-      first = insert(:task, project: project, parent: chunk)
-      insert(:task, project: project, parent: chunk)
-
-      assert status_of(project, chunk) == :open
-
-      owner = insert(:actor)
-      {:ok, first} = Tasks.claim_task(first, owner.id)
-      {:ok, _started} = Tasks.transition_task(first, :start, owner.id)
-      assert status_of(project, chunk) == :in_progress
-    end
-
-    test "a chunk is done when every child landed, cancelled only when every child was dropped" do
-      project = insert(:project)
-
-      all_done = insert(:summary_task, project: project)
-      insert(:task, project: project, parent: all_done, status: :done)
-      insert(:task, project: project, parent: all_done, status: :done)
-
-      mixed = insert(:summary_task, project: project)
-      insert(:task, project: project, parent: mixed, status: :done)
-      insert(:task, project: project, parent: mixed, status: :cancelled)
-
-      dropped = insert(:summary_task, project: project)
-      insert(:task, project: project, parent: dropped, status: :cancelled)
-
-      partly = insert(:summary_task, project: project)
-      insert(:task, project: project, parent: partly, status: :done)
-      insert(:task, project: project, parent: partly, status: :open)
-
-      assert status_of(project, all_done) == :done
-      # The chunk landed; the cancelled part was dropped along the way.
-      assert status_of(project, mixed) == :done
-      assert status_of(project, dropped) == :cancelled
-      assert status_of(project, partly) == :in_progress
-    end
-
-    test "rollup recurses through nested summaries" do
-      project = insert(:project)
-      top = insert(:summary_task, project: project)
-      middle = insert(:summary_task, project: project, parent: top)
-      insert(:task, project: project, parent: middle, status: :done)
-
-      assert status_of(project, top) == :done
-      assert Tasks.get_task!(top.id).status == :done
-    end
-
-    test "get_task! rolls up a summary fetched on its own" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-      insert(:task, project: project, parent: chunk, status: :done)
-
-      assert Tasks.get_task!(chunk.id).status == :done
-      # The stored column is inert -- only the read path is authoritative.
-      assert Repo.get!(Task, chunk.id).status == :open
-    end
-
-    test "a summary refuses everything that acts on work" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-      actor = insert(:actor)
-
-      assert {:error, :task_state_conflict, %{kind: :summary}} =
-               Tasks.assign_task(chunk, actor.id)
-
-      assert {:error, :task_state_conflict, %{kind: :summary}} = Tasks.claim_task(chunk, actor.id)
-
-      assert {:error, :task_state_conflict, %{kind: :summary}} =
-               Tasks.release_task(chunk, actor.id)
-
-      assert {:error, :task_state_conflict, %{kind: :summary}} =
-               Tasks.transition_task(chunk, :start, actor.id)
-
-      assert {:error, :task_state_conflict, %{kind: :summary}} =
-               Tasks.transition_task(chunk, :cancel, actor.id)
-    end
-
-    test "a summary cannot be created holding an assignee" do
-      project = insert(:project)
-
-      assert {:error, changeset} =
-               create_task(project, %{
-                 "kind" => "summary",
-                 "title" => "Chunk",
-                 "assignee_id" => insert(:actor).id
-               })
-
-      assert "a summary node cannot be assigned" in errors_on(changeset).assignee_id
-    end
-
-    test "kind is not a settable field" do
-      task = insert(:task)
-
-      assert {:ok, updated} = Tasks.update_task(task, %{"kind" => "summary"})
-      assert updated.kind == :work
-    end
-
-    test "summary nodes are excluded from every count" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-      insert(:task, project: project, parent: chunk, status: :done)
-      insert(:task, project: project, parent: chunk)
-
-      stats = Tasks.project_stats(project)
-
-      assert stats.total == 2
-      assert stats.by_status == %{open: 1, in_progress: 0, done: 1, cancelled: 0}
-    end
-
-    test "the WBS lists covers and work together, and roots are reachable" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-      child = insert(:task, project: project, parent: chunk)
-      loose = insert(:task, project: project)
-
-      assert [chunk.id, child.id, loose.id] == ids(Tasks.list_tasks(project, %{}))
-      assert [chunk.id, loose.id] == ids(Tasks.list_tasks(project, %{parent_id: nil}))
-      assert [child.id] == ids(Tasks.list_tasks(project, %{parent_id: chunk.id}))
-      assert [child.id, loose.id] == ids(Tasks.list_tasks(project, %{kind: :work}))
-    end
-  end
-
-  describe "split_task/2" do
-    test "promotes a job to a cover and files the jobs it turned out to be" do
-      project = insert(:project)
-      actor = insert(:actor)
-
-      task =
-        insert(:task,
-          project: project,
-          assignee: actor,
-          status: :in_progress,
-          started_at: ~U[2026-01-01 00:00:00.000000Z]
-        )
-
-      assert {:ok, summary} =
-               Tasks.split_task(task, [
-                 %{"title" => "Schema"},
-                 %{"title" => "Endpoint", "assignee_id" => actor.id}
-               ])
-
-      assert summary.kind == :summary
-      # A cover holds no assignee and no clock; what the job had accumulated
-      # goes with the promotion rather than lingering as a claim about a chunk
-      # that did not exist yet.
-      assert summary.assignee_id == nil
-      assert summary.assigned_at == nil
-      assert summary.started_at == nil
-
-      assert ["Schema", "Endpoint"] = Enum.map(summary.children, & &1.title)
-      assert Enum.all?(summary.children, &(&1.parent_id == summary.id))
-      assert Enum.all?(summary.children, &(&1.project_id == project.id))
-      assert Enum.all?(summary.children, &(&1.kind == :work))
-
-      # Two open children, so the cover reads open again.
-      assert status_of(project, summary) == :open
-    end
-
-    test "promotes without children, leaving the tree to be filled in after" do
-      project = insert(:project)
-      task = insert(:task, project: project)
-      existing = insert(:task, project: project, status: :done)
-
-      assert {:ok, summary} = Tasks.split_task(task)
-      assert summary.kind == :summary
-      assert summary.children == []
-
-      assert {:ok, _moved} = Tasks.update_task(existing, %{"parent_id" => summary.id})
-      assert status_of(project, summary) == :done
-    end
-
-    test "refuses a cover and refuses finished work" do
-      chunk = insert(:summary_task)
-      done = insert(:task, status: :done)
-      cancelled = insert(:task, status: :cancelled)
-
-      assert {:error, :task_not_splittable, %{kind: :summary}} = Tasks.split_task(chunk)
-
-      assert {:error, :task_not_splittable, %{current_status: :done}} = Tasks.split_task(done)
-
-      assert {:error, :task_not_splittable, %{current_status: :cancelled}} =
-               Tasks.split_task(cancelled)
-    end
-
-    test "an invalid child names its index and lands nothing" do
-      task = insert(:task, status: :in_progress)
-
-      assert {:error, :validation_error, details} =
-               Tasks.split_task(task, [%{"title" => "Fine"}, %{"description" => "no title"}])
-
-      assert %{"children" => %{"1" => %{title: ["can't be blank"]}}} = details
-
-      # The whole split rolled back: still a job, and the valid child that had
-      # already been inserted went with it.
-      reloaded = Repo.get!(Task, task.id)
-      assert reloaded.kind == :work
-      assert reloaded.status == :in_progress
-      assert Repo.aggregate(Task, :count, :id) == 1
-    end
-
-    test "a split task can be split again, one level down" do
-      project = insert(:project)
-      top = insert(:task, project: project)
-
-      {:ok, top} = Tasks.split_task(top, [%{"title" => "Half"}])
-      [half] = top.children
-
-      assert {:ok, nested} = Tasks.split_task(half, [%{"title" => "Quarter"}])
-      assert nested.kind == :summary
-      assert nested.parent_id == top.id
-
-      [quarter] = nested.children
-      owner = insert(:actor)
-      {:ok, quarter} = Tasks.claim_task(quarter, owner.id)
-      {:ok, _done} = Tasks.transition_task(quarter, :start, owner.id)
-
-      assert status_of(project, top) == :in_progress
-    end
-  end
-
   describe "estimates" do
     test "takes a whole three-point estimate and computes its expected value" do
       project = insert(:project)
@@ -787,218 +550,9 @@ defmodule RintoPMO.TasksTest do
       assert cleared.estimate_optimistic == nil
       assert Task.expected(cleared) == nil
     end
-
-    test "a summary node takes no estimate of its own" do
-      chunk = insert(:summary_task)
-
-      assert {:error, :invalid_estimate, %{field: "estimate", reason: reason}} =
-               Tasks.update_task(chunk, %{
-                 "estimate" => %{"optimistic" => 1, "likely" => 2, "pessimistic" => 3}
-               })
-
-      assert reason =~ "from its children"
-    end
-
-    test "a cover sums the estimates under it and counts what it had to skip" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-
-      insert(:task,
-        project: project,
-        parent: chunk,
-        estimate_optimistic: 60,
-        estimate_likely: 120,
-        estimate_pessimistic: 240
-      )
-
-      insert(:task,
-        project: project,
-        parent: chunk,
-        estimate_optimistic: 30,
-        estimate_likely: 60,
-        estimate_pessimistic: 90
-      )
-
-      insert(:task, project: project, parent: chunk)
-
-      rolled = Tasks.get_task!(chunk.id)
-
-      assert rolled.estimate_optimistic == 90
-      assert rolled.estimate_likely == 180
-      assert rolled.estimate_pessimistic == 330
-      # The sum covers two of three children, and says so.
-      assert rolled.unestimated_tasks == 1
-    end
-
-    test "a cover with nothing estimated under it reports no estimate, not zero" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-      insert(:task, project: project, parent: chunk)
-
-      rolled = Tasks.get_task!(chunk.id)
-
-      assert rolled.estimate_optimistic == nil
-      assert rolled.unestimated_tasks == 1
-    end
-
-    test "the sum recurses through nested covers" do
-      project = insert(:project)
-      top = insert(:summary_task, project: project)
-      middle = insert(:summary_task, project: project, parent: top)
-
-      insert(:task,
-        project: project,
-        parent: middle,
-        estimate_optimistic: 10,
-        estimate_likely: 20,
-        estimate_pessimistic: 30
-      )
-
-      insert(:task,
-        project: project,
-        parent: top,
-        estimate_optimistic: 5,
-        estimate_likely: 10,
-        estimate_pessimistic: 15
-      )
-
-      rolled = Tasks.get_task!(top.id)
-
-      assert rolled.estimate_optimistic == 15
-      assert rolled.estimate_likely == 30
-      assert rolled.estimate_pessimistic == 45
-      assert rolled.unestimated_tasks == 0
-    end
-
-    test "splitting drops the guess made before anyone knew the parts" do
-      task =
-        insert(:task,
-          estimate_optimistic: 60,
-          estimate_likely: 120,
-          estimate_pessimistic: 240
-        )
-
-      assert {:ok, summary} =
-               Tasks.split_task(task, [
-                 %{
-                   "title" => "Half",
-                   "estimate" => %{"optimistic" => 30, "likely" => 60, "pessimistic" => 120}
-                 },
-                 # The raw column is not castable on a child either.
-                 %{"title" => "Other half", "estimate_optimistic" => 30}
-               ])
-
-      stored = Repo.get!(Task, summary.id)
-      assert stored.estimate_optimistic == nil
-
-      [first, second] = summary.children
-      assert first.estimate_optimistic == 30
-      assert second.estimate_optimistic == nil
-
-      # ... and the cover now reports what its parts are worth.
-      assert Tasks.get_task!(summary.id).estimate_optimistic == 30
-      assert Tasks.get_task!(summary.id).unestimated_tasks == 1
-    end
-
-    test "a child with a broken estimate names its index and rolls the split back" do
-      task = insert(:task)
-
-      assert {:error, :invalid_estimate, %{field: "likely", child: 1}} =
-               Tasks.split_task(task, [
-                 %{"title" => "Fine"},
-                 %{
-                   "title" => "Backwards",
-                   "estimate" => %{"optimistic" => 9, "likely" => 2, "pessimistic" => 3}
-                 }
-               ])
-
-      assert Repo.get!(Task, task.id).kind == :work
-      assert Repo.aggregate(Task, :count, :id) == 1
-    end
   end
 
   describe "delete_task/1 and automatic demotion" do
-    test "deleting the last child turns the cover back into a job" do
-      project = insert(:project)
-      task = insert(:task, project: project)
-
-      {:ok, summary} = Tasks.split_task(task, [%{"title" => "Only"}])
-      [only] = summary.children
-
-      assert {:ok, _deleted} = Tasks.delete_task(only)
-
-      demoted = Repo.get!(Task, summary.id)
-      assert demoted.kind == :work
-      assert demoted.status == :open
-      assert Tasks.get_task!(summary.id).kind == :work
-    end
-
-    test "deleting a child that is not the last leaves the cover alone" do
-      project = insert(:project)
-      task = insert(:task, project: project)
-
-      {:ok, summary} = Tasks.split_task(task, [%{"title" => "One"}, %{"title" => "Two"}])
-      [one, _two] = summary.children
-
-      assert {:ok, _deleted} = Tasks.delete_task(one)
-      assert Repo.get!(Task, summary.id).kind == :summary
-    end
-
-    test "moving the last child away empties the cover just as deleting does" do
-      project = insert(:project)
-      task = insert(:task, project: project)
-      elsewhere = insert(:summary_task, project: project)
-
-      {:ok, summary} = Tasks.split_task(task, [%{"title" => "Only"}])
-      [only] = summary.children
-
-      assert {:ok, _moved} = Tasks.update_task(only, %{"parent_id" => elsewhere.id})
-      assert Repo.get!(Task, summary.id).kind == :work
-    end
-
-    test "demotion resets a status that went inert at the split" do
-      project = insert(:project)
-      actor = insert(:actor)
-      task = insert(:task, project: project, assignee: actor)
-
-      {:ok, started} = Tasks.transition_task(task, :start, actor.id)
-      assert started.status == :in_progress
-
-      {:ok, summary} = Tasks.split_task(started, [%{"title" => "Only"}])
-      [only] = summary.children
-      {:ok, _deleted} = Tasks.delete_task(only)
-
-      # The pre-split `in_progress` does not come back to life weeks later.
-      demoted = Repo.get!(Task, summary.id)
-      assert demoted.status == :open
-      assert demoted.assignee_id == nil
-      assert demoted.started_at == nil
-    end
-
-    test "a cover that never had children stays a cover" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-      loose = insert(:task, project: project)
-
-      # Nothing was emptied, so nothing is demoted: a top-down breakdown that
-      # has not been filled in is still a breakdown.
-      assert {:ok, _moved} = Tasks.update_task(loose, %{"parent_id" => chunk.id})
-      assert Repo.get!(Task, chunk.id).kind == :summary
-
-      {:ok, empty} = Tasks.split_task(insert(:task, project: project))
-      assert Repo.get!(Task, empty.id).kind == :summary
-    end
-
-    test "refuses to delete a node that still has children" do
-      task = insert(:task)
-      {:ok, summary} = Tasks.split_task(task, [%{"title" => "Child"}])
-
-      assert {:error, :task_state_conflict, %{reason: "task still has children"}} =
-               Tasks.delete_task(summary)
-
-      assert Repo.get(Task, summary.id)
-    end
-
     test "deleting a root touches nothing else" do
       project = insert(:project)
       task = insert(:task, project: project)
@@ -1006,55 +560,6 @@ defmodule RintoPMO.TasksTest do
 
       assert {:ok, _deleted} = Tasks.delete_task(task)
       assert [other.id] == ids(Tasks.list_tasks(project, %{}))
-    end
-  end
-
-  describe "parenting" do
-    test "a parent must be a summary node in the same project" do
-      project = insert(:project)
-      work = insert(:task, project: project)
-      elsewhere = insert(:summary_task)
-
-      assert {:error, changeset} =
-               create_task(project, %{"title" => "Child", "parent_id" => work.id})
-
-      assert "must be a summary node" in errors_on(changeset).parent_id
-
-      assert {:error, changeset} =
-               create_task(project, %{"title" => "Child", "parent_id" => elsewhere.id})
-
-      assert "belongs to another project" in errors_on(changeset).parent_id
-
-      assert {:error, changeset} =
-               create_task(project, %{"title" => "Child", "parent_id" => UUIDv7.generate()})
-
-      assert "does not exist" in errors_on(changeset).parent_id
-    end
-
-    test "a subtree cannot be moved under itself" do
-      project = insert(:project)
-      top = insert(:summary_task, project: project)
-      middle = insert(:summary_task, project: project, parent: top)
-
-      assert {:error, :dependency_cycle, %{cycle: cycle}} =
-               Tasks.update_task(top, %{"parent_id" => middle.id})
-
-      assert top.id in cycle
-
-      assert {:error, :dependency_cycle, _details} =
-               Tasks.update_task(top, %{"parent_id" => top.id})
-    end
-
-    test "moving a subtree to a legitimate new parent works" do
-      project = insert(:project)
-      first = insert(:summary_task, project: project)
-      second = insert(:summary_task, project: project)
-      child = insert(:task, project: project, parent: first, status: :done)
-
-      assert {:ok, moved} = Tasks.update_task(child, %{"parent_id" => second.id})
-      assert moved.parent_id == second.id
-      assert status_of(project, first) == :open
-      assert status_of(project, second) == :done
     end
   end
 
@@ -1109,25 +614,6 @@ defmodule RintoPMO.TasksTest do
       assert estimate.total == nil
       assert estimate.remaining == nil
       assert estimate.unestimated_tasks == 1
-    end
-
-    test "covers contribute nothing of their own to the totals" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-
-      insert(:task,
-        project: project,
-        parent: chunk,
-        estimate_optimistic: 10,
-        estimate_likely: 20,
-        estimate_pessimistic: 30
-      )
-
-      %{estimate: estimate, total: total} = Tasks.project_stats(project)
-
-      assert total == 1
-      assert estimate.total.optimistic == 10
-      assert estimate.unestimated_tasks == 0
     end
   end
 
@@ -1196,7 +682,7 @@ defmodule RintoPMO.TasksTest do
       :ok
     end
 
-    test "makes a summary over its tasks, and a plain task for a chunk with none" do
+    test "files only executable tasks from grouped and standalone document sections" do
       project = insert(:project)
 
       breakdown =
@@ -1218,22 +704,15 @@ defmodule RintoPMO.TasksTest do
 
       assert {:ok, filed} = Tasks.file_breakdown(breakdown)
 
-      assert [chunk, first, second, standalone] = filed
+      assert [first, second, standalone] = filed
 
       assert Enum.map(filed, & &1.title) ==
-               ["灰度发布", "接入十分之一流量", "加监控看板", "把回滚做成一个开关"]
+               ["接入十分之一流量", "加监控看板", "把回滚做成一个开关"]
 
-      assert chunk.kind == :summary
-      assert chunk.description == "分两步走。"
-      assert first.kind == :work
-      assert first.parent_id == chunk.id
       assert first.description == "先切 10%。"
-      assert second.parent_id == chunk.id
       assert second.description == nil
 
       # A chunk nobody broke down further is one job, not a cover over one job.
-      assert standalone.kind == :work
-      assert standalone.parent_id == nil
       assert standalone.description == "现在要手动改配置。"
 
       assert Enum.all?(filed, &(&1.project_id == project.id))
@@ -1269,7 +748,7 @@ defmodule RintoPMO.TasksTest do
       assert Enum.all?(filed, &(&1.document_id == source.id))
 
       # And the preamble files nothing: it is above the first heading.
-      assert Enum.map(filed, & &1.title) == ["灰度发布", "接入十分之一流量"]
+      assert Enum.map(filed, & &1.title) == ["接入十分之一流量"]
     end
 
     # A link in a task's body is somebody citing a document, not saying where
@@ -1403,19 +882,17 @@ defmodule RintoPMO.TasksTest do
 
       assert {:ok, filed} = Tasks.file_breakdown(breakdown)
 
-      assert Enum.map(filed, &{&1.kind, &1.title}) == [
-               {:summary, "数据模型"},
-               {:work, "建 annotations 表"},
-               {:work, "建 annotation_replies 表"},
-               {:summary, "追评与状态逻辑"},
-               {:work, "追评 position 分配"}
+      assert Enum.map(filed, & &1.title) == [
+               "建 annotations 表",
+               "建 annotation_replies 表",
+               "追评 position 分配"
              ]
 
       # The heading is stored `建 annotation\_replies 表`, and a title column is
       # not Markdown. This is the whole reason titles come off the AST.
       refute Enum.any?(filed, &String.contains?(&1.title, "\\"))
 
-      [_, first, second, _, third] = filed
+      [first, second, third] = filed
 
       # Intraword underscores may be emitted with or without escapes. What
       # matters is that the description still renders a literal list item.
@@ -1423,10 +900,6 @@ defmodule RintoPMO.TasksTest do
       assert first.description =~ "验收：迁移 up/down 可往返。"
       assert second.description =~ "唯一约束生效"
       assert third.description =~ "取最大 position + 1"
-
-      # Chunks carry no description of their own here, because the model wrote
-      # none -- it puts the words on the tasks.
-      assert Enum.filter(filed, &(&1.kind == :summary)) |> Enum.all?(&(&1.description == nil))
     end
   end
 
@@ -1472,42 +945,10 @@ defmodule RintoPMO.TasksTest do
       assert {:ok, cleared} = Tasks.update_task(task, %{"difficulty" => nil})
       assert cleared.difficulty == nil
     end
-
-    test "a summary node takes no difficulty of its own" do
-      chunk = insert(:summary_task)
-
-      assert {:error, :invalid_difficulty, %{field: "difficulty", reason: reason}} =
-               Tasks.update_task(chunk, %{"difficulty" => 3})
-
-      assert reason =~ "does not carry"
-    end
-
-    test "a cover counts unrated work under it and does not invent a difficulty" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-      insert(:task, project: project, parent: chunk, difficulty: 5)
-      insert(:task, project: project, parent: chunk)
-
-      rolled = Tasks.get_task!(chunk.id)
-
-      assert rolled.difficulty == nil
-      assert rolled.unrated_tasks == 1
-    end
-
-    test "splitting drops the rating made before anyone knew the parts" do
-      task = insert(:task, difficulty: 8)
-
-      assert {:ok, summary} = Tasks.split_task(task, [%{"title" => "Half", "difficulty" => 3}])
-
-      stored = Repo.get!(Task, summary.id)
-      assert stored.difficulty == nil
-      assert hd(summary.children).difficulty == 3
-      assert Tasks.get_task!(summary.id).unrated_tasks == 0
-    end
   end
 
   describe "actual_minutes" do
-    test "records a non-negative duration and refuses a summary" do
+    test "records a non-negative duration and refuses negative values" do
       project = insert(:project)
 
       assert {:ok, task} =
@@ -1517,11 +958,6 @@ defmodule RintoPMO.TasksTest do
 
       assert {:error, :invalid_actual, %{field: "actual_minutes"}} =
                create_task(project, %{"title" => "Negative", "actual_minutes" => -1})
-
-      chunk = insert(:summary_task)
-
-      assert {:error, :invalid_actual, %{field: "actual_minutes"}} =
-               Tasks.update_task(chunk, %{"actual_minutes" => 10})
     end
 
     test "complete can override an existing duration" do
@@ -1585,19 +1021,6 @@ defmodule RintoPMO.TasksTest do
 
       assert {:ok, reopened} = Tasks.transition_task(task, :reopen, actor.id)
       assert reopened.actual_minutes == nil
-    end
-
-    test "a cover sums recorded durations and counts what it had to skip" do
-      project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-      insert(:task, project: project, parent: chunk, actual_minutes: 30)
-      insert(:task, project: project, parent: chunk, actual_minutes: 15)
-      insert(:task, project: project, parent: chunk)
-
-      rolled = Tasks.get_task!(chunk.id)
-
-      assert rolled.actual_minutes == 45
-      assert rolled.unmeasured_tasks == 1
     end
   end
 
@@ -1683,15 +1106,6 @@ defmodule RintoPMO.TasksTest do
       refute_enqueued(worker: EstimationWorker)
     end
 
-    test "refuses an empty cover" do
-      chunk = insert(:summary_task)
-
-      assert {:error, :nothing_to_estimate, %{reason: reason}} =
-               Tasks.request_estimation(chunk, :difficulty)
-
-      assert reason =~ "no work items"
-    end
-
     test "refuses when the estimation AI is not configured" do
       {:ok, _roles} = AIRoles.delete_role("task_estimation")
       task = insert(:task)
@@ -1718,11 +1132,10 @@ defmodule RintoPMO.TasksTest do
 
     test "writes ratings onto unfilled work and leaves filled work alone" do
       project = insert(:project)
-      chunk = insert(:summary_task, project: project)
-      fresh = insert(:task, project: project, parent: chunk, title: "New")
-      rated = insert(:task, project: project, parent: chunk, title: "Old", difficulty: 2)
+      fresh = insert(:task, project: project, title: "New")
+      rated = insert(:task, project: project, title: "Old", difficulty: 2)
 
-      {:ok, job} = Tasks.request_estimation(chunk, :difficulty)
+      {:ok, job} = Tasks.request_estimation(fresh, :difficulty)
 
       expect(TaskEstimatorMock, :estimate_difficulty, fn input, opts ->
         assert opts[:provider] == "google"
@@ -1736,7 +1149,7 @@ defmodule RintoPMO.TasksTest do
          ]}
       end)
 
-      assert :ok = Tasks.run_estimation(job.id, chunk.id, :difficulty)
+      assert :ok = Tasks.run_estimation(job.id, fresh.id, :difficulty)
       assert Repo.get!(Task, fresh.id).difficulty == 5
       assert Repo.get!(Task, rated.id).difficulty == 2
     end
@@ -1930,7 +1343,7 @@ defmodule RintoPMO.TasksTest do
                })
 
       assert reason =~ "at most #{ceiling}"
-      assert reason =~ "split"
+      assert reason =~ "smaller tasks"
     end
 
     test "accepts an estimate that is exactly a working day" do
@@ -2026,24 +1439,6 @@ defmodule RintoPMO.TasksTest do
 
     # A cover holds no schedule, so it holds no baseline either -- and the
     # rollup has to carry both, or a chunk would report as never slipped.
-    test "splitting drops the baseline, and a cover rolls up the earliest one" do
-      project = insert(:project)
-
-      {:ok, task} =
-        create_task(project, %{"title" => "Chunk", "planned_start_on" => ~D[2026-09-07]})
-
-      assert {:ok, cover} =
-               Tasks.split_task(task, [
-                 %{"title" => "First", "planned_start_on" => ~D[2026-09-14]},
-                 %{"title" => "Second", "planned_start_on" => ~D[2026-09-21]}
-               ])
-
-      assert Repo.get!(Task, cover.id).first_planned_on == nil
-
-      listed = Enum.find(Tasks.list_tasks(project, %{}), &(&1.id == cover.id))
-      assert listed.first_planned_on == ~D[2026-09-14]
-      assert listed.planned_start_on == ~D[2026-09-14]
-    end
 
     test "refuses independently assigned task priority" do
       project = insert(:project)
@@ -2051,76 +1446,9 @@ defmodule RintoPMO.TasksTest do
       assert {:error, changeset} = create_task(project, %{"title" => "X", "priority" => 6})
       assert %{priority: ["is inherited from the requirement"]} = errors_on(changeset)
     end
-
-    test "a summary node cannot be scheduled" do
-      project = insert(:project)
-      cover = insert(:summary_task, project: project)
-
-      assert {:error, changeset} =
-               Tasks.update_task(cover, %{"planned_start_on" => ~D[2026-09-07]})
-
-      assert %{planned_start_on: ["a summary node cannot be scheduled"]} = errors_on(changeset)
-    end
-
-    test "splitting a job into a cover drops its schedule but keeps its priority" do
-      project = insert(:project)
-
-      task =
-        insert(:task,
-          project: project,
-          planned_start_on: ~D[2026-09-07],
-          priority: 1
-        )
-
-      assert {:ok, %Task{children: [_child]}} =
-               Tasks.split_task(task, [%{"title" => "The actual work"}])
-
-      cover = Tasks.get_task!(task.id)
-      assert cover.kind == :summary
-      assert cover.planned_start_on == nil
-      assert cover.priority == 1
-    end
-
-    test "a cover reports the earliest day under it and counts what is unplanned" do
-      project = insert(:project)
-      cover = insert(:summary_task, project: project)
-
-      insert(:task, project: project, parent_id: cover.id, planned_start_on: ~D[2026-09-14])
-      insert(:task, project: project, parent_id: cover.id, planned_start_on: ~D[2026-09-07])
-      insert(:task, project: project, parent_id: cover.id, planned_start_on: nil)
-
-      rolled =
-        project
-        |> Tasks.list_tasks(%{})
-        |> Enum.find(&(&1.id == cover.id))
-
-      assert rolled.planned_start_on == ~D[2026-09-07]
-      assert rolled.unscheduled_tasks == 1
-    end
-
-    test "a cover with nothing planned under it reports no day at all" do
-      project = insert(:project)
-      cover = insert(:summary_task, project: project)
-      insert(:task, project: project, parent_id: cover.id, planned_start_on: nil)
-
-      rolled =
-        project
-        |> Tasks.list_tasks(%{})
-        |> Enum.find(&(&1.id == cover.id))
-
-      assert rolled.planned_start_on == nil
-      assert rolled.unscheduled_tasks == 1
-    end
   end
 
   defp ids(tasks), do: Enum.map(tasks, & &1.id)
-
-  defp status_of(project, %Task{id: id}) do
-    project
-    |> Tasks.list_tasks(%{})
-    |> Enum.find(&(&1.id == id))
-    |> Map.fetch!(:status)
-  end
 
   defp create_task(project, attrs) do
     requirement = task_requirement(project)

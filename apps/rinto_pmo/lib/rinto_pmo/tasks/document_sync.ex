@@ -189,8 +189,8 @@ defmodule RintoPMO.Tasks.DocumentSync do
       map_size(changes) == 0 ->
         :ok
 
-      task.kind != :work or task.status != :open ->
-        conflict(entry, "work has started, finished, or been split; update it explicitly")
+      task.status != :open ->
+        conflict(entry, "work has started or finished; update it explicitly")
 
       conflicts != [] ->
         conflict(entry, "the task was edited manually", conflicts)

@@ -287,8 +287,8 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
   # the project's task list gives, so a client builds the tree the way it does.
   test "POST /api/v1/documents/:id/file_breakdown answers with what it made", %{conn: conn} do
     document = document_with_revision()
-    summary = insert(:task, kind: :summary, title: "灰度发布")
-    child = insert(:task, title: "接入十分之一流量", parent_id: summary.id)
+    summary = insert(:task, title: "灰度发布")
+    child = insert(:task, title: "接入十分之一流量")
 
     expect(DocumentsMock, :get_document!, fn _id -> document end)
     expect(TasksMock, :file_breakdown, fn ^document -> {:ok, [summary, child]} end)
@@ -297,8 +297,8 @@ defmodule RintoPMOWeb.V1.DocumentControllerTest do
 
     assert [first, second] = json_response(conn, 201)["data"]
     assert first["title"] == "灰度发布"
-    assert first["kind"] == "summary"
-    assert second["parent_id"] == summary.id
+    refute Map.has_key?(first, "kind")
+    refute Map.has_key?(second, "parent_id")
   end
 
   test "POST /api/v1/documents/:id/file_breakdown relays a refusal", %{conn: conn} do

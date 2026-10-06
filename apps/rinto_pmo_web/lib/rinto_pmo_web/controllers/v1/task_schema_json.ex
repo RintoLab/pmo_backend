@@ -1,53 +1,15 @@
 defmodule RintoPMOWeb.V1.TaskSchemaJSON do
-  @moduledoc """
-  What a task write has to look like, served rather than written down.
-
-  `task create`, `task update` and `task split` each read a JSON file, and the
-  only description of that file used to live in `openapi.yaml` -- a document
-  the agent holding the CLI has never seen. So it guessed, and the guesses
-  were reliably the same few: the flat `estimate_likely` column that is not
-  castable, a `status` in a PATCH that is dropped without a word, a story
-  point of 4.
-
-  ## Why this exists when `doc schema` was refused
-
-  A document body is Markdown; its shape is one sentence, and a subcommand
-  restating it would be a subcommand restating one sentence (see
-  `docs/ai-document-cli.md`). A task is twenty-odd fields carrying enums, a
-  ceiling, and rules that hold *between* fields -- all three estimate points
-  or none, ordered, under a day. That is a shape worth serving.
-
-  ## Why the server serves it
-
-  The numbers come from `RintoPMO.Tasks.Task` as the request is answered, so a
-  schema that says 480 minutes is saying what the packer will actually
-  enforce. A client carrying its own copy would teach last release's rules to
-  an agent with no way to notice, and the CLI self-updates on its own
-  schedule.
-
-  ## What it does not claim
-
-  `additionalProperties: false` is an instruction to whoever writes the file,
-  not a description of the server: unlisted keys are *ignored*, not refused,
-  because the changeset casts a whitelist. That is the trap this schema exists
-  to spell out, and the `update` shape says so in as many words -- a PATCH
-  carrying `status` succeeds and changes nothing. The `sync` shape is stricter:
-  it rejects unlisted fields so execution data cannot be silently discarded.
-  """
+  @moduledoc "JSON input schemas for task creation, updates and document synchronization."
 
   alias RintoPMO.Tasks.Task
 
   @dialect "https://json-schema.org/draft/2020-12/schema"
 
   @doc """
-  The four shapes a task write can take, keyed by the command that reads them.
-
-  All of them in one response rather than one endpoint each: the answer is a
-  few hundred bytes of constant, and an agent that has to learn `create` today
-  will need `split` in the same sitting.
+  The three supported task write shapes, keyed by command.
   """
   def show(_assigns) do
-    %{data: flow(%{create: create(), update: update(), split: split(), sync: sync()})}
+    %{data: flow(%{create: create(), update: update(), sync: sync()})}
   end
 
   # Every `description` is written as paragraphs above and flowed on the way
@@ -91,19 +53,6 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
             type: "string",
             format: "uuid",
             description: "An open leaf requirement in this project. Immutable after creation."
-          },
-          kind: %{
-            type: "string",
-            enum: Enum.map(Task.kinds(), &Atom.to_string/1),
-            default: "work",
-            description: """
-            A job (`work`) or the cover over a pile of them (`summary`). This
-            is the only place it is settable; afterwards it moves through
-            `task split` alone. A cover holds nothing that measures work --
-            assignee, planned_start_on, estimate, difficulty and
-            actual_minutes are all refused on one, because it takes those from
-            its children.
-            """
           }
         }),
       examples: [
@@ -180,10 +129,8 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
       `rinto-pmo task update --input FILE` reads. Every field is optional;
       what is absent is left alone, and an explicit `null` clears.
 
-      `status` and `kind` are not here. Status moves only through the events
-      -- `task start`, `task complete`, `task cancel`, `task reopen` -- and
-      `kind` only through `task split`; neither belongs in the same request as
-      an edit of the wording.
+      Status moves only through task start, complete, cancel and reopen.
+      The retired kind and parent_id fields are rejected.
 
       `priority` and `requirement_id` writes are refused. Other unlisted keys are ignored. A
       PATCH carrying `status: "done"` answers 200 and changes nothing, so read
@@ -196,60 +143,6 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
     }
   end
 
-  defp split do
-    %{
-      "$schema" => @dialect,
-      title: "TaskSplitInput",
-      description: """
-      The body of `POST /tasks/{id}/split`, which is the file
-      `rinto-pmo task split --input FILE` reads. Omit the file entirely to
-      turn a job into an empty cover and file its children later.
-
-      The split rewrites the task it is given: a cover holds no assignee, no
-      clocks, no estimate, no difficulty, no actual minutes and no
-      planned_start_on, so all of those are dropped, and its status becomes
-      the rollup over whatever children it now has. Title, description,
-      requirement and its place in the tree stay; priority is inherited.
-      Children cannot override requirement_id or parent_id. Each child inherits repo_id unless it explicitly selects another repository in the same project.
-      """,
-      type: "object",
-      additionalProperties: false,
-      properties: %{
-        children: %{
-          type: "array",
-          description: """
-          The jobs to file under the new cover, in order. Each is created as
-          `kind: "work"` with its parent already set to the cover, which is
-          why a child carries neither field. A child that is itself a pile is
-          split in turn.
-
-          A refusal names the child it came from: `details.child` is its index
-          in this array.
-          """,
-          items: %{
-            type: "object",
-            required: ["title"],
-            additionalProperties: false,
-            properties: Map.drop(common_properties(), [:parent_id])
-          }
-        }
-      },
-      examples: [
-        %{
-          "children" => [
-            %{
-              "title" => "Add the pgvector column and its index",
-              "estimate" => %{"optimistic" => 30, "likely" => 60, "pessimistic" => 120}
-            },
-            %{"title" => "Backfill embeddings for existing tasks"}
-          ]
-        }
-      ]
-    }
-  end
-
-  # The fields every write shares. `create` adds `kind`; the children of a
-  # split lose `parent_id`, which the split itself has already answered.
   defp common_properties do
     %{
       title: %{
@@ -282,23 +175,13 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
         deleting the document leaves the task standing.
         """
       },
-      parent_id: %{
-        type: ["string", "null"],
-        format: "uuid",
-        description: """
-        The cover this sits under. It has to be a `summary` in the same
-        project, and it may not sit underneath this task -- that is refused as
-        `dependency_cycle`. Moving the last child out of a cover demotes that
-        cover back to `work`, so re-read the tree after a structural move.
-        """
-      },
       assignee_id: %{
         type: ["string", "null"],
         format: "uuid",
         description: """
         Who owns the work. `task claim` and `task assign` are the usual ways
         in; this field is here so a breakdown can hand work out as it files
-        it. Refused on a summary node.
+        it.
         """
       },
       due_on: %{
@@ -318,7 +201,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
         in. Null is the backlog, and there is no backlog status.
 
         It is not where the task lands -- the board fills each day's capacity
-        in priority order and answers that. Refused on a summary node.
+        in priority order and answers that.
         Refused as `dependency_out_of_order` when the move would put the task
         ahead of live work it waits for, or push a prerequisite past something
         waiting on it.
@@ -335,7 +218,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
         smaller estimate but a broken one. Must satisfy
         `optimistic <= likely <= pessimistic`, and no point may exceed
         #{Task.estimate_ceiling()} minutes -- one working day. A job that
-        wants more was not broken down far enough, and `task split` is the
+        wants more was not broken down far enough, and creating smaller tasks is the
         answer rather than a wider day.
 
         What is being estimated is what the task costs the person planning it,
@@ -355,8 +238,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
         A Fibonacci story point, or null to clear. It rates the work rather
         than timing it -- the estimate is the duration, and this is the knob
         later estimates are calibrated against. Anything off the ladder is
-        refused as `invalid_difficulty`, and so is any value at all on a
-        summary node.
+        refused as `invalid_difficulty`.
         """
       },
       actual_minutes: %{
@@ -366,8 +248,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
         How long the work actually took, in minutes. When completion finds
         neither a supplied nor a stored value, it derives whole minutes from
         `started_at`, rounding a partial minute up. An explicit value takes
-        precedence. Reopening clears the duration. Refused on a summary node,
-        which sums its children instead.
+        precedence. Reopening clears the duration.
         """
       }
     }

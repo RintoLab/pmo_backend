@@ -142,7 +142,7 @@ away anything written there. On a developer's machine the repository to be in is
 | `project` | `list`, `show` -- repositories, directory names, git URLs |
 | `repo` | `checkout` -- puts a branch on the *server's* disk and says where; only useful there |
 | `requirement` | `list`, `show`, `create`, `update`, `estimate` -- description, priority, workload and documents |
-| `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `split`, `start`, `complete`, `cancel`, `reopen`, `delete` |
+| `task` | `list`, `show`, `stats`, `schema`, `create`, `update`, `assign`, `claim`, `release`, `start`, `complete`, `cancel`, `reopen`, `delete` |
 | `schedule` | one command; what each week holds and what did not fit in it |
 | `history` | one command; what was actually worked, with the plan beside it |
 | `calibration` | one command; what the estimates turned out to be worth |
@@ -166,7 +166,7 @@ and how far it slipped from the week it was *first* planned for.
 
 
 **Ask what a task write looks like; do not guess.** `task create`, `task update`
-and `task split` each read a JSON file, and `task schema [create|update|split]`
+and `task sync` each read a JSON file, and `task schema [create|update|sync]`
 prints the shape of one -- every field, the enums, the estimate ceiling, and a
 worked example. It is fetched from the server rather than kept in here, so it is
 what that server will accept and not what was true when this binary was built.
@@ -425,15 +425,13 @@ immediately in detail, lists and scheduling. Update priority with:
 rinto-pmo requirement update <requirement-id> --priority 1
 ```
 
-Task splits inherit the requirement; tasks cannot move between requirements.
+Tasks are flat executable work and cannot move between requirements. Task WBS, kind, parent_id and task split have been removed.
 A requirement that owns tasks cannot gain child requirements. The existing document
 breakdown importer now requires the source document to belong to a leaf requirement.
 
 Task repository ownership: task creation JSON requires `repo_id` alongside
 `requirement_id` and `title`. Use a Repo belonging to the requirement's Project.
-`task update` can correct `repo_id` but cannot clear it. `task split` children
-inherit the original Repo unless each child supplies another Repo in the same
-Project. `task list --repo-id <ID>` filters the execution queue.
+`task update` can correct `repo_id` but cannot clear it. `task list --repo-id <ID>` filters the execution queue.
 
 ### Synchronize a requirement's task document
 

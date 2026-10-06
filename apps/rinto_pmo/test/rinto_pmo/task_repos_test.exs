@@ -43,31 +43,6 @@ defmodule RintoPMO.TaskReposTest do
     assert Tasks.list_tasks(project, %{repo_id: task.repo_id}) == []
   end
 
-  test "splits inherit a repository but may explicitly span repositories in the same project" do
-    task = insert(:task)
-    other = insert(:project_repo, project_id: task.project_id, project: nil)
-
-    assert {:ok, cover} =
-             Tasks.split_task(task, [
-               %{title: "Original repo"},
-               %{title: "Other repo", repo_id: other.id}
-             ])
-
-    assert Enum.map(cover.children, & &1.repo_id) == [task.repo_id, other.id]
-    assert Enum.all?(cover.children, &(&1.requirement_id == task.requirement_id))
-
-    untouched = insert(:task)
-
-    assert {:error, :validation_error, _} =
-             Tasks.split_task(untouched, [
-               %{title: "Valid"},
-               %{title: "Wrong project", repo_id: other.id}
-             ])
-
-    assert Tasks.get_task!(untouched.id).kind == :work
-    assert Tasks.list_tasks(%{parent_id: untouched.id}) == []
-  end
-
   test "referenced repositories cannot be deleted, including repositories with finished work" do
     task = insert(:task, status: :done)
     repository = Repo.get!(RintoPMO.Projects.ProjectRepo, task.repo_id)

@@ -56,7 +56,7 @@ defmodule RintoPMO.Requirements.EstimationContext do
     Repo.all(
       from task in Task,
         where:
-          task.project_id == ^project_id and task.kind == :work and task.status == :done and
+          task.project_id == ^project_id and task.status == :done and
             not is_nil(task.actual_minutes),
         order_by: [desc: task.completed_at],
         limit: 50

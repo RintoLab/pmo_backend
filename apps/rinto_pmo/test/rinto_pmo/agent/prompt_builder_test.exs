@@ -378,7 +378,7 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                PromptBuilder.build("怎么做？", [%{"type" => "task", "id" => task.id}])
 
       assert message =~
-               ~s(<task ref="1" id="#{task.id}" title="接入 r-nacos" kind="work")
+               ~s(<task ref="1" id="#{task.id}" title="接入 r-nacos")
 
       assert message =~ ~s(status="open")
       assert message =~ ~s(project_id="#{task.project_id}")

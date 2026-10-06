@@ -18,8 +18,6 @@ defmodule RintoPMO.RequirementEstimationTest do
   end
 
   test "rollups count work exactly once, preserve zero and expose incomplete coverage", ctx do
-    insert(:summary_task, project: ctx.project, requirement: ctx.leaf)
-
     insert(:task,
       project: ctx.project,
       requirement: ctx.leaf,

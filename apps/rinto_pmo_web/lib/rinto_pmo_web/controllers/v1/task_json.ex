@@ -23,17 +23,6 @@ defmodule RintoPMOWeb.V1.TaskJSON do
   end
 
   @doc """
-  A split, with the children it created alongside the cover it made.
-
-  `children` sits next to `data` rather than inside it: a caller that just
-  broke a job into five needs the ids it created, and making it re-list to
-  find them would leave a window where it cannot address its own work.
-  """
-  def split(%{task: task}) do
-    %{data: data(task), children: Enum.map(task.children, &data/1)}
-  end
-
-  @doc """
   Both ends of a task's dependency edges.
 
   `depends_on` is what it waits for; `dependents` is what waits for it. A
@@ -75,51 +64,23 @@ defmodule RintoPMOWeb.V1.TaskJSON do
     }
   end
 
-  @doc """
-  One task, rendered whole.
-
-  There is no trimmed list shape: the WBS needs `parent_id` on every row to
-  rebuild the tree, and a client that renders `description` only in a detail
-  panel is free to ignore it -- the field costs one round trip either way.
-
-  On a `:summary` row, `status` and `estimate` are the rollup over its
-  children, not the inert columns underneath them, and `unestimated_tasks`
-  counts the work descendants that sum had to leave out.
-
-  `planned_start_on` is the day the task was selected into a week, and null
-  means the backlog. It is not where the task lands -- that is the board's
-  answer, not a column. On a `:summary` row it is the earliest one underneath,
-  and `unscheduled_tasks` counts the jobs in the chunk that have none.
-
-  `first_planned_on` is the day it was *first* selected into any week, and it
-  never moves. Slip is the distance between that and what actually happened;
-  measured against `planned_start_on` it would be zero for every task, however
-  many times the task had been pushed. Read-only, and null for anything that
-  has never been planned.
-  """
   def data(%Task{} = task) do
     %{
       id: task.id,
       project_id: task.project_id,
       requirement_id: task.requirement_id,
       repo_id: task.repo_id,
-      parent_id: task.parent_id,
       document_id: task.document_id,
       assignee_id: task.assignee_id,
-      kind: task.kind,
       title: task.title,
       description: task.description,
       status: task.status,
       due_on: task.due_on,
       estimate: estimate(task),
-      unestimated_tasks: task.unestimated_tasks,
       difficulty: task.difficulty,
-      unrated_tasks: task.unrated_tasks,
       actual_minutes: task.actual_minutes,
-      unmeasured_tasks: task.unmeasured_tasks,
       planned_start_on: task.planned_start_on,
       first_planned_on: task.first_planned_on,
-      unscheduled_tasks: task.unscheduled_tasks,
       priority: task.priority,
       assigned_at: task.assigned_at,
       started_at: task.started_at,

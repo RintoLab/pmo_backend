@@ -293,12 +293,10 @@ defmodule RintoPMO.Schedule do
   defp age_key(%DateTime{} = at), do: DateTime.to_unix(at, :microsecond)
 
   # Everything that could be a candidate for any week in the range, read once.
-  # A summary node is absent by construction: it can hold no `planned_start_on`.
   defp candidates(last_week) do
     cutoff = Date.add(last_week, 6)
 
     Task
-    |> where([task], task.kind == :work)
     |> where([task], task.status in ^Task.live_statuses())
     |> where([task], not is_nil(task.planned_start_on))
     |> where([task], not is_nil(task.estimate_optimistic))
