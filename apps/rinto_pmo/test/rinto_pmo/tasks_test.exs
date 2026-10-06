@@ -500,7 +500,8 @@ defmodule RintoPMO.TasksTest do
       assert status_of(project, chunk) == :open
 
       owner = insert(:actor)
-      {:ok, _started} = Tasks.transition_task(%{first | assignee_id: owner.id}, :start, owner.id)
+      {:ok, first} = Tasks.claim_task(first, owner.id)
+      {:ok, _started} = Tasks.transition_task(first, :start, owner.id)
       assert status_of(project, chunk) == :in_progress
     end
 
@@ -705,7 +706,8 @@ defmodule RintoPMO.TasksTest do
 
       [quarter] = nested.children
       owner = insert(:actor)
-      {:ok, _done} = Tasks.transition_task(%{quarter | assignee_id: owner.id}, :start, owner.id)
+      {:ok, quarter} = Tasks.claim_task(quarter, owner.id)
+      {:ok, _done} = Tasks.transition_task(quarter, :start, owner.id)
 
       assert status_of(project, top) == :in_progress
     end

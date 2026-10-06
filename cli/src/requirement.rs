@@ -16,7 +16,7 @@ pub enum RequirementCommand {
     Show(RequirementArgs),
     /// Create a draft, optionally under another requirement in the same project
     Create(CreateArgs),
-    /// Edit draft metadata or reprioritize an open requirement
+    /// Edit metadata, priority or the reversible progress marker
     Update(UpdateArgs),
     /// Fill missing task estimates under one or more requirements, including descendants
     Estimate(EstimateArgs),
@@ -90,11 +90,15 @@ pub struct CreateArgs {
 
 #[derive(Args)]
 pub struct UpdateArgs {
+    /// Progress marker; may be changed back without changing tasks
+    #[arg(long, value_parser = ["draft", "active", "completed"])]
+    status: Option<String>,
+
     #[command(flatten)]
     requirement: RequirementArgs,
 
     /// Replacement title; omit to preserve it
-    #[arg(long, required_unless_present_any = ["body", "priority"])]
+    #[arg(long, required_unless_present_any = ["body", "priority", "status"])]
     title: Option<String>,
 
     /// Set priority for the requirement and all its tasks: 1 highest, 5 lowest
@@ -175,7 +179,7 @@ fn show(client: &Client, args: RequirementArgs) -> Result<()> {
 }
 
 fn create(client: &Client, args: CreateArgs) -> Result<()> {
-    let mut body = metadata_body(Some(args.title), args.body, args.priority)?;
+    let mut body = metadata_body(Some(args.title), args.body, args.priority, None)?;
     match (args.project, args.parent_id) {
         (Some(project), None) => {
             body.insert("project_slug".to_string(), json!(project));
@@ -198,7 +202,7 @@ fn create(client: &Client, args: CreateArgs) -> Result<()> {
 }
 
 fn update(client: &Client, args: UpdateArgs) -> Result<()> {
-    let body = metadata_body(args.title, args.body, args.priority)?;
+    let body = metadata_body(args.title, args.body, args.priority, args.status)?;
     let requirement =
         client::data(client.patch(&requirement_path(&args.requirement.id), Value::Object(body))?)?;
     println!(
@@ -292,6 +296,7 @@ fn metadata_body(
     title: Option<String>,
     body: Option<PathBuf>,
     priority: Option<u8>,
+    status: Option<String>,
 ) -> Result<Map<String, Value>> {
     let mut payload = Map::new();
     if let Some(title) = title {
@@ -305,9 +310,12 @@ fn metadata_body(
     if let Some(priority) = priority {
         payload.insert("priority".to_string(), json!(priority));
     }
+    if let Some(status) = status {
+        payload.insert("status".to_string(), json!(status));
+    }
     if payload.is_empty() {
         return Err(Error::Input(
-            "pass --title, --body or --priority to update a requirement".to_string(),
+            "pass --title, --body, --priority or --status to update a requirement".to_string(),
         ));
     }
     Ok(payload)
@@ -729,6 +737,32 @@ mod tests {
     }
 
     #[test]
+    fn status_only_update_sends_a_progress_marker() {
+        let server = StubServer::start(vec![Reply::json(200, json!({"data": {"id": "req-id"}}))]);
+        update(
+            &client(&server),
+            UpdateArgs {
+                status: Some("completed".into()),
+                priority: None,
+                requirement: scope(),
+                title: None,
+                body: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(server.requests()[0].json(), json!({"status": "completed"}));
+        assert!(Cli::try_parse_from([
+            "rinto-pmo",
+            "requirement",
+            "update",
+            "req-id",
+            "--status",
+            "paused"
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn updates_distinguish_an_omitted_description_from_an_explicit_empty_file() {
         let server = StubServer::start(vec![
             Reply::json(200, json!({"data": {"id": "req-id"}})),
@@ -738,6 +772,7 @@ mod tests {
         update(
             &client,
             UpdateArgs {
+                status: None,
                 priority: None,
                 requirement: scope(),
                 title: Some("New title".into()),
@@ -748,6 +783,7 @@ mod tests {
         update(
             &client,
             UpdateArgs {
+                status: None,
                 priority: None,
                 requirement: scope(),
                 title: None,
@@ -784,6 +820,7 @@ mod tests {
             update(
                 &client,
                 UpdateArgs {
+                    status: None,
                     priority: None,
                     requirement: scope(),
                     title: None,
@@ -832,6 +869,7 @@ mod tests {
         let error = update(
             &client(&server),
             UpdateArgs {
+                status: None,
                 priority: None,
                 requirement: scope(),
                 title: Some("Change".into()),

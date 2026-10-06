@@ -507,7 +507,42 @@ defmodule RintoPMO.Tasks do
   end
 
   @impl true
-  def transition_task(%Task{} = task, event, actor_id, attrs) when is_map(attrs) do
+  def transition_task(%Task{} = task, :start, actor_id, attrs) when is_map(attrs) do
+    # Match document sync's lock order: requirement before task. A manual status
+    # change cannot be overwritten by an automatic start based on stale data.
+    Repo.transaction(fn ->
+      Repo.one!(
+        from r in RintoPMO.Requirements.Requirement,
+          where: r.id == ^task.requirement_id,
+          lock: "FOR UPDATE"
+      )
+
+      current = Repo.one!(from t in Task, where: t.id == ^task.id, lock: "FOR UPDATE")
+
+      case do_transition_task(current, :start, actor_id, attrs) do
+        {:ok, started} ->
+          from(r in RintoPMO.Requirements.Requirement,
+            where:
+              r.id == ^started.requirement_id and r.status == :draft and is_nil(r.archived_at)
+          )
+          |> Repo.update_all(set: [status: :active, updated_at: DateTime.utc_now()])
+
+          started
+
+        error ->
+          Repo.rollback(error)
+      end
+    end)
+    |> case do
+      {:ok, started} -> {:ok, started}
+      {:error, error} -> error
+    end
+  end
+
+  def transition_task(%Task{} = task, event, actor_id, attrs) when is_map(attrs),
+    do: do_transition_task(task, event, actor_id, attrs)
+
+  defp do_transition_task(task, event, actor_id, attrs) do
     with :ok <- require_work(task),
          {:ok, _next} <- allowed_transition(task, event),
          :ok <- require_owner(task, event, actor_id),

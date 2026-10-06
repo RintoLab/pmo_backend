@@ -38,7 +38,7 @@ rinto-pmo requirement update <requirement-id> --title "新标题"
 rinto-pmo requirement update <requirement-id> --priority 1
 ```
 
-创建时 `--project` 和 `--parent-id` 二选一；子需求自动继承父需求的 Project。`update --body` 替换完整描述，写文件时保留用户未要求删除的内容。省略字段保留原值，传空文件清空描述。标题和描述只允许修改未归档项目中的未归档草稿；优先级在 draft 和 active 状态均可调整。状态、Project 和父需求不能通过编辑改写。
+创建时 `--project` 和 `--parent-id` 二选一；子需求自动继承父需求的 Project。`update --body` 替换完整描述，写文件时保留用户未要求删除的内容。省略字段保留原值，传空文件清空描述。标题和描述只允许修改未归档项目中的未归档草稿；优先级在 draft 和 active 状态均可调整。Project 和父需求不能通过编辑改写；进度状态可用 `--status` 单独标记，见下文。
 
 优先级保存在 Requirement，取值 1–5（1 最高，默认 3），创建时也可传 `--priority`。任务实时继承所属需求的优先级，不能通过 task create/update/split 单独赋值。任务创建必须提供同一 Project 下未归档、开放的叶子需求 `requirement_id`；已有任务的需求不能再添加子需求。拆分任务自动继承需求。
 
@@ -111,3 +111,8 @@ has exactly one registered repository; it refuses ambiguous ownership.
 遗漏条目不会删任务，已删除任务不会被重建。同一版本对既有编号给出不同内容也会拒绝。
 冲突时整个批次不写入，报告具体编号；不要通过换编号、换文档或 task update 绕过。
 遇到 stale_document 必须重读正文，不能只获取新 revision id 重试。
+
+## 需求进度标记
+
+`requirement update <id> --status draft|active|completed` 可手动标记或改回状态，父需求同样适用。
+状态切换不检查文档或任务完成情况，也不批量改变 Task。第一个 Task 成功开始时，仅将未归档的草稿需求自动标为 active；任务全部完成不会自动完成需求。

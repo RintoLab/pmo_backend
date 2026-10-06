@@ -1,8 +1,7 @@
 defmodule RintoPMO.Requirements.Requirement do
   @moduledoc """
   A requirement belongs to a Project (the business system). Repository scope
-  will be derived from tasks. Workflow transitions are not writable metadata;
-  this first step allows editing drafts and archiving without changing status.
+  is derived from tasks. Status is a reversible progress marker, not an execution gate.
   """
   use RintoPMO, :schema
 
@@ -26,12 +25,21 @@ defmodule RintoPMO.Requirements.Requirement do
   @doc false
   def changeset(requirement, attrs) do
     requirement
-    |> creation_changeset(attrs)
+    |> metadata_changeset(attrs)
+    |> cast(attrs, [:status], empty_values: [])
+    |> validate_required([:status])
+    |> validate_inclusion(:status, [:draft, :active, :completed])
     |> reject_fields(attrs, [:parent_id])
   end
 
   @doc false
   def creation_changeset(requirement, attrs) do
+    requirement
+    |> metadata_changeset(attrs)
+    |> reject_fields(attrs, [:status])
+  end
+
+  defp metadata_changeset(requirement, attrs) do
     requirement
     |> cast(attrs, [:title, :description, :priority], empty_values: [])
     |> update_change(:title, &trim_title/1)
@@ -40,7 +48,7 @@ defmodule RintoPMO.Requirements.Requirement do
     |> check_constraint(:priority, name: :requirements_priority_check)
     |> validate_length(:title, min: 1, max: 255)
     |> validate_description()
-    |> reject_fields(attrs, [:project_id, :status, :archived_at])
+    |> reject_fields(attrs, [:project_id, :archived_at])
     |> foreign_key_constraint(:project_id)
     |> foreign_key_constraint(:parent_id)
     |> check_constraint(:parent_id, name: :requirements_parent_not_self)

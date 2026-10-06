@@ -106,7 +106,7 @@ defmodule RintoPMOWeb.V1.RequirementControllerTest do
 
     path = ~p"/api/v1/requirements/#{parent.id}"
 
-    for attrs <- [%{project_id: project.id}, %{parent_id: nil}, %{status: "completed"}] do
+    for attrs <- [%{project_id: project.id}, %{parent_id: nil}] do
       assert json_response(patch(conn, path, attrs), 422)["error"] == "validation_error"
     end
 
@@ -327,7 +327,41 @@ defmodule RintoPMOWeb.V1.RequirementControllerTest do
     end
   end
 
-  test "clients cannot change project, business status or archive timestamps", %{
+  test "progress markers are reversible without document, task or child gates", %{
+    conn: conn,
+    project: project
+  } do
+    parent = insert(:requirement, project: project)
+    child = insert(:requirement, project: project, parent: parent)
+    task = insert(:task, project: project, requirement: child)
+
+    for status <- ["completed", "active", "draft"], requirement <- [parent, child] do
+      result = patch(conn, ~p"/api/v1/requirements/#{requirement.id}", %{status: status})
+      assert json_response(result, 200)["data"]["status"] == status
+      assert Repo.get!(RintoPMO.Tasks.Task, task.id).status == :open
+    end
+
+    for status <- [nil, "paused", "cancelled"] do
+      assert conn
+             |> patch(~p"/api/v1/requirements/#{child.id}", %{status: status})
+             |> json_response(422)
+    end
+
+    assert conn
+           |> post(~p"/api/v1/projects/#{project.slug}/requirements", %{
+             title: "No",
+             status: "active"
+           })
+           |> json_response(422)
+
+    {:ok, _} = Requirements.archive_requirement(child)
+
+    assert conn
+           |> patch(~p"/api/v1/requirements/#{child.id}", %{status: "active"})
+           |> json_response(422)
+  end
+
+  test "clients cannot change project or archive timestamps", %{
     conn: conn,
     project: project
   } do
@@ -335,7 +369,6 @@ defmodule RintoPMOWeb.V1.RequirementControllerTest do
 
     for attrs <- [
           %{project_id: insert(:project).id},
-          %{status: "completed"},
           %{archived_at: "2026-10-01T00:00:00Z"}
         ] do
       created =

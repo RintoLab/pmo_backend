@@ -886,11 +886,13 @@ paths:
     patch:
       tags: [Requirements]
       operationId: updateRequirementById
-      summary: Edit requirement draft metadata by ID
+      summary: Edit requirement metadata or progress marker by ID
       description: >-
         Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived active requirements. Updates only
-        supplied title and description fields. An empty description clears it;
-        null is invalid. Project, parent and status cannot be changed.
+        supplied fields. An empty description clears it;
+        null is invalid. Project and parent cannot be changed. Status can be set to draft,
+        active or completed on any unarchived requirement in an active project, including parents.
+        It is reversible, has no document or task prerequisites, and does not change tasks.
       requestBody:
         required: true
         content:
@@ -1008,12 +1010,12 @@ paths:
     patch:
       tags: [Requirements]
       operationId: updateRequirement
-      summary: Edit requirement draft metadata
+      summary: Edit requirement metadata or progress marker
       description: >-
         Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived active requirements. Both PUT and
-        PATCH update only supplied fields. Project and business status are not
-        writable. Parent assignment is create-only; supplying parent_id returns
-        422, including null or the current value. Archived or non-draft requirements return 422.
+        PATCH update only supplied fields. Project is not writable. Parent assignment is create-only; supplying parent_id returns
+        422, including null or the current value. Archived requirements return 422. Status-only updates to draft, active or completed
+        are allowed regardless of current status, without document/task prerequisites or task changes.
       requestBody:
         required: true
         content:
@@ -1036,12 +1038,12 @@ paths:
     put:
       tags: [Requirements]
       operationId: replaceRequirementMetadata
-      summary: Edit requirement draft metadata
+      summary: Edit requirement metadata or progress marker
       description: >-
         Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived active requirements. Both PUT and
-        PATCH update only supplied fields. Project and business status are not
-        writable. Parent assignment is create-only; supplying parent_id returns
-        422, including null or the current value. Archived or non-draft requirements return 422.
+        PATCH update only supplied fields. Project is not writable. Parent assignment is create-only; supplying parent_id returns
+        422, including null or the current value. Archived requirements return 422. Status-only updates to draft, active or completed
+        are allowed regardless of current status, without document/task prerequisites or task changes.
       requestBody:
         required: true
         content:
@@ -4054,6 +4056,8 @@ paths:
       operationId: startTask
       summary: Move a task to in_progress
       description: >
+        A successful start also marks its unarchived draft requirement active atomically.
+        Other requirement states do not block execution and are not changed. Completion never auto-completes a requirement.
         Only from `open`, and only by the actor holding the task: starting
         ownerless work is how a task ends up in progress with nobody on it, and
         starting somebody else's is `403`. Stamps `started_at`. Never applies
@@ -5548,6 +5552,10 @@ components:
     RequirementUpdateInput:
       type: object
       properties:
+        status:
+          type: string
+          enum: [draft, active, completed]
+          description: Reversible progress marker; does not change tasks or aggregate children.
         priority:
           type: integer
           enum: [1, 2, 3, 4, 5]

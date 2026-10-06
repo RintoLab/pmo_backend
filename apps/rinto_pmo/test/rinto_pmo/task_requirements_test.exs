@@ -7,6 +7,42 @@ defmodule RintoPMO.TaskRequirementsTest do
   alias RintoPMO.Tasks
   alias RintoPMO.Tasks.Task
 
+  test "starting activates only the draft leaf, while completion stays manual" do
+    project = insert(:project)
+    parent = insert(:requirement, project: project)
+    requirement = insert(:requirement, project: project, parent: parent)
+    actor = insert(:actor)
+    task = insert(:task, project: project, requirement: requirement, assignee: actor)
+
+    assert {:error, :task_not_yours} =
+             normalize_error(Tasks.transition_task(task, :start, insert(:actor).id))
+
+    assert Requirements.get_requirement!(requirement.id).status == :draft
+    assert {:ok, started} = Tasks.transition_task(task, :start, actor.id)
+    assert Requirements.get_requirement!(requirement.id).status == :active
+    assert Requirements.get_requirement!(parent.id).status == :draft
+    assert {:ok, _done} = Tasks.transition_task(started, :complete, actor.id)
+    assert Requirements.get_requirement!(requirement.id).status == :active
+  end
+
+  test "starting preserves non-draft or archived markers without blocking the task" do
+    actor = insert(:actor)
+
+    for attrs <- [
+          %{status: :active},
+          %{status: :completed},
+          %{status: :draft, archived_at: DateTime.utc_now()}
+        ] do
+      project = insert(:project)
+      requirement = insert(:requirement, Map.put(attrs, :project, project))
+      task = insert(:task, project: project, requirement: requirement, assignee: actor)
+      assert {:ok, %{status: :in_progress}} = Tasks.transition_task(task, :start, actor.id)
+      assert Requirements.get_requirement!(requirement.id).status == requirement.status
+    end
+  end
+
+  defp normalize_error({:error, code, _details}), do: {:error, code}
+
   test "creation requires an open leaf requirement in the task's project" do
     project = insert(:project)
     parent = insert(:requirement, project: project)

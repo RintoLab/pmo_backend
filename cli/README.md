@@ -349,9 +349,13 @@ Creation requires exactly one of `--project` (a root) or `--parent-id` (a child
 that inherits its parent's project). Existing requirements are read and updated
 by ID alone. Descriptions are read verbatim from UTF-8 files. Creation may omit `--body` for
 an empty description. Updates replace only supplied fields; an empty body file
-clears the description. The server refuses edits to archived or non-draft
-requirements and to requirements in archived projects. Project, parent and
-workflow status cannot be changed through `update`.
+clears the description. Title and description edits require a draft; priority
+can also be edited while active. Archived requirements and archived projects
+remain read-only. Project and parent cannot be changed through `update`.
+Status can be changed independently using `update <id> --status draft|active|completed`.
+It is a reversible progress marker, with no document or task prerequisites.
+Starting a task automatically marks its unarchived draft requirement active;
+finishing tasks does not automatically complete the requirement.
 
 `requirement show` includes every kind of directly associated, unarchived document,
 with its ID, title, kind and status. It does not fetch document bodies or merge

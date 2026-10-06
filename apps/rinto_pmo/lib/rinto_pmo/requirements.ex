@@ -173,6 +173,13 @@ defmodule RintoPMO.Requirements do
     Ecto.Changeset.add_error(changeset, :project_id, "is archived")
   end
 
+  # Status-only changes are allowed in either direction, including on parents.
+  defp validate_editable(%Ecto.Changeset{changes: changes} = changeset, %Requirement{
+         archived_at: nil
+       })
+       when map_size(changes) == 0 or (map_size(changes) == 1 and is_map_key(changes, :status)),
+       do: changeset
+
   defp validate_editable(changeset, %Requirement{archived_at: nil, status: :draft}),
     do: changeset
 
