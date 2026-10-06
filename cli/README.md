@@ -46,6 +46,12 @@ for scripts.
 Configuration is stored at `~/.config/rinto-pmo/config.json`. Set
 `RINTO_CONFIG` to use a different path.
 
+## Project repositories
+
+`rinto-pmo project show <slug>` lists each registered repository with its name,
+Git URL and `id`. Use the name for `repo checkout <slug>/<name>` and the ID as
+`repo_id` when creating or synchronizing tasks; do not derive IDs from paths.
+
 ## Local development
 
 Run `mise run cli:build` from the repository to compile the current sources to

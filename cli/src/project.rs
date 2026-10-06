@@ -94,9 +94,10 @@ fn detail(project: &Value) -> String {
             // decided per question, by `repo checkout --branch`.
             let _ = writeln!(
                 output,
-                "  {}  {}",
+                "  {}  {}  id={}",
                 string(repo, "name", "(unnamed)"),
-                string(repo, "git_url", "?")
+                string(repo, "git_url", "?"),
+                string(repo, "id", "?")
             );
         }
     }
@@ -144,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn detail_includes_repositories_needed_to_find_the_worktree() {
+    fn detail_includes_repository_ids_for_task_ownership_and_names_for_checkout() {
         let project = json!({
             "id": "project-id",
             "slug": "pmo",
@@ -152,8 +153,13 @@ mod tests {
             "status": "active",
             "description": "Project management",
             "repos": [{
+                "id": "backend-id",
                 "name": "backend",
                 "git_url": "https://github.com/RintoLab/pmo_backend.git"
+            }, {
+                "id": "frontend-id",
+                "name": "frontend",
+                "git_url": "https://github.com/RintoLab/pmo_frontend.git"
             }]
         });
         let rendered = detail(&project);
@@ -161,5 +167,9 @@ mod tests {
         assert!(rendered.contains("slug: pmo"));
         assert!(rendered.contains("backend  https://"));
         assert!(rendered.contains("https://github.com/RintoLab/pmo_backend.git"));
+        assert!(rendered
+            .contains("backend  https://github.com/RintoLab/pmo_backend.git  id=backend-id"));
+        assert!(rendered
+            .contains("frontend  https://github.com/RintoLab/pmo_frontend.git  id=frontend-id"));
     }
 }
