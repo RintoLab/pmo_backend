@@ -12,6 +12,56 @@ defmodule RintoPMOWeb.V1.RequirementControllerTest do
     {:ok, project: project}
   end
 
+  test "both list endpoints sort on the server with stable ties and parent filtering", %{
+    conn: conn,
+    project: project
+  } do
+    old = ~U[2026-01-01 00:00:00.000000Z]
+    recent = ~U[2026-02-01 00:00:00.000000Z]
+    latest = ~U[2026-03-01 00:00:00.000000Z]
+    a = insert(:requirement, project: project, priority: 1, inserted_at: old, updated_at: latest)
+
+    b =
+      insert(:requirement, project: project, priority: 5, inserted_at: recent, updated_at: recent)
+
+    c =
+      insert(:requirement, project: project, priority: 1, inserted_at: recent, updated_at: recent)
+
+    d =
+      insert(:requirement, project: project, priority: 1, inserted_at: recent, updated_at: recent)
+
+    ties = Enum.sort([c.id, d.id], :desc)
+    created = Enum.sort([b.id, c.id, d.id], :desc) ++ [a.id]
+    insert(:requirement, project: project, archived_at: latest, priority: 1)
+    child = insert(:requirement, project: project, parent_id: a.id, priority: 2)
+
+    for path <- [~p"/api/v1/requirements", ~p"/api/v1/projects/#{project.slug}/requirements"] do
+      for {sort, expected} <- [
+            {"created", created},
+            {"updated", [a.id | Enum.sort([b.id, c.id, d.id], :desc)]},
+            {"priority", ties ++ [a.id, b.id]}
+          ] do
+        response = conn |> get(path, %{sort: sort}) |> json_response(200)
+        assert Enum.map(response["data"], & &1["id"]) == expected
+      end
+
+      response = conn |> get(path) |> json_response(200)
+      assert Enum.map(response["data"], & &1["id"]) == created
+      response = conn |> get(path, %{sort: "priority", parent_id: "all"}) |> json_response(200)
+      assert Enum.map(response["data"], & &1["id"]) == ties ++ [a.id, child.id, b.id]
+      response = conn |> get(path, %{sort: "updated", parent_id: a.id}) |> json_response(200)
+      assert Enum.map(response["data"], & &1["id"]) == [child.id]
+    end
+  end
+
+  test "both list endpoints reject unsupported sort values", %{conn: conn, project: project} do
+    for path <- [~p"/api/v1/requirements", ~p"/api/v1/projects/#{project.slug}/requirements"],
+        sort <- ["", "title", "priority desc", ["priority"]] do
+      response = conn |> get(path, %{sort: sort}) |> json_response(400)
+      assert response["details"]["sort"] == ["is invalid"]
+    end
+  end
+
   test "priority is returned by all reads and can be changed on active requirements", %{
     conn: conn,
     project: project

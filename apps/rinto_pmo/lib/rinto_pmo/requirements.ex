@@ -9,13 +9,18 @@ defmodule RintoPMO.Requirements do
   alias RintoPMO.Requirements.Workload
   alias RintoPMO.Tasks.Task
 
-  @spec list_requirements(Project.t() | :all, UUIDv7.t() | nil | :all) :: [Requirement.t()]
-  def list_requirements(project, parent_id \\ nil) do
+  @spec list_requirements(
+          Project.t() | :all,
+          UUIDv7.t() | nil | :all,
+          :created | :updated | :priority
+        ) ::
+          [Requirement.t()]
+  def list_requirements(project, parent_id \\ nil, sort \\ :created) do
     Requirement
     |> project_scope(project)
     |> where([requirement], is_nil(requirement.archived_at))
     |> parent_scope(parent_id)
-    |> order_by([requirement], desc: requirement.inserted_at, desc: requirement.id)
+    |> sort_requirements(sort)
     |> with_child_counts()
     |> Repo.all()
     |> Workload.load()
@@ -79,6 +84,15 @@ defmodule RintoPMO.Requirements do
       |> Repo.update()
     end)
   end
+
+  defp sort_requirements(query, :created),
+    do: order_by(query, [r], desc: r.inserted_at, desc: r.id)
+
+  defp sort_requirements(query, :updated),
+    do: order_by(query, [r], desc: r.updated_at, desc: r.inserted_at, desc: r.id)
+
+  defp sort_requirements(query, :priority),
+    do: order_by(query, [r], asc: r.priority, desc: r.inserted_at, desc: r.id)
 
   defp project_scope(query, :all), do: preload(query, :project)
 

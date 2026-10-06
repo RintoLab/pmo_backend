@@ -786,6 +786,13 @@ paths:
         Lists omit document summaries. A parent_id selects direct children
         without requiring the caller to supply the parent's project.
       parameters:
+        - name: sort
+          in: query
+          description: Created or updated newest first, or priority highest first (1 before 5). Ties use creation time descending, then ID descending.
+          schema:
+            type: string
+            enum: [created, updated, priority]
+            default: created
         - name: parent_id
           in: query
           description: Omit or use none for roots; use a requirement UUID for direct children, or all for every level. An unknown parent returns 404.
@@ -805,7 +812,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "400":
-          description: Invalid parent filter
+          description: Invalid parent filter or sort
           content:
             application/json:
               schema:
@@ -925,8 +932,15 @@ paths:
       tags: [Requirements]
       operationId: listRequirements
       summary: List unarchived requirements in a project
-      description: Newest first. Defaults to roots only. Archived projects remain readable.
+      description: Newest first by default; supports updated and priority sorting. Defaults to roots only. Archived projects remain readable.
       parameters:
+        - name: sort
+          in: query
+          description: Created or updated newest first, or priority highest first (1 before 5). Ties use creation time descending, then ID descending.
+          schema:
+            type: string
+            enum: [created, updated, priority]
+            default: created
         - name: parent_id
           in: query
           description: Omit or use none for roots; use a requirement UUID for direct children, or all for every level. Unknown or cross-project parents return 404.
@@ -938,7 +952,7 @@ paths:
                 enum: [none, all]
       responses:
         "400":
-          description: Invalid parent filter
+          description: Invalid parent filter or sort
           content:
             application/json:
               schema:

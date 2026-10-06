@@ -19,18 +19,25 @@ defmodule RintoPMOWeb.V1.RequirementController do
   end
 
   def overview(conn, params) do
-    with {:ok, parent_id} <- parent_filter(:all, params["parent_id"]) do
-      render(conn, :index, requirements: Requirements.list_requirements(:all, parent_id))
+    with {:ok, sort} <- sort_filter(params["sort"]),
+         {:ok, parent_id} <- parent_filter(:all, params["parent_id"]) do
+      render(conn, :index, requirements: Requirements.list_requirements(:all, parent_id, sort))
     end
   end
 
   def index(conn, %{"project_slug" => slug} = params) do
     project = Projects.get_project_by_slug!(slug)
 
-    with {:ok, parent_id} <- parent_filter(project, params["parent_id"]) do
-      render(conn, :index, requirements: Requirements.list_requirements(project, parent_id))
+    with {:ok, sort} <- sort_filter(params["sort"]),
+         {:ok, parent_id} <- parent_filter(project, params["parent_id"]) do
+      render(conn, :index, requirements: Requirements.list_requirements(project, parent_id, sort))
     end
   end
+
+  defp sort_filter(value) when value in [nil, "created"], do: {:ok, :created}
+  defp sort_filter("updated"), do: {:ok, :updated}
+  defp sort_filter("priority"), do: {:ok, :priority}
+  defp sort_filter(_value), do: {:error, :bad_request, %{sort: ["is invalid"]}}
 
   defp parent_filter(_project, value) when value in [nil, "none"], do: {:ok, nil}
   defp parent_filter(_project, "all"), do: {:ok, :all}
