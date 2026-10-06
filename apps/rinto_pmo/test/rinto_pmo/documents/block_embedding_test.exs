@@ -57,7 +57,7 @@ defmodule RintoPMO.Documents.BlockEmbeddingTest do
     embed_all!(document)
 
     {_revision, before} = latest_blocks(document)
-    edited = Enum.find(before, &(&1.content =~ "改的那块"))
+    edited = Enum.find(before, &(&1.content == "## 改的那块\n\n原内容"))
 
     commit(document, actor, [
       %{op: "update", block_id: edited.block_id, actor_id: actor.id, content: "## 改的那块\n\n改过的"}
