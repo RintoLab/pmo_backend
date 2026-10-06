@@ -1099,6 +1099,7 @@ paths:
         - $ref: "#/components/parameters/TaskParentFilter"
         - $ref: "#/components/parameters/TaskAssigneeFilter"
         - $ref: "#/components/parameters/TaskDocumentFilter"
+        - $ref: "#/components/parameters/TaskRepoFilter"
         - $ref: "#/components/parameters/TaskLiveFilter"
         - $ref: "#/components/parameters/TaskOverdueFilter"
         - $ref: "#/components/parameters/TaskPriorityFilter"
@@ -1919,6 +1920,49 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /documents/{document_id}/tasks/sync:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    post:
+      tags: [Documents, Tasks]
+      operationId: syncDocumentTasks
+      summary: Synchronize structured tasks from an adopted task document
+      description: >-
+        Requires an unarchived kind=task, status=formal document owned by an open
+        leaf requirement in an active project. The request supplies the exact
+        revision read and structured tasks; Markdown is not parsed. Project and
+        requirement are inherited from the document. Stable keys are scoped to
+        this document and must not be renumbered. New keys create work tasks;
+        unchanged keys reuse task IDs. Changed title, description and repo_id
+        update open work only when they do not conflict with manual edits.
+        The same revision cannot change an existing key's source content.
+        Execution status, assignment, estimates, scheduling, dependencies and
+        omitted items are preserved. A deleted task leaves a tombstone and
+        cannot be recreated by retrying its key. All writes are atomic.
+        Documents remain formal; this operation does not consume them or adopt drafts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskSyncInput"
+      responses:
+        "200":
+          description: Stable task identities and the action taken for each supplied item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSyncResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: stale_document or task_sync_conflict; no tasks were changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /documents/{document_id}/file_breakdown:
     parameters:
       - $ref: "#/components/parameters/DocumentId"
@@ -1928,7 +1972,9 @@ paths:
       summary: File an adopted task document as the project's work breakdown
       description: >
         The source document must belong to an open leaf requirement in its project.
-        Created tasks inherit that requirement and its priority.
+        Created tasks inherit that requirement and its priority. This legacy importer
+        assigns the project's only repository; projects with zero or multiple
+        repositories receive a repo_id validation error and no tasks are created.
         The other end of the breakdown prompt shortcut. A topic turned a plan
         into a task document somebody could argue with; this turns the document
         they settled on into the work itself. Between them sits the only gate
@@ -3230,6 +3276,7 @@ paths:
         - $ref: "#/components/parameters/TaskParentFilter"
         - $ref: "#/components/parameters/TaskAssigneeFilter"
         - $ref: "#/components/parameters/TaskDocumentFilter"
+        - $ref: "#/components/parameters/TaskRepoFilter"
         - $ref: "#/components/parameters/TaskLiveFilter"
         - $ref: "#/components/parameters/TaskOverdueFilter"
         - $ref: "#/components/parameters/TaskPriorityFilter"
@@ -3251,8 +3298,8 @@ paths:
       summary: Get the JSON Schema for a task write
       description: >
         The shapes `POST /projects/{project_slug}/tasks`, `PATCH /tasks/{id}`
-        and `POST /tasks/{id}/split` accept, as three JSON Schema documents
-        keyed `create`, `update` and `split`. Same content as the
+        and `POST /tasks/{id}/split` accept, as four JSON Schema documents
+        keyed `create`, `update`, `split` and `sync`. Same content as the
         `TaskCreateInput` / `TaskUpdateInput` / `TaskSplitInput` components
         below, said in a form a client can fetch: it exists for the CLI's
         `task schema`, whose caller has this API but not this file.
@@ -3271,6 +3318,8 @@ paths:
         refused. A `PATCH` carrying `status` answers `200` and changes
         nothing.
 
+
+        The sync shape rejects unlisted fields, unlike the older write shapes.
 
         Describes no row, so it takes no id and no project slug, and it is
         declared ahead of `/tasks/{id}` -- `schema` is a shape name, never a
@@ -4589,6 +4638,13 @@ components:
             format: uuid
           - type: string
             enum: [none]
+    TaskRepoFilter:
+      name: repo_id
+      in: query
+      description: Only tasks belonging to this repository.
+      schema:
+        type: string
+        format: uuid
     TaskDocumentFilter:
       name: document_id
       in: query
@@ -4913,6 +4969,7 @@ components:
               block,
               annotation,
               task,
+              requirement,
               project,
               attachment,
               proposal,
@@ -4960,6 +5017,7 @@ components:
         resource_type:
           type: string
           nullable: true
+          enum: [document, block, annotation, task, requirement, project, attachment, proposal, conversation, null]
         label:
           type: string
         icon:
@@ -6435,8 +6493,12 @@ components:
         `open`.
     Task:
       type: object
-      required: [id, project_id, requirement_id, kind, title, status, priority]
+      required: [id, project_id, requirement_id, repo_id, kind, title, status, priority]
       properties:
+        repo_id:
+          type: string
+          format: uuid
+          description: The single repository for this task. Must belong to the task's project; cannot be cleared. Split children inherit it unless explicitly overridden.
         requirement_id:
           type: string
           format: uuid
@@ -6632,10 +6694,75 @@ components:
           format: date-time
           nullable: true
       additionalProperties: false
+    TaskSyncInput:
+      type: object
+      required: [base_revision_id, tasks]
+      additionalProperties: false
+      properties:
+        base_revision_id:
+          type: string
+          format: uuid
+          description: Exact latest revision that was read to prepare this request.
+        tasks:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            type: object
+            required: [key, title, repo_id]
+            additionalProperties: false
+            properties:
+              key:
+                type: string
+                pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+                description: Stable identifier in this document, such as T001. Keys must be unique.
+              title:
+                type: string
+                minLength: 1
+                maxLength: 255
+              description:
+                type: string
+                nullable: true
+                description: Task details as Markdown. Omission means null in the source snapshot.
+              repo_id:
+                type: string
+                format: uuid
+                description: Exactly one registered Repo from the document's project.
+    TaskSyncResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [document_id, revision_id, items]
+          properties:
+            document_id:
+              type: string
+              format: uuid
+            revision_id:
+              type: string
+              format: uuid
+            items:
+              type: array
+              items:
+                type: object
+                required: [key, action, task]
+                properties:
+                  key:
+                    type: string
+                  action:
+                    type: string
+                    enum: [created, updated, unchanged]
+                  task:
+                    $ref: "#/components/schemas/Task"
     TaskCreateInput:
       type: object
-      required: [title, requirement_id]
+      required: [title, requirement_id, repo_id]
       properties:
+        repo_id:
+          type: string
+          format: uuid
+          description: The single repository for this task. Must belong to the task's project; cannot be cleared. Split children inherit it unless explicitly overridden.
         requirement_id:
           type: string
           format: uuid
@@ -6714,6 +6841,10 @@ components:
         carrying `status` is answered `200` and changes nothing. Read the
         returned task rather than the status code.
       properties:
+        repo_id:
+          type: string
+          format: uuid
+          description: The single repository for this task. Must belong to the task's project; cannot be cleared. Split children inherit it unless explicitly overridden.
         parent_id:
           type: string
           format: uuid
@@ -6898,6 +7029,10 @@ components:
       type: object
       required: [title]
       properties:
+        repo_id:
+          type: string
+          format: uuid
+          description: The single repository for this task. Must belong to the task's project; cannot be cleared. Split children inherit it unless explicitly overridden.
         title:
           type: string
           minLength: 1
@@ -7527,11 +7662,11 @@ components:
       properties:
         data:
           type: object
-          required: [create, update, split]
+          required: [create, update, split, sync]
           description: >
             One JSON Schema (2020-12) per write shape, keyed by the write it
             describes. The bodies themselves are the `TaskCreateInput`,
-            `TaskUpdateInput` and `TaskSplitInput` components; what is served
+            `TaskUpdateInput`, `TaskSplitInput` and `TaskSyncInput` components; what is served
             here is those shapes rendered as schema documents, with a worked
             example attached to each.
           properties:
@@ -7544,6 +7679,9 @@ components:
             split:
               type: object
               description: The shape of `POST /tasks/{id}/split`.
+            sync:
+              type: object
+              description: The shape of `POST /documents/{document_id}/tasks/sync`.
           additionalProperties: false
       additionalProperties: false
     RepoCredential:
@@ -9114,6 +9252,7 @@ components:
         - task_already_claimed
         - task_not_yours
         - task_state_conflict
+        - task_sync_conflict
         - codex_auth_not_pending
         - dependency_cycle
         - validation_error

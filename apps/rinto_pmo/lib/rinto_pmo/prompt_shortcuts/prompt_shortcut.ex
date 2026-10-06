@@ -116,7 +116,9 @@ defmodule RintoPMO.PromptShortcuts.PromptShortcut do
   # this is a person filling in a form, and a typo here produces a button that
   # silently never appears. Refusing it is the kinder answer.
   defp validate_resource_type(chset) do
-    validate_inclusion(chset, :resource_type, Map.keys(References.types()))
+    # Requirement is already a chat reference expanded by PromptBuilder, but
+    # does not yet participate in the document URI/backlink registry.
+    validate_inclusion(chset, :resource_type, ["requirement" | Map.keys(References.types())])
   end
 
   defp put_key(chset) do

@@ -336,12 +336,20 @@ defmodule RintoPMOWeb.V1.TaskController do
     end
   end
 
+  defp repo_filter(params, filter) do
+    case Map.get(params, "repo_id") do
+      nil -> {:ok, filter}
+      value -> uuid_filter(value, filter, :repo_id, "repo_id")
+    end
+  end
+
   defp task_filter(params) do
     with {:ok, filter} <- enum_filter(params, %{}, "kind", :kind, @kinds),
          {:ok, filter} <- enum_filter(params, filter, "status", :status, @statuses),
          {:ok, filter} <- assignee_filter(params, filter),
          {:ok, filter} <- parent_filter(params, filter),
          {:ok, filter} <- document_filter(params, filter),
+         {:ok, filter} <- repo_filter(params, filter),
          {:ok, filter} <- boolean_filter(params, filter, "live", :live),
          {:ok, filter} <- boolean_filter(params, filter, "overdue", :overdue),
          {:ok, filter} <- priority_filter(params, filter),

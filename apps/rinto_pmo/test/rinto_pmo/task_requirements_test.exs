@@ -22,14 +22,24 @@ defmodule RintoPMO.TaskRequirementsTest do
     ]
 
     for id <- invalid do
-      assert {:error, chset} = Tasks.create_task(project, %{title: "Work", requirement_id: id})
+      assert {:error, chset} =
+               Tasks.create_task(project, %{
+                 title: "Work",
+                 requirement_id: id,
+                 repo_id: task_repo(project).id
+               })
+
       assert errors_on(chset).requirement_id
     end
 
     requirement = insert(:requirement, project: project, priority: 2)
 
     assert {:ok, task} =
-             Tasks.create_task(project, %{title: "Work", requirement_id: requirement.id})
+             Tasks.create_task(project, %{
+               title: "Work",
+               requirement_id: requirement.id,
+               repo_id: task_repo(project).id
+             })
 
     assert task.requirement_id == requirement.id
     assert task.priority == 2

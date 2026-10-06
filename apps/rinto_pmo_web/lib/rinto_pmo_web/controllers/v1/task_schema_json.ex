@@ -31,7 +31,8 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
   not a description of the server: unlisted keys are *ignored*, not refused,
   because the changeset casts a whitelist. That is the trap this schema exists
   to spell out, and the `update` shape says so in as many words -- a PATCH
-  carrying `status` succeeds and changes nothing.
+  carrying `status` succeeds and changes nothing. The `sync` shape is stricter:
+  it rejects unlisted fields so execution data cannot be silently discarded.
   """
 
   alias RintoPMO.Tasks.Task
@@ -39,14 +40,14 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
   @dialect "https://json-schema.org/draft/2020-12/schema"
 
   @doc """
-  The three shapes a task write can take, keyed by the command that reads them.
+  The four shapes a task write can take, keyed by the command that reads them.
 
   All of them in one response rather than one endpoint each: the answer is a
   few hundred bytes of constant, and an agent that has to learn `create` today
   will need `split` in the same sitting.
   """
   def show(_assigns) do
-    %{data: flow(%{create: create(), update: update(), split: split()})}
+    %{data: flow(%{create: create(), update: update(), split: split(), sync: sync()})}
   end
 
   # Every `description` is written as paragraphs above and flowed on the way
@@ -79,10 +80,10 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
       title: "TaskCreateInput",
       description: """
       The body of `POST /projects/{slug}/tasks`, which is the file
-      `rinto-pmo task create --input FILE` reads. `title` and `requirement_id` are required. Priority is inherited from that leaf requirement.
+      `rinto-pmo task create --input FILE` reads. `title`, `requirement_id` and `repo_id` are required. Priority is inherited from that leaf requirement.
       """,
       type: "object",
-      required: ["title", "requirement_id"],
+      required: ["title", "requirement_id", "repo_id"],
       additionalProperties: false,
       properties:
         Map.merge(common_properties(), %{
@@ -110,9 +111,61 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
           "title" => "Wire the estimator into the task board",
           "description" => "Reuse the job channel the decomposer already publishes on.",
           "requirement_id" => "01990000-0000-7000-8000-000000000011",
+          "repo_id" => "01990000-0000-7000-8000-000000000021",
           "planned_start_on" => "2026-09-01",
           "estimate" => %{"optimistic" => 60, "likely" => 120, "pessimistic" => 240},
           "difficulty" => 5
+        }
+      ]
+    }
+  end
+
+  defp sync do
+    %{
+      "$schema" => @dialect,
+      title: "TaskSyncInput",
+      description:
+        "Read an adopted task document with doc show, then submit the structured work with task sync DOCUMENT_ID --input FILE. Same-document keys must stay stable across retries and revisions. Markdown layout is not parsed. Only title, description and Repo may change; manual edits and started work cause an atomic conflict. Omitted tasks and execution fields are preserved. A key cannot change its content within the same source revision. Deleting an imported task leaves a tombstone; use a new key for replacement work. This operation does not create or remove dependencies.",
+      type: "object",
+      required: ["base_revision_id", "tasks"],
+      additionalProperties: false,
+      properties: %{
+        base_revision_id: %{
+          type: "string",
+          format: "uuid",
+          description:
+            "The exact latest revision read, never fetch a newer ID without re-reading its contents."
+        },
+        tasks: %{
+          type: "array",
+          minItems: 1,
+          maxItems: 200,
+          items: %{
+            type: "object",
+            required: ["key", "title", "repo_id"],
+            additionalProperties: false,
+            properties:
+              Map.put(Map.take(common_properties(), [:title, :description, :repo_id]), :key, %{
+                type: "string",
+                pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+                description:
+                  "Stable identifier within this task document, for example T001. Never renumber existing items."
+              })
+          }
+        }
+      },
+      examples: [
+        %{
+          "base_revision_id" => "01990000-0000-7000-8000-000000000031",
+          "tasks" => [
+            %{
+              "key" => "T001",
+              "title" => "Implement the verification endpoint",
+              "repo_id" => "01990000-0000-7000-8000-000000000021",
+              "description" =>
+                "Implement the behavior and acceptance criteria in the task document."
+            }
+          ]
         }
       ]
     }
@@ -157,7 +210,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
       planned_start_on, so all of those are dropped, and its status becomes
       the rollup over whatever children it now has. Title, description,
       requirement and its place in the tree stay; priority is inherited.
-      Children cannot override requirement_id or parent_id.
+      Children cannot override requirement_id or parent_id. Each child inherits repo_id unless it explicitly selects another repository in the same project.
       """,
       type: "object",
       additionalProperties: false,
@@ -214,6 +267,12 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
         the call that created the target rather than typing a UUID from
         memory.
         """
+      },
+      repo_id: %{
+        type: "string",
+        format: "uuid",
+        description:
+          "The single repository this task belongs to. Must belong to the same project. Cannot be cleared."
       },
       document_id: %{
         type: ["string", "null"],

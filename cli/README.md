@@ -418,3 +418,33 @@ rinto-pmo requirement update <requirement-id> --priority 1
 Task splits inherit the requirement; tasks cannot move between requirements.
 A requirement that owns tasks cannot gain child requirements. The existing document
 breakdown importer now requires the source document to belong to a leaf requirement.
+
+Task repository ownership: task creation JSON requires `repo_id` alongside
+`requirement_id` and `title`. Use a Repo belonging to the requirement's Project.
+`task update` can correct `repo_id` but cannot clear it. `task split` children
+inherit the original Repo unless each child supplies another Repo in the same
+Project. `task list --repo-id <ID>` filters the execution queue.
+
+### Synchronize a requirement's task document
+
+After reading and adopting a `kind=task` document, use `task schema sync` to get
+its structured input contract, then run:
+
+```sh
+rinto-pmo task sync <document-id> --input tasks.json
+```
+
+The input contains `base_revision_id` from the document actually read and a
+`tasks` array. Each item has a stable `key` (for example `T001`), `title`, one
+`repo_id`, and optional Markdown `description`. Project and requirement come
+from the document, so no extra scope arguments are required. The server does
+not parse Markdown or infer dependencies.
+
+Keys are scoped to one document; keep them when editing or reordering the
+source. Repeating the same input returns the same task IDs. Later revisions may
+update open task wording and Repo when they do not conflict with manual edits.
+The same revision cannot supply different content for an existing key. A conflict
+or stale revision rejects the whole batch. Estimates, assignees, scheduling,
+status and dependencies are preserved; omitted tasks are not removed. A deleted
+task leaves a tombstone, so retries cannot recreate it. Use a new key only for
+new or explicitly requested replacement work, never to evade a conflict.

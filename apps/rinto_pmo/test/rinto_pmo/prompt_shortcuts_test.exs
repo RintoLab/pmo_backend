@@ -22,6 +22,29 @@ defmodule RintoPMO.PromptShortcutsTest do
     end)
   end
 
+  test "requirement workflow presets seed once and preserve customized prompts on upgrade" do
+    Presets.seed()
+
+    workflow =
+      PromptShortcuts.list_shortcuts()
+      |> Enum.filter(&(&1.resource_type == "requirement"))
+
+    assert Enum.sort(Enum.map(workflow, & &1.label)) ==
+             Enum.sort(["明确需求", "澄清需求", "设计方案", "拆分任务", "同步任务"])
+
+    for shortcut <- workflow do
+      assert shortcut.prompt =~ "rinto-spec-workflow"
+      assert shortcut.prompt =~ "requirement show"
+    end
+
+    plan = Enum.find(workflow, &(&1.label == "设计方案"))
+    {:ok, _customized} = PromptShortcuts.update_shortcut(plan, %{"prompt" => "保留我的设计约定"})
+    assert {:default_only, preserved} = outcome_for(Presets.seed(), "设计方案")
+    assert preserved.prompt == "保留我的设计约定"
+    assert preserved.default_prompt == plan.default_prompt
+    assert Enum.count(PromptShortcuts.list_shortcuts(), &(&1.resource_type == "requirement")) == 5
+  end
+
   describe "create_shortcut/1" do
     test "generates a key and leaves no default to reset to" do
       assert {:ok, shortcut} = PromptShortcuts.create_shortcut(attrs())

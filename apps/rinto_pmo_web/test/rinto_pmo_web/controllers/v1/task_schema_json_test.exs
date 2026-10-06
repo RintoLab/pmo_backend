@@ -16,13 +16,14 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
   alias RintoPMOWeb.V1.TaskSchemaJSON
 
   describe "GET /tasks/schema" do
-    test "serves the three shapes a write can take", %{conn: conn} do
+    test "serves the four shapes a write can take", %{conn: conn} do
       conn = get(conn, ~p"/api/v1/tasks/schema")
 
-      assert %{"create" => create, "update" => _update, "split" => split} =
+      assert %{"create" => create, "update" => _update, "split" => split, "sync" => sync} =
                json_response(conn, 200)["data"]
 
-      assert create["required"] == ["title", "requirement_id"]
+      assert sync["required"] == ["base_revision_id", "tasks"]
+      assert create["required"] == ["title", "requirement_id", "repo_id"]
       assert create["properties"]["kind"]["enum"] == ["work", "summary"]
       assert split["properties"]["children"]["items"]["required"] == ["title"]
     end
@@ -84,13 +85,39 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
 
     test "create's example is a body the domain accepts", %{project: project, shapes: shapes} do
       [example] = shapes.create.examples
-      example = Map.put(example, "requirement_id", task_requirement(project).id)
+
+      example =
+        example
+        |> Map.put("requirement_id", task_requirement(project).id)
+        |> Map.put("repo_id", task_repo(project).id)
 
       assert {:ok, task} = Tasks.create_task(project, example)
       assert task.title == example["title"]
       assert task.priority == 3
       assert task.difficulty == example["difficulty"]
       assert task.estimate_likely == example["estimate"]["likely"]
+    end
+
+    test "sync's example is a body the domain accepts", %{project: project, shapes: shapes} do
+      requirement = insert(:requirement, project: project)
+
+      document =
+        insert(:document,
+          project: project,
+          requirement_id: requirement.id,
+          kind: :task,
+          status: :formal
+        )
+
+      revision = insert(:document_revision, document: document)
+      [example] = shapes.sync.examples
+      item = example["tasks"] |> hd() |> Map.put("repo_id", task_repo(project).id)
+      input = %{example | "base_revision_id" => revision.id, "tasks" => [item]}
+
+      assert {:ok, %{items: [%{action: :created, task: task}]}} =
+               Tasks.sync_document(document, input)
+
+      assert task.title == item["title"]
     end
 
     test "update's example is a body the domain accepts", %{project: project, shapes: shapes} do

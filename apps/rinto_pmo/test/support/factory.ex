@@ -207,20 +207,30 @@ defmodule RintoPMO.Factory do
       )
   end
 
+  def task_repo(project) do
+    RintoPMO.Repo.get_by(ProjectRepo, project_id: project.id, name: "task-fixture") ||
+      insert(:project_repo, project: project, name: "task-fixture")
+  end
+
   def task_factory(attrs) do
     parent = Map.get(attrs, :parent) || fixture_row(Task, attrs[:parent_id])
     project = task_project(attrs, parent)
     requirement = task_owner(attrs, parent, project)
 
+    repo =
+      Map.get(attrs, :repo) || fixture_row(ProjectRepo, attrs[:repo_id]) ||
+        fixture_row(ProjectRepo, parent && parent.repo_id) || task_repo(project)
+
     %Task{
       project_id: project.id,
       requirement_id: requirement.id,
+      repo_id: repo.id,
       priority: requirement.priority,
       kind: :work,
       title: sequence(:task_title, &"Task #{&1}"),
       status: :open
     }
-    |> merge_attributes(Map.drop(attrs, [:project, :requirement, :priority]))
+    |> merge_attributes(Map.drop(attrs, [:project, :requirement, :priority, :repo]))
     |> evaluate_lazy_attributes()
   end
 

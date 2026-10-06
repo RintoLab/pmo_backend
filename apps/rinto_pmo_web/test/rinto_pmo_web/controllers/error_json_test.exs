@@ -4,6 +4,9 @@ defmodule RintoPMOWeb.ErrorJSONTest do
   alias RintoPMOWeb.ErrorJSON
 
   @errors %{
+    task_sync_conflict:
+      {409, "Task synchronization conflicts with existing work. No tasks were changed.",
+       %{key: "T001"}},
     no_prioritization_ai:
       {422,
        "The requirement priority AI is not configured. Set it with PUT /ai_roles/requirement_prioritization.",

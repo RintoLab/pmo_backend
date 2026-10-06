@@ -630,6 +630,9 @@ defmodule RintoPMO.Agent.PromptBuilder do
         {"id", task.id},
         {"title", task.title},
         {"kind", task.kind},
+        {"project_id", task.project_id},
+        {"requirement_id", task.requirement_id},
+        {"repo_id", task.repo_id},
         {"status", task.status}
       ] ++ optional_attribute("document_id", task.document_id)
 

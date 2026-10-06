@@ -307,6 +307,12 @@ defmodule RintoPMO.Projects do
   """
   @impl true
   def delete_project_repo(%ProjectRepo{} = project_repo) do
-    Repo.delete(project_repo)
+    project_repo
+    |> Ecto.Changeset.change()
+    |> Ecto.Changeset.foreign_key_constraint(:id,
+      name: :tasks_repo_id_fkey,
+      message: "is still referenced by tasks"
+    )
+    |> Repo.delete()
   end
 end

@@ -378,7 +378,12 @@ defmodule RintoPMO.Agent.PromptBuilderTest do
                PromptBuilder.build("怎么做？", [%{"type" => "task", "id" => task.id}])
 
       assert message =~
-               ~s(<task ref="1" id="#{task.id}" title="接入 r-nacos" kind="work" status="open")
+               ~s(<task ref="1" id="#{task.id}" title="接入 r-nacos" kind="work")
+
+      assert message =~ ~s(status="open")
+      assert message =~ ~s(project_id="#{task.project_id}")
+      assert message =~ ~s(requirement_id="#{task.requirement_id}")
+      assert message =~ ~s(repo_id="#{task.repo_id}")
 
       assert message =~ ~s(document_id="#{document.id}")
       assert message =~ "先确认 systemd unit。"

@@ -16,8 +16,10 @@ pub enum TaskCommand {
     Show(TaskIdArgs),
     /// Show a project's task counts and estimates
     Stats(ProjectArgs),
-    /// Print the JSON shape that create, update and split read
+    /// Print the JSON shape that create, update, split and sync read
     Schema(SchemaArgs),
+    /// Synchronize structured tasks from an adopted task document
+    Sync(SyncArgs),
     /// Create a task from an API-shaped JSON object
     Create(CreateArgs),
     /// Update a task from an API-shaped JSON object
@@ -79,6 +81,10 @@ pub struct ListArgs {
     #[arg(long)]
     mine: bool,
 
+    /// Only tasks belonging to this repository
+    #[arg(long, value_name = "UUID")]
+    repo_id: Option<String>,
+
     /// Only tasks implementing this document
     #[arg(long, value_name = "UUID")]
     document_id: Option<String>,
@@ -106,7 +112,7 @@ pub struct ListArgs {
 
 #[derive(Args)]
 pub struct SchemaArgs {
-    /// Which write to describe: create, update or split; omit for all of them
+    /// Which write to describe: create, update, split or sync; omit for all of them
     #[arg(value_name = "SHAPE")]
     shape: Option<String>,
 }
@@ -117,6 +123,15 @@ pub struct CreateArgs {
     project_slug: String,
 
     /// JSON object; run `task schema create` for its fields and an example
+    #[arg(long, value_name = "FILE")]
+    input: PathBuf,
+}
+
+#[derive(Args)]
+pub struct SyncArgs {
+    /// Task document id; project and requirement are inherited from it
+    document_id: String,
+    /// JSON object; run `task schema sync` for the fields
     #[arg(long, value_name = "FILE")]
     input: PathBuf,
 }
@@ -172,6 +187,7 @@ pub fn run(command: TaskCommand) -> Result<()> {
         TaskCommand::Stats(args) => stats(client, args),
         TaskCommand::Schema(args) => schema(client, args),
         TaskCommand::Create(args) => create(client, args),
+        TaskCommand::Sync(args) => sync(client, args),
         TaskCommand::Update(args) => update(client, args),
         TaskCommand::Assign(args) => assign(client, args),
         TaskCommand::Claim(args) => claim(client, args),
@@ -241,6 +257,7 @@ fn list_query(args: &ListArgs, mine: Option<&str>) -> Vec<(String, String)> {
         mine.or(args.assignee_id.as_deref()),
     );
     push_query(&mut query, "document_id", args.document_id.as_deref());
+    push_query(&mut query, "repo_id", args.repo_id.as_deref());
     push_query(
         &mut query,
         "live",
@@ -325,6 +342,33 @@ fn shape_names(schemas: &Value) -> String {
         .as_object()
         .map(|shapes| shapes.keys().cloned().collect::<Vec<_>>().join(", "))
         .unwrap_or_default()
+}
+
+fn encode_segment(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+fn sync(client: &Client, args: SyncArgs) -> Result<()> {
+    let payload = read_object(&args.input)?;
+    let path = format!(
+        "/documents/{}/tasks/sync",
+        encode_segment(&args.document_id)
+    );
+    let result = client::data(client.post(&path, payload)?)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result)
+            .map_err(|err| Error::Network(format!("could not render task sync result: {err}")))?
+    );
+    Ok(())
 }
 
 fn create(client: &Client, args: CreateArgs) -> Result<()> {
@@ -484,6 +528,7 @@ fn task_detail(task: &Value) -> String {
         ("title", text(task, "title", "(untitled)")),
         ("project_id", text(task, "project_id", "?")),
         ("requirement_id", text(task, "requirement_id", "?")),
+        ("repo_id", text(task, "repo_id", "?")),
         ("kind", text(task, "kind", "?")),
         ("status", text(task, "status", "?")),
         ("assignee_id", text(task, "assignee_id", "none")),
@@ -632,6 +677,7 @@ mod tests {
             assignee_id: None,
             mine: false,
             document_id: None,
+            repo_id: None,
             live: None,
             overdue: None,
             priority: None,
@@ -648,6 +694,7 @@ mod tests {
             parent_id: Some("none".to_string()),
             assignee_id: Some("none".to_string()),
             document_id: Some("doc-id".to_string()),
+            repo_id: Some("repo-id".to_string()),
             live: Some(true),
             overdue: Some(false),
             priority: Some(2),
@@ -664,6 +711,7 @@ mod tests {
                 ("parent_id".to_string(), "none".to_string()),
                 ("assignee_id".to_string(), "none".to_string()),
                 ("document_id".to_string(), "doc-id".to_string()),
+                ("repo_id".to_string(), "repo-id".to_string()),
                 ("live".to_string(), "true".to_string()),
                 ("overdue".to_string(), "false".to_string()),
                 ("priority".to_string(), "2".to_string()),
@@ -731,13 +779,51 @@ mod tests {
     /// in production. The stub server is real HTTP -- see `crate::testing`.
     mod api {
         use super::super::{
-            assign, claim, complete, create, delete, list, release, schema, split, stats,
+            assign, claim, complete, create, delete, list, release, schema, split, stats, sync,
             transition, update, AssignArgs, CompleteArgs, CreateArgs, ListArgs, ProjectArgs,
-            SchemaArgs, SplitArgs, TaskIdArgs, UpdateArgs,
+            SchemaArgs, SplitArgs, SyncArgs, TaskIdArgs, UpdateArgs,
         };
         use crate::config::Config;
         use crate::testing::{client, json_file, Reply, StubServer};
         use serde_json::json;
+
+        #[test]
+        fn sync_sends_the_read_revision_and_stable_items_without_extra_scope() {
+            let server = StubServer::start(vec![Reply::json(200, json!({"data": {"items": []}}))]);
+            let body = json!({"base_revision_id": "read-revision", "tasks": [{"key": "T001", "title": "Work", "repo_id": "repo-id"}]});
+            let input = json_file(body.clone());
+            sync(
+                &client(&server),
+                SyncArgs {
+                    document_id: "doc/id".into(),
+                    input,
+                },
+            )
+            .unwrap();
+            let requests = server.only_request();
+            assert_eq!(requests[0].method, "POST");
+            assert_eq!(requests[0].target, "/api/v1/documents/doc%2Fid/tasks/sync");
+            assert_eq!(requests[0].json(), body);
+        }
+
+        #[test]
+        fn sync_conflicts_are_reported_without_retrying() {
+            let server = StubServer::start(vec![Reply::json(
+                409,
+                json!({"error": "task_sync_conflict", "message": "Task changed", "details": {"key": "T001"}}),
+            )]);
+            let input = json_file(json!({"base_revision_id": "read-revision", "tasks": []}));
+            let err = sync(
+                &client(&server),
+                SyncArgs {
+                    document_id: "doc-id".into(),
+                    input,
+                },
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("task_sync_conflict"));
+            assert_eq!(server.only_request().len(), 1);
+        }
 
         fn task_reply() -> Reply {
             Reply::json(200, json!({"data": {"id": "task-id", "status": "open"}}))

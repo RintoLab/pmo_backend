@@ -182,6 +182,14 @@ defmodule RintoPMOWeb.V1.DocumentController do
     end
   end
 
+  def sync_tasks(conn, %{"id" => id} = params) do
+    document = Utils.module(:documents).get_document!(id)
+
+    with {:ok, result} <- Utils.module(:tasks).sync_document(document, Map.delete(params, "id")) do
+      conn |> put_view(TaskJSON) |> render(:sync, result: result)
+    end
+  end
+
   defp document_filter(params) do
     with {:ok, filter} <- project_filter(params) do
       status_filter(filter, params)

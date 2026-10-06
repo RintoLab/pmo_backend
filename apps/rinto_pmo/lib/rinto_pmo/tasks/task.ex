@@ -237,6 +237,7 @@ defmodule RintoPMO.Tasks.Task do
 
     belongs_to :project, Project
     belongs_to :requirement, RintoPMO.Requirements.Requirement
+    belongs_to :repo, RintoPMO.Projects.ProjectRepo
     belongs_to :document, Document
     belongs_to :assignee, Actor
     belongs_to :parent, __MODULE__
@@ -375,6 +376,7 @@ defmodule RintoPMO.Tasks.Task do
       :title,
       :description,
       :document_id,
+      :repo_id,
       :parent_id,
       :assignee_id,
       :due_on,
@@ -385,7 +387,7 @@ defmodule RintoPMO.Tasks.Task do
       :actual_minutes,
       :planned_start_on
     ])
-    |> validate_required([:title, :kind, :requirement_id])
+    |> validate_required([:title, :kind, :requirement_id, :repo_id])
     |> validate_length(:title, min: 1, max: 255)
     |> reject_input(attrs, :priority, "is inherited from the requirement")
     |> put_first_planned_on()
@@ -393,6 +395,7 @@ defmodule RintoPMO.Tasks.Task do
     |> put_assigned_at()
     |> foreign_key_constraint(:project_id)
     |> foreign_key_constraint(:requirement_id)
+    |> foreign_key_constraint(:repo_id)
     |> foreign_key_constraint(:document_id)
     |> foreign_key_constraint(:parent_id)
     |> foreign_key_constraint(:assignee_id)

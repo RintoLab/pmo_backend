@@ -185,6 +185,11 @@ defmodule RintoPMO.LinksRebuildTest do
   end
 
   defp create_task(project, attrs) do
-    Tasks.create_task(project, Map.put_new(attrs, :requirement_id, task_requirement(project).id))
+    Tasks.create_task(
+      project,
+      attrs
+      |> Map.put_new(:requirement_id, task_requirement(project).id)
+      |> Map.put_new(:repo_id, task_repo(project).id)
+    )
   end
 end

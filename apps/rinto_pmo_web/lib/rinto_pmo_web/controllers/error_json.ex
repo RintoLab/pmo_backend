@@ -26,6 +26,8 @@ defmodule RintoPMOWeb.ErrorJSON do
     proposal_not_found: {404, "The proposal does not belong to this document."},
     image_too_large: {413, "The image exceeds the size accepted for inline use."},
     unsupported_image: {415, "The file is not an image format that can be sent to a model."},
+    task_sync_conflict:
+      {409, "Task synchronization conflicts with existing work. No tasks were changed."},
     stale_document: {409, "The document has changed since the provided base revision."},
     no_prioritization_ai:
       {422,

@@ -75,6 +75,7 @@ defmodule RintoPMO.Tasks do
   alias RintoPMO.Documents.Document
   alias RintoPMO.Links
   alias RintoPMO.Projects.Project
+  alias RintoPMO.Projects.ProjectRepo
   alias RintoPMO.References
   alias RintoPMO.References.Guard
   alias RintoPMO.References.Reference
@@ -83,6 +84,7 @@ defmodule RintoPMO.Tasks do
   alias RintoPMO.Tasks.Breakdown
   alias RintoPMO.Tasks.Dependency
   alias RintoPMO.Tasks.DependencyGraph
+  alias RintoPMO.Tasks.DocumentSync
   alias RintoPMO.Tasks.EstimationWorker
   alias RintoPMO.Tasks.Notifier
   alias RintoPMO.Tasks.Task
@@ -119,6 +121,7 @@ defmodule RintoPMO.Tasks do
             optional(:status) => Task.status(),
             optional(:assignee_id) => UUIDv7.t() | nil,
             optional(:document_id) => UUIDv7.t(),
+            optional(:repo_id) => UUIDv7.t(),
             optional(:parent_id) => UUIDv7.t() | nil,
             optional(:live) => boolean(),
             optional(:overdue) => boolean(),
@@ -196,6 +199,9 @@ defmodule RintoPMO.Tasks do
 
     @callback split_task(Task.t(), [map()]) ::
                 {:ok, Task.t()} | {:error, Ecto.Changeset.t()} | refusal()
+
+    @callback sync_document(RintoPMO.Documents.Document.t(), map()) ::
+                {:ok, map()} | {:error, Ecto.Changeset.t()} | refusal()
 
     @callback file_breakdown(RintoPMO.Documents.Document.t()) ::
                 {:ok, [Task.t()]} | {:error, Ecto.Changeset.t()} | refusal()
@@ -326,14 +332,14 @@ defmodule RintoPMO.Tasks do
   defp description_of(attrs), do: Map.get(attrs, :description) || Map.get(attrs, "description")
 
   defp insert_task(repo, chset) do
-    with {:ok, task} <- chset |> validate_requirement() |> repo.insert() do
+    with {:ok, task} <- chset |> validate_requirement() |> validate_repo() |> repo.insert() do
       index(repo, task)
       inherited_priority({:ok, task})
     end
   end
 
   defp apply_move(repo, chset, old_parent_id) do
-    with {:ok, updated} <- repo.update(chset) do
+    with {:ok, updated} <- chset |> validate_repo() |> repo.update() do
       demote_if_emptied(repo, old_parent_id, updated.parent_id)
       index(repo, updated)
       inherited_priority({:ok, updated})
@@ -513,6 +519,9 @@ defmodule RintoPMO.Tasks do
     end
   end
 
+  @impl true
+  def sync_document(document, attrs), do: DocumentSync.sync(document, attrs)
+
   @doc """
   Files a task document as this project's work breakdown.
 
@@ -572,12 +581,29 @@ defmodule RintoPMO.Tasks do
   # The work and the document's last state move together or not at all.
   defp file(chunks, %Document{} = breakdown, spec) do
     Repo.transact(fn repo ->
-      with {:ok, filed} <- insert_chunks(chunks, breakdown, spec, repo),
+      current = repo.one!(from d in Document, where: d.id == ^breakdown.id, lock: "FOR UPDATE")
+
+      with :ok <- validate_legacy_filing(current),
+           {:ok, filed} <- insert_chunks(chunks, current, spec, repo),
            {:ok, _applied} <- documents().apply_document(breakdown) do
         {:ok, filed}
       end
     end)
   end
+
+  defp validate_legacy_filing(%Document{status: :formal} = document) do
+    if Repo.exists?(
+         from entry in RintoPMO.Tasks.DocumentEntry, where: entry.document_id == ^document.id
+       ),
+       do:
+         {:error,
+          {:task_sync_conflict,
+           %{document_id: document.id, reason: "use task sync for this document"}}},
+       else: :ok
+  end
+
+  defp validate_legacy_filing(document),
+    do: {:error, {:document_not_formal, %{status: document.status}}}
 
   # Refused here as well as by `apply_document/1` inside the transaction. The
   # one inside is the guarantee; this one is so that a person who clicked the
@@ -681,6 +707,7 @@ defmodule RintoPMO.Tasks do
     %Task{
       project_id: breakdown.project_id,
       requirement_id: breakdown.requirement_id,
+      repo_id: sole_repo_id(breakdown.project_id),
       parent_id: parent && parent.id
     }
     |> Task.creation_changeset(%{
@@ -690,6 +717,7 @@ defmodule RintoPMO.Tasks do
       document_id: spec && spec.id
     })
     |> validate_requirement()
+    |> validate_repo()
     |> repo.insert()
     |> inherited_priority()
   end
@@ -773,10 +801,12 @@ defmodule RintoPMO.Tasks do
       %Task{
         project_id: summary.project_id,
         requirement_id: summary.requirement_id,
+        repo_id: summary.repo_id,
         parent_id: summary.id
       }
       |> Task.split_child_changeset(attrs)
       |> validate_requirement()
+      |> validate_repo()
       |> repo.insert()
       |> inherited_priority()
     end
@@ -1457,6 +1487,7 @@ defmodule RintoPMO.Tasks do
         {:status, status} -> task.status == status
         {:assignee_id, assignee_id} -> task.assignee_id == assignee_id
         {:document_id, document_id} -> task.document_id == document_id
+        {:repo_id, repo_id} -> task.repo_id == repo_id
         {:parent_id, parent_id} -> task.parent_id == parent_id
         {:live, live} -> task.status in live_statuses == live
         {:overdue, overdue} -> overdue?(task, live_statuses, today) == overdue
@@ -1876,6 +1907,33 @@ defmodule RintoPMO.Tasks do
   end
 
   defp complete_attrs(_event, _attrs), do: {:ok, %{}}
+
+  defp sole_repo_id(project_id) do
+    case Repo.all(
+           from repo in ProjectRepo,
+             where: repo.project_id == ^project_id,
+             select: repo.id,
+             limit: 2
+         ) do
+      [id] -> id
+      _other -> nil
+    end
+  end
+
+  defp validate_repo(%Changeset{valid?: false} = chset), do: chset
+
+  defp validate_repo(chset) do
+    id = Changeset.get_field(chset, :repo_id)
+    project_id = Changeset.get_field(chset, :project_id)
+
+    if Repo.exists?(
+         from repo in ProjectRepo, where: repo.id == ^id and repo.project_id == ^project_id
+       ) do
+      chset
+    else
+      Changeset.add_error(chset, :repo_id, "must be a repository in this project")
+    end
+  end
 
   # Called inside the task-creation transaction. Requirement child creation
   # locks the same row, so task ownership and leaf status cannot race.

@@ -7,6 +7,9 @@ description: 在 Rinto 中查看、创建和完善需求草稿，按用户要求
 
 Requirement 是需求资源；它的 description 承载背景、目标和验收描述，不另建一份同内容的 PRD。Project 表示业务系统，Repo 表示代码仓库。需求属于一个 Project，可以逐层拆成同一 Project 下的子需求。
 
+需要从需求生成 spec、澄清、生成 plan 或 task 时，使用 `rinto-spec-workflow` 技能。
+该流程通过本技能的命令保存资源，不要求用户预先提供 PRD，也不自行采纳文档。
+
 ## 找到需求及其上下文
 
 话题进程已经提供 API、token 和 conversation 环境，直接使用 `rinto-pmo`，不运行 `config init`。创建顶层需求时需要的 Project slug 从列表读取；已有需求通过 ID 定位。
@@ -79,3 +82,32 @@ rinto-pmo requirement update <requirement-id> --priority 2
 使用 `requirement_prioritization` AI 角色，根据当前需求及其上下文直接更新该需求的优先级（1 最高、5 最低）。不比较其他需求，不展开子需求，也没有审阅或应用步骤。Task 自动继承各自所属需求的优先级；用户认为不合适时直接手动修改。
 
 `--wait` 等待后台作业结束并显示需求。排队或执行期间有人修改需求时，保留手动修改，不用旧结果覆盖；相关描述或文档变化也会停止写入。失败时查看原因，不自动反复调用模型。
+
+## Task repository ownership
+
+Each task must specify one `repo_id` from the requirement's Project, alongside
+`requirement_id` and `title` in `task create` input. Get the project's registered
+repositories before choosing; never invent or guess a Repo ID. Cross-repository
+work becomes separate tasks with their own Repo IDs and dependencies. Split
+children inherit the original Repo unless they explicitly choose another Repo
+in the same Project. Filter execution work with `task list --repo-id <ID>`.
+The legacy document breakdown importer can infer a Repo only when the Project
+has exactly one registered repository; it refuses ambiguous ownership.
+
+## 从 task 文档同步任务
+
+先 `doc show` 读取完整正文和 revision id，再 `task schema sync` 读取结构化格式。
+调用 `task sync <document-id> --input <JSON-file>`；只需文档 ID，不再传 Project
+或 Requirement。文档必须是已采纳的 `kind=task`，并归属于开放的叶子需求。
+草稿须由用户在网页采纳，不能通过同步接口替代采纳。
+
+输入为 `base_revision_id` 加 `tasks` 数组，每项含稳定的 `key`、`title`、
+`repo_id` 和可选 `description`。编号取自正文，例如 T001；仓库名称必须映射到
+实际登记的 Repo。系统不解析 Markdown，不从复选框设置执行状态，不自动推断依赖。
+生成任务文档时就提供稳定编号；旧文档没有编号时先提案补齐，采纳后再同步。
+
+同一文档的编号标识同一个任务，重复提交不会重复创建。新版本仅更新没有人工冲突的
+未开始任务的标题、说明和 Repo。估时、负责人、排期、状态和依赖不会被覆盖。
+遗漏条目不会删任务，已删除任务不会被重建。同一版本对既有编号给出不同内容也会拒绝。
+冲突时整个批次不写入，报告具体编号；不要通过换编号、换文档或 task update 绕过。
+遇到 stale_document 必须重读正文，不能只获取新 revision id 重试。

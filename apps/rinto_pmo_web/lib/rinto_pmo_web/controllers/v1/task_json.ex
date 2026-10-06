@@ -1,6 +1,19 @@
 defmodule RintoPMOWeb.V1.TaskJSON do
   alias RintoPMO.Tasks.Task
 
+  def sync(%{result: result}) do
+    %{
+      data: %{
+        document_id: result.document_id,
+        revision_id: result.revision_id,
+        items:
+          Enum.map(result.items, fn item ->
+            %{key: item.key, action: item.action, task: data(item.task)}
+          end)
+      }
+    }
+  end
+
   def index(%{tasks: tasks}) do
     %{data: Enum.map(tasks, &data/1)}
   end
@@ -89,6 +102,7 @@ defmodule RintoPMOWeb.V1.TaskJSON do
       id: task.id,
       project_id: task.project_id,
       requirement_id: task.requirement_id,
+      repo_id: task.repo_id,
       parent_id: task.parent_id,
       document_id: task.document_id,
       assignee_id: task.assignee_id,

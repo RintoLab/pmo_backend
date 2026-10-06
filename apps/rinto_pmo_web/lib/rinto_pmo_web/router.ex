@@ -170,6 +170,7 @@ defmodule RintoPMOWeb.Router do
     # on its way past. An action on the document because that is what it
     # consumes -- it comes out `applied` and cannot be filed a second time.
     post "/documents/:id/file_breakdown", DocumentController, :file_breakdown
+    post "/documents/:id/tasks/sync", DocumentController, :sync_tasks
 
     patch "/documents/:id", DocumentController, :update
 

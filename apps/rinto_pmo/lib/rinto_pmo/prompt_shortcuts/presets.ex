@@ -44,6 +44,10 @@ defmodule RintoPMO.PromptShortcuts.Presets do
   over -- is the preset. It writes only after the person has settled which way
   to go, which is the second half of the same prompt.
 
+  "同步任务" reads an adopted task document and submits structured items through
+  `rinto-pmo task sync`. The server owns scope validation, stable item identity
+  and conflict handling; the shortcut owns reading the document's layout.
+
   "解决冲突" and "解决所有冲突" produce that extra candidate without the pause:
   the model picks a merge from the document as a whole and proposes it. One is
   offered against the cited proposals; the other is offered against the document,
@@ -119,6 +123,71 @@ defmodule RintoPMO.PromptShortcuts.Presets do
 
   @presets [
     %{
+      key: "q3xv5na2kh7up4zd",
+      resource_type: "requirement",
+      label: "明确需求",
+      icon: "file-text",
+      prompt: """
+      请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「明确需求」阶段。
+      先运行 `rinto-pmo requirement show <id>` 读取最新需求、所属 Project 和相关文档。
+      生成或修订 spec，先明确用户场景、范围、可测试要求和验收标准。
+      只完成本阶段。已有同范围文档用 doc propose 修订，新文档通过 doc create 关联 requirement_id。
+      关键歧义先询问；不要自行采纳文档、修改代码或跳到下一阶段。
+      """
+    },
+    %{
+      key: "c6m2q8v7pk4r9xan",
+      resource_type: "requirement",
+      label: "澄清需求",
+      icon: "message-circle-question",
+      prompt: """
+      请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「澄清需求」阶段。
+      先运行 `rinto-pmo requirement show <id>` 读取最新需求、所属 Project 和相关文档。
+      检查现有 spec 的关键歧义，逐个询问并将决定提案到文档中。
+      只完成本阶段。已有同范围文档用 doc propose 修订，新文档通过 doc create 关联 requirement_id。
+      关键歧义先询问；不要自行采纳文档、修改代码或跳到下一阶段。
+      """
+    },
+    %{
+      key: "d7kw3n5p2r8v6xac",
+      resource_type: "requirement",
+      label: "设计方案",
+      icon: "workflow",
+      prompt: """
+      请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「设计方案」阶段。
+      先运行 `rinto-pmo requirement show <id>` 读取最新需求、所属 Project 和相关文档。
+      基于已采纳 spec 和相关 Repo 的现状，生成或修订 plan，明确分仓库改动和共享契约。
+      只完成本阶段。已有同范围文档用 doc propose 修订，新文档通过 doc create 关联 requirement_id。
+      关键歧义先询问；不要自行采纳文档、修改代码或跳到下一阶段。
+      """
+    },
+    %{
+      key: "t8vn4c6x2m5q7pka",
+      resource_type: "requirement",
+      label: "拆分任务",
+      icon: "list-tree",
+      prompt: """
+      请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「拆分任务」阶段。
+      先运行 `rinto-pmo requirement show <id>` 读取最新需求、所属 Project 和相关文档。
+      基于已采纳 spec / plan，生成或修订 kind=task 清单，提供稳定编号和每项的 Repo。
+      只完成本阶段。已有同范围文档用 doc propose 修订，新文档通过 doc create 关联 requirement_id。
+      关键歧义先询问；不要自行采纳文档、修改代码或跳到下一阶段。
+      """
+    },
+    %{
+      key: "s9pr4m6v2k8x5nca",
+      resource_type: "requirement",
+      label: "同步任务",
+      icon: "list-checks",
+      prompt: """
+      请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「同步任务」阶段。
+      先运行 `rinto-pmo requirement show <id>` 读取最新需求、所属 Project 和相关文档。
+      读取本需求已采纳的 task 文档，使用 task schema sync 与 task sync 提交结构化任务。
+      只完成本阶段。已有同范围文档用 doc propose 修订，新文档通过 doc create 关联 requirement_id。
+      关键歧义先询问；不要自行采纳文档、修改代码或跳到下一阶段。
+      """
+    },
+    %{
       key: "omzm37viwtmc6yl3",
       resource_type: "document",
       label: "通读文档",
@@ -136,92 +205,78 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       """
     },
     %{
+      key: "fuhl3zroeyqvfg6v",
+      resource_type: "document",
+      label: "同步任务",
+      icon: "list-checks",
+      prompt: """
+      将我引用的 task 文档同步为系统任务。
+
+      先执行 `rinto-pmo doc show <文档ID>`，完整读取已提交的正文及当前 revision id。
+      文档必须是 kind=task、status=formal，并属于一个开放的叶子需求。
+      如果仍是 draft，请提示我先在网页采纳文档；不要代替我采纳。
+      如果类型、归属或条目编号不明确，先说明缺少的信息，不要猜测。
+
+      执行 `rinto-pmo requirement show <requirement_id>` 读取需求及相关文档，
+      用 `rinto-pmo project show <project_slug>` 读取已登记的 Repo。
+      一个任务必须归属一个 Repo；跨 Repo 工作分别列出任务，哪怕标题相同。
+
+      执行 `rinto-pmo task schema sync` 获取结构化输入格式。
+      每项使用文档中稳定的任务编号作为 key，例如 T001；不要按新顺序重新编号。
+      没有编号时，先通过文档提案补充编号，等采纳后再同步。
+      从正文提取标题、说明和验收条件，并将明确的仓库名称映射到实际 repo_id。
+      不增加文档未要求的工作，不根据复选框设置任务完成状态，不写优先级或估时。
+      不把清单顺序或 [P] 标记猜成依赖关系。
+
+      写入 JSON 文件，base_revision_id 使用刚才实际读取的 revision id，随后执行：
+      `rinto-pmo task sync <文档ID> --input <JSON文件>`。
+      不需要再传 project 或 requirement；系统会从文档确定归属。
+      相同文档与 key 会沿用同一个任务；遗漏的条目不会删除或取消已有任务。
+      人工修改、已开始的工作或同一 revision 下出现不同内容会报告冲突，整个批次不落库。
+      遇到冲突就解释具体条目；不要换 key、创建新文档或直接 task update 绕过保护。
+      遇到 stale_document，重新读取正文再生成输入，不能只换 revision id 重试。
+
+      完成后简要报告新增、更新和保持不变的任务数量及对应 ID。
+      """
+    },
+    %{
       key: "rhbmy27l64mhvwef",
       resource_type: "document",
       label: "拆成任务",
       icon: "list-tree",
       prompt: """
-      You break a plan down into the work it implies, and you file the result as \
-      a task document.
+      根据我引用的文档，生成这个需求的 task 文档。
 
-      The document to break down is the one referenced in this message. Read all \
-      of it first.
+      用 `rinto-pmo doc show <id>` 完整读取源文档，取得 requirement_id；
+      用 `rinto-pmo requirement show <id>` 读取需求描述、相关 spec / plan 文档和子需求信息。
+      若未关联需求，或仍有子需求，说明需要先确定叶子需求，不要创建无归属的任务文档。
+      用 `rinto-pmo project show <project_slug>` 读取实际登记的 Repo。
+      只拆分已明确的工作；规格或实施计划缺失关键决策时，先指出缺口。
 
-      Before writing anything, run `rinto-pmo doc show <id>` on it and note the \
-      `project_id` it reports: the breakdown belongs beside its source, not in \
-      the default project.
+      任务按阶段或用户场景分组，用清单表达，每项拥有稳定的编号：
 
-      ## The shape, and follow it exactly
+      - [ ] T001 [Repo: backend] 实现验证码校验接口
+        - 说明与相关文件路径。
+        - 验收：有效和过期验证码分别得到规格规定的结果。
+      - [ ] T002 [Repo: frontend] 实现验证码校验界面
+        - 说明与验收条件来自需求和实施计划，不自行添加产品要求。
 
-      - `##` -- a chunk of work. Everything in the breakdown lives under one of \
-      these.
-      - `###` -- one task somebody can pick up and finish. Belongs to the `##` \
-      above it.
-      - Text under either heading -- what that chunk or task is, and then how \
-      somebody will know it is done. Nothing marks the boundary: the criteria \
-      are the bullets at the end.
+      Repo 名称必须来自实际登记结果。每项只能属于一个 Repo；
+      需要多个 Repo 配合时分别创建不同编号的任务，允许标题相同。
+      阶段标题不是任务；一项应是开发机能领取并完成的一块工作。
+      可保留 [P]、[US1] 等可读标记，但它们不代替明确的任务依赖说明。
+      不估时，不另设任务优先级，不把复选框当作系统任务的执行状态。
+      编号在同一文档内唯一，之后增删条目不要重新编号或复用旧编号。
+      文档开头引用源 spec / plan，并说明依赖和整体验收条件。
 
-      A chunk that is one single task is written as a `##` with **no `###` under \
-      it**, and the text under it describes that task. Do not write a `##` and \
-      then a single `###` saying the same thing.
+      如果需求已有对应的 task 文档，先读取它，保留编号并用 doc propose 提出修订；
+      不要每次都创建另一份文档，否则稳定编号会失去同一个文档的作用域。
+      首次生成时将 Markdown 写入文件并执行：
+      `rinto-pmo doc create --title "<需求标题> · 任务清单" --requirement-id <需求ID> --kind task --body tasks.md`。
+      不需要再传 project_id。先用 --dry-run 检查内容，再创建文档。
 
-      Never write `#`, and never write `####` or deeper. Every `###` must sit \
-      under a `##`; a `###` before the first `##` is refused outright when the \
-      breakdown is filed.
-
-      Open with one line naming what this breaks down, before the first `##`:
-
-      从 [源文档标题](rinto://document/<源文档 id>) 拆出。
-
-      Text above the first heading is a preamble and is ignored when the tasks \
-      are filed, so it costs nothing -- and the link makes the source reachable \
-      from the breakdown afterwards.
-
-      ## Acceptance criteria
-
-      - **A bullet is a criterion, and nothing else is a bullet.** Anything that \
-      is not a criterion goes in the prose above them -- and if it was a piece \
-      of work, it was a task and belongs in its own `###`.
-      - A criterion says what is **observably true once the work is finished**. \
-      Not what the doer will do, not that a test exists, not what somebody \
-      downstream can then build. "The list keeps its scroll position across a \
-      reload" is a criterion; "handle scroll position" is the title again; "add \
-      tests for it" is the doer's business.
-      - One line each, and each one has to be settleable by looking at the \
-      result. A line nobody could call true or false is not a criterion.
-      - Take them from the document. A task the document gives no grounds for \
-      gets none: an invented criterion is a requirement nobody agreed to.
-
-      ## Rules
-
-      - Break down the work the document implies. Do not restate the document.
-      - A task is one person's next piece of work, not a phase and not a whole \
-      feature.
-      - Say what the task is, not how to do it. The person doing it decides that.
-      - Write in the same language as the document.
-      - Never invent work the document gives no reason for. If a section implies \
-      nothing to do, it gets no task.
-      - Do not estimate. How long something takes is decided elsewhere.
-
-      ## Filing it
-
-      Write the breakdown to a file and create it as a document:
-
-          rinto-pmo doc create \\
-            --title "<源文档标题> · 任务分解" \\
-            --project-id <the project_id you read above> \\
-            --body breakdown.md
-
-      Run it once with `--dry-run` first and check that the sections split into \
-      the blocks you meant -- one block per `##` and per `###`. That check is \
-      free and it is the only thing standing between a mis-split heading and a \
-      task nobody can file.
-
-      Creating the document does **not** create the tasks. Somebody reads the \
-      breakdown and files it, which is a separate action and theirs to take.
-
-      When you are done, say what you created and give its id. Do not paste the \
-      breakdown back into the conversation -- it is a document now.
+      这一步只生成供我审阅的文档，不创建系统任务。
+      报告文档 ID；我采纳后可用「同步任务」将条目转成系统任务。
       """
     },
     %{

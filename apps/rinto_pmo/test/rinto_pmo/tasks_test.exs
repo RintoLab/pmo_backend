@@ -1429,6 +1429,8 @@ defmodule RintoPMO.TasksTest do
   end
 
   defp adopted(project, markdown) do
+    task_repo(project)
+
     {:ok, document} =
       Documents.create_document(%{
         title: "任务文档",
@@ -2120,6 +2122,12 @@ defmodule RintoPMO.TasksTest do
 
   defp create_task(project, attrs) do
     requirement = task_requirement(project)
-    RintoPMO.Tasks.create_task(project, Map.put_new(attrs, "requirement_id", requirement.id))
+
+    RintoPMO.Tasks.create_task(
+      project,
+      attrs
+      |> Map.put_new("requirement_id", requirement.id)
+      |> Map.put_new("repo_id", task_repo(project).id)
+    )
   end
 end
