@@ -40,6 +40,19 @@ defmodule RintoPMOWeb.V1.ReferenceControllerTest do
     assert second["state"] == "unknown_type"
   end
 
+  test "POST resolve carries the project needed to open a requirement", %{conn: conn} do
+    uri = "rinto://requirement/#{UUIDv7.generate()}"
+
+    expect(ResolverMock, :resolve, fn [^uri] ->
+      {:ok, [resolved(%{uri: uri, type: "requirement", title: "登录", project_slug: "product"})]}
+    end)
+
+    conn = post(conn, ~p"/api/v1/references/resolve", %{uris: [uri]})
+    assert [data] = json_response(conn, 200)["data"]
+    assert data["project_slug"] == "product"
+    assert data["type"] == "requirement"
+  end
+
   test "POST resolve carries the document a block sits in", %{conn: conn} do
     document_id = UUIDv7.generate()
 

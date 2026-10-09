@@ -31,6 +31,34 @@ defmodule RintoPMO.References.ResolverTest do
       refute resolved.archived
     end
 
+    test "resolves requirements with ownership, previews, and archived state" do
+      project = insert(:project, name: "产品", slug: "product")
+      requirement = insert(:requirement, project: project, title: "登录", description: "支持短信登录")
+      archived = insert(:requirement, project: project, archived_at: DateTime.utc_now())
+      archived_project = insert(:project, status: :archived)
+      inherited = insert(:requirement, project: archived_project)
+      target = uri("requirement", requirement.id)
+
+      assert %{
+               state: :ok,
+               type: "requirement",
+               title: "登录",
+               subtitle: "产品",
+               project_slug: "product",
+               excerpt: "支持短信登录",
+               archived: false
+             } = resolve_one(target)
+
+      assert %{state: :ok, archived: true} = resolve_one(uri("requirement", archived.id))
+      assert %{state: :ok, archived: true} = resolve_one(uri("requirement", inherited.id))
+      assert :ok = Resolver.validate("见 [需求](#{target})")
+
+      missing = uri("requirement", UUIDv7.generate())
+      assert %{state: :broken, project_slug: nil} = resolve_one(missing)
+      assert {:error, [^missing]} = Resolver.validate("见 [需求](#{missing})")
+      assert %{state: :invalid} = resolve_one("rinto://requirement/not-a-uuid")
+    end
+
     test "reports a known type that is not there as broken" do
       assert %{state: :broken, type: "task", title: nil} =
                resolve_one(uri("task", UUIDv7.generate()))

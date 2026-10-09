@@ -5748,7 +5748,7 @@ components:
           nullable: true
           description: >
             The addressed type, or `null` when the URI did not parse. One of
-            `project`, `document`, `block`, `annotation`, `proposal`, `task`,
+            `project`, `document`, `block`, `annotation`, `proposal`, `task`, `requirement`,
             `conversation`, `attachment` -- or a type this build does not know,
             which is reported rather than refused.
           example: task
@@ -5802,6 +5802,10 @@ components:
           type: string
           nullable: true
           description: The title of that document.
+        project_slug:
+          type: string
+          nullable: true
+          description: The owning project slug for a requirement, used to open its detail card.
         archived:
           type: boolean
           description: >

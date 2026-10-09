@@ -17,6 +17,7 @@ defmodule RintoPMO.ReferencesTest do
         "rinto://annotation/#{@id}",
         "rinto://proposal/#{@id}",
         "rinto://task/#{@id}",
+        "rinto://requirement/#{@id}",
         "rinto://conversation/#{@id}",
         "rinto://attachment/#{@id}"
       ]
@@ -64,6 +65,7 @@ defmodule RintoPMO.ReferencesTest do
 
     test "rejects a known type whose key is not shaped like its identifier" do
       assert References.parse("rinto://task/not-a-uuid") == :error
+      assert References.parse("rinto://requirement/not-a-uuid") == :error
       assert References.parse("rinto://project/not a slug") == :error
     end
   end
@@ -97,8 +99,8 @@ defmodule RintoPMO.ReferencesTest do
   end
 
   describe "types/0" do
-    test "every linkable type is searchable, apart from the two stated exceptions" do
-      unsearchable = ["proposal", "attachment"]
+    test "every linkable type is searchable, apart from types without a vector projection" do
+      unsearchable = ["proposal", "attachment", "requirement"]
 
       for {type, capabilities} <- References.types(),
           capabilities.linkable,

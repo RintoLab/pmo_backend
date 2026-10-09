@@ -67,6 +67,7 @@ defmodule RintoPMO.References.Resolver do
   alias RintoPMO.Projects.Project
   alias RintoPMO.References
   alias RintoPMO.References.Reference
+  alias RintoPMO.Requirements.Requirement
   alias RintoPMO.Tasks.Task
   alias RintoPMO.Text
 
@@ -81,6 +82,7 @@ defmodule RintoPMO.References.Resolver do
           excerpt: String.t() | nil,
           document_id: UUIDv7.t() | nil,
           document_title: String.t() | nil,
+          project_slug: String.t() | nil,
           archived: boolean()
         }
 
@@ -221,6 +223,7 @@ defmodule RintoPMO.References.Resolver do
       excerpt: nil,
       document_id: nil,
       document_title: nil,
+      project_slug: nil,
       archived: false
     }
   end
@@ -233,6 +236,7 @@ defmodule RintoPMO.References.Resolver do
         excerpt: nil,
         document_id: nil,
         document_title: nil,
+        project_slug: nil,
         archived: false
       },
       fields
@@ -337,6 +341,24 @@ defmodule RintoPMO.References.Resolver do
          excerpt: excerpt(proposal.content),
          document_id: proposal.document_id,
          document_title: document_title
+       })}
+    end)
+  end
+
+  defp load("requirement", ids) do
+    Requirement
+    |> join(:inner, [requirement], project in Project, on: project.id == requirement.project_id)
+    |> where([requirement], requirement.id in ^ids)
+    |> select([requirement, project], {requirement, project})
+    |> Repo.all()
+    |> Map.new(fn {requirement, project} ->
+      {requirement.id,
+       projection(%{
+         title: requirement.title,
+         subtitle: project.name,
+         excerpt: excerpt(requirement.description),
+         project_slug: project.slug,
+         archived: not is_nil(requirement.archived_at) or project.status == :archived
        })}
     end)
   end

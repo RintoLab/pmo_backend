@@ -26,6 +26,11 @@ rinto-pmo requirement show <requirement-id>
 
 修改前先读详情；完善子需求时也读父需求，保留父需求中明确的范围和限制。
 
+在文档或说明中引用需求时，写成 `[需求标题](rinto://requirement/{id})`，id 必须来自
+上述 list/show 或 create 返回值。读到这种链接时用 `rinto-pmo requirement show <id>`
+跟进。引用需求的 spec/plan/task 文档则使用 `[文档标题](rinto://document/{id})`；
+链接不代替文档归属字段 `--requirement-id`。
+
 ## 创建与修改草稿
 
 把描述写入 UTF-8 Markdown 文件，通过 `--body` 传入。标题单独传给 `--title`。

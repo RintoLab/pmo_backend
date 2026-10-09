@@ -186,6 +186,7 @@ rinto-pmo doc list --project-id <project-id>
 | `rinto://document/{id}` | `rinto-pmo doc show {id}` |
 | `rinto://block/{id}` | `rinto-pmo doc show` 它所属的文档，找到那一节 |
 | `rinto://task/{id}` | `rinto-pmo task show {id}` |
+| `rinto://requirement/{id}` | `rinto-pmo requirement show {id}` |
 | `rinto://project/{slug}` | `rinto-pmo project show {slug}` |
 
 **这些链接是实现依据的一部分，不是装饰。** 任务描述或文档里指向另一份文档的某一节，

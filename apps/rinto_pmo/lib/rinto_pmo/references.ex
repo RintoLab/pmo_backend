@@ -32,6 +32,7 @@ defmodule RintoPMO.References do
   One shape, no exceptions:
 
       rinto://project/{slug}        rinto://task/{id}
+      rinto://requirement/{id}
       rinto://document/{id}         rinto://conversation/{id}
       rinto://block/{id}            rinto://attachment/{id}
       rinto://annotation/{id}       rinto://proposal/{id}
@@ -121,6 +122,8 @@ defmodule RintoPMO.References do
     "block" => %{key: :id, linkable: true, expandable: true, searchable: true},
     "annotation" => %{key: :id, linkable: true, expandable: true, searchable: true},
     "task" => %{key: :id, linkable: true, expandable: true, searchable: true},
+    # Requirements are discovered through their list/show APIs, not the vector index.
+    "requirement" => %{key: :id, linkable: true, expandable: true, searchable: false},
 
     # Linkable but not expandable, which is the distinction that lets a topic be
     # cited at all. Expanding a conversation is what has no bottom -- every

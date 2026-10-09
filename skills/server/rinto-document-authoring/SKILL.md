@@ -101,6 +101,7 @@ rinto-pmo doc create --requirement-id <requirement-id> --kind spec --title "登�
 写法是**普通的 markdown 链接**，只是地址用 `rinto://`：
 
 ```markdown
+需求见 [账号体系升级](rinto://requirement/01936f2a-1c4e-7c3a-9f1b-2d4e6a8b0c1d)，
 先做 [接入 r-nacos](rinto://task/01936f2a-1c4e-7c3a-9f1b-2d4e6a8b0c1d)，
 细节见 [上线流程的部署一节](rinto://block/01a023d8-8adf-7f41-b948-4cf1cb700f2d)。
 ```
@@ -119,12 +120,15 @@ rinto://task/01a023e3-2a4a-7839-…   0.68  接入 r-nacos
 ```
 
 **永远不要凭记忆或推断拼一个 UUID。** 36 位十六进制抄错一个字符，链接就指向不存在的
-东西，而正文照样保存成功 —— 错误是静默的。地址只有两个正当来源：`search` 的输出，
-或者你刚刚用 `doc create` / `task create` 创建时返回的 id。
+东西。已知类型的不存在目标会被服务端拒绝。地址从 `search` 输出复制，或使用
+`list` / `show` / `create` 返回的真实 id。需求尚未进入语义搜索索引，使用
+`rinto-pmo requirement list --project <slug> --parent-id all` 找到需求，
+再用 `rinto-pmo requirement show <id>` 确认并读取内容；不要调用 `search --type requirement`。
 
-### 八种地址，一个形状
+### 资源地址，一个形状
 
 ```
+rinto://requirement/{id}
 rinto://project/{slug}        rinto://task/{id}
 rinto://document/{id}         rinto://conversation/{id}
 rinto://block/{id}            rinto://attachment/{id}
@@ -136,6 +140,9 @@ rinto://annotation/{id}       rinto://proposal/{id}
 **不要用冒号**（`rinto://block:xxx` 会被解析成端口号，地址会静默损坏）。
 
 ### 指哪一层
+
+- 指**需求本身**用 `requirement`；指它的规格、计划或任务清单文档仍用 `document`。
+  正文中的引用不会设置文档归属；创建需求文档时仍需传 `--requirement-id`。
 
 - 指**一整篇文档**用 `document`；指**文档里具体某一节**用 `block`。
   能指到 block 就指 block —— 读的人会被直接带到那一节，而不是从头找

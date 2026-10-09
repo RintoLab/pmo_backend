@@ -27,6 +27,7 @@ defmodule RintoPMOWeb.V1.ReferenceJSON do
       excerpt: reference.excerpt,
       document_id: reference.document_id,
       document_title: reference.document_title,
+      project_slug: Map.get(reference, :project_slug),
       archived: reference.archived
     }
   end

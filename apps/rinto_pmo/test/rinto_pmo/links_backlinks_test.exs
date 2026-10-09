@@ -42,6 +42,17 @@ defmodule RintoPMO.LinksBacklinksTest do
     refute entry.archived
   end
 
+  test "a document citing a requirement is indexed for backlinks" do
+    requirement = insert(:requirement)
+    target = uri("requirement", requirement.id)
+    document = document_citing("见 [需求](#{target})")
+
+    assert [entry] = backlinks(target)
+    assert entry.source_type == "document_block"
+    assert entry.document_id == document.id
+    assert entry.label == "需求"
+  end
+
   test "every kind of source is found, and each says where it lives" do
     task = insert(:task)
     target = uri("task", task.id)
