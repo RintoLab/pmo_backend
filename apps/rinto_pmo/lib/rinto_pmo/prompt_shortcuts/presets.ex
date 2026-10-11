@@ -175,6 +175,20 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       """
     },
     %{
+      key: "a4nv7c2m9q5k8xpr",
+      resource_type: "requirement",
+      label: "一致性检查",
+      icon: "file-search",
+      prompt: """
+      请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「一致性检查（analyze）」阶段。
+      先运行 `rinto-pmo requirement show <id>`，读取本需求的 spec、plan、task 完整正文及 revision，检查待处理提案。
+      核对规格覆盖、跨文档冲突、范围越界、共享契约、任务仓库归属和依赖，以及整体验收。
+      在话题中给出简短报告：检查的文档与版本、结论、问题位置与影响、建议回到哪个阶段修正。
+      区分阻断问题和非阻断建议；资料缺失、候选不明或待处理变更不能判为可同步。
+      只读检查，不创建或修改文档、不提案、不采纳、不修改代码或任务，也不自动同步任务。
+      """
+    },
+    %{
       key: "s9pr4m6v2k8x5nca",
       resource_type: "requirement",
       label: "同步任务",

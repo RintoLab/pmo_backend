@@ -30,7 +30,7 @@ defmodule RintoPMO.PromptShortcutsTest do
       |> Enum.filter(&(&1.resource_type == "requirement"))
 
     assert Enum.sort(Enum.map(workflow, & &1.label)) ==
-             Enum.sort(["明确需求", "澄清需求", "设计方案", "拆分任务", "同步任务"])
+             Enum.sort(["明确需求", "澄清需求", "设计方案", "拆分任务", "一致性检查", "同步任务"])
 
     for shortcut <- workflow do
       assert shortcut.prompt =~ "rinto-spec-workflow"
@@ -42,7 +42,7 @@ defmodule RintoPMO.PromptShortcutsTest do
     assert {:default_only, preserved} = outcome_for(Presets.seed(), "设计方案")
     assert preserved.prompt == "保留我的设计约定"
     assert preserved.default_prompt == plan.default_prompt
-    assert Enum.count(PromptShortcuts.list_shortcuts(), &(&1.resource_type == "requirement")) == 5
+    assert Enum.count(PromptShortcuts.list_shortcuts(), &(&1.resource_type == "requirement")) == 6
   end
 
   describe "create_shortcut/1" do
