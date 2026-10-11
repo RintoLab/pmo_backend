@@ -14,6 +14,7 @@ defmodule RintoPMOWeb.V1.ReferenceControllerTest do
         excerpt: nil,
         document_id: nil,
         document_title: nil,
+        project_slug: nil,
         archived: false
       },
       fields
