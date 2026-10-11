@@ -781,7 +781,7 @@ paths:
       description: >-
         Supply project_slug for a root or parent_id for a child, not both.
         Children inherit their parent's project. The project must be active,
-        and the parent must be an unarchived draft or active requirement.
+        and the parent must be an unarchived draft, analyzed or active requirement.
         Missing or conflicting scope and malformed parent IDs return 400;
         unknown projects or parents return 404. Closed or archived parents,
         archived projects and invalid metadata return 422. The system always
@@ -850,10 +850,10 @@ paths:
       operationId: updateRequirementById
       summary: Edit requirement metadata or progress marker by ID
       description: >-
-        Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived active requirements. Updates only
+        Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived analyzed or active requirements. Updates only
         supplied fields. An empty description clears it;
         null is invalid. Project and parent cannot be changed. Status can be set to draft,
-        active or completed on any unarchived requirement in an active project, including parents.
+        analyzed, active or completed on any unarchived requirement in an active project, including parents.
         It is reversible, has no document or task prerequisites, and does not change tasks.
       requestBody:
         required: true
@@ -930,7 +930,7 @@ paths:
         The project comes from the path and must be active. No repository
         association is created. Status always starts as draft. Supplying
         project_id, status or archived_at in the body returns 422. An optional
-        parent_id creates a child under a draft or active, unarchived requirement
+        parent_id creates a child under a draft, analyzed or active, unarchived requirement
         in the same project. Unknown, closed or cross-project parents return 422.
       requestBody:
         required: true
@@ -981,9 +981,9 @@ paths:
       operationId: updateRequirement
       summary: Edit requirement metadata or progress marker
       description: >-
-        Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived active requirements. Both PUT and
+        Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived analyzed or active requirements. Both PUT and
         PATCH update only supplied fields. Project is not writable. Parent assignment is create-only; supplying parent_id returns
-        422, including null or the current value. Archived requirements return 422. Status-only updates to draft, active or completed
+        422, including null or the current value. Archived requirements return 422. Status-only updates to draft, analyzed, active or completed
         are allowed regardless of current status, without document/task prerequisites or task changes.
       requestBody:
         required: true
@@ -1009,9 +1009,9 @@ paths:
       operationId: replaceRequirementMetadata
       summary: Edit requirement metadata or progress marker
       description: >-
-        Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived active requirements. Both PUT and
+        Titles and descriptions are editable only on unarchived drafts in active projects. Priority can also be changed on unarchived analyzed or active requirements. Both PUT and
         PATCH update only supplied fields. Project is not writable. Parent assignment is create-only; supplying parent_id returns
-        422, including null or the current value. Archived requirements return 422. Status-only updates to draft, active or completed
+        422, including null or the current value. Archived requirements return 422. Status-only updates to draft, analyzed, active or completed
         are allowed regardless of current status, without document/task prerequisites or task changes.
       requestBody:
         required: true
@@ -5188,8 +5188,12 @@ components:
           description: Requirement description, optionally containing Markdown. May be empty.
         status:
           type: string
-          enum: [draft, active, completed, cancelled]
-          description: Workflow-owned business status. Only draft creation is currently exposed.
+          enum: [draft, analyzed, active, completed, cancelled]
+          description: >-
+            Reversible progress marker. New requirements start as draft. analyzed means
+            documents and planning are ready for implementation, which has not started.
+            Starting a task changes its unarchived draft or analyzed requirement to active.
+            Marking analyzed is manual and does not validate documents or record analysis approval.
         archived_at:
           type: string
           format: date-time
@@ -5274,7 +5278,7 @@ components:
       properties:
         status:
           type: string
-          enum: [draft, active, completed]
+          enum: [draft, analyzed, active, completed]
           description: Reversible progress marker; does not change tasks or aggregate children.
         priority:
           type: integer

@@ -15,7 +15,7 @@ defmodule RintoPMO.Requirements.Tree do
   end
 
   def open?(requirement),
-    do: is_nil(requirement.archived_at) and requirement.status in [:draft, :active]
+    do: is_nil(requirement.archived_at) and requirement.status in [:draft, :analyzed, :active]
 
   def leaf_ids(requirements) do
     parents = requirements |> Enum.filter(&is_nil(&1.archived_at)) |> MapSet.new(& &1.parent_id)

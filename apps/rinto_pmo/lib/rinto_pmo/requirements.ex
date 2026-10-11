@@ -142,7 +142,7 @@ defmodule RintoPMO.Requirements do
   end
 
   defp assign_parent(changeset, %Requirement{archived_at: nil, status: status} = parent)
-       when status in [:draft, :active] do
+       when status in [:draft, :analyzed, :active] do
     if Repo.exists?(from task in Task, where: task.requirement_id == ^parent.id) do
       Ecto.Changeset.add_error(
         changeset,
@@ -197,12 +197,13 @@ defmodule RintoPMO.Requirements do
   defp validate_editable(changeset, %Requirement{archived_at: nil, status: :draft}),
     do: changeset
 
-  defp validate_editable(changeset, %Requirement{archived_at: nil, status: :active}) do
+  defp validate_editable(changeset, %Requirement{archived_at: nil, status: status})
+       when status in [:analyzed, :active] do
     if Enum.any?([:title, :description], &Ecto.Changeset.changed?(changeset, &1)) do
       Ecto.Changeset.add_error(
         changeset,
         :status,
-        "only priority can be edited on active requirements"
+        "only priority can be edited on #{status} requirements"
       )
     else
       changeset

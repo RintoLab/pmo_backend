@@ -7,31 +7,34 @@ defmodule RintoPMO.TaskRequirementsTest do
   alias RintoPMO.Tasks
   alias RintoPMO.Tasks.Task
 
-  test "starting activates only the draft leaf, while completion stays manual" do
-    project = insert(:project)
-    parent = insert(:requirement, project: project)
-    requirement = insert(:requirement, project: project, parent: parent)
-    actor = insert(:actor)
-    task = insert(:task, project: project, requirement: requirement, assignee: actor)
+  test "starting activates only the draft or analyzed leaf, while completion stays manual" do
+    for status <- [:draft, :analyzed] do
+      project = insert(:project)
+      parent = insert(:requirement, project: project, status: status)
+      requirement = insert(:requirement, project: project, parent: parent, status: status)
+      actor = insert(:actor)
+      task = insert(:task, project: project, requirement: requirement, assignee: actor)
 
-    assert {:error, :task_not_yours} =
-             normalize_error(Tasks.transition_task(task, :start, insert(:actor).id))
+      assert {:error, :task_not_yours} =
+               normalize_error(Tasks.transition_task(task, :start, insert(:actor).id))
 
-    assert Requirements.get_requirement!(requirement.id).status == :draft
-    assert {:ok, started} = Tasks.transition_task(task, :start, actor.id)
-    assert Requirements.get_requirement!(requirement.id).status == :active
-    assert Requirements.get_requirement!(parent.id).status == :draft
-    assert {:ok, _done} = Tasks.transition_task(started, :complete, actor.id)
-    assert Requirements.get_requirement!(requirement.id).status == :active
+      assert Requirements.get_requirement!(requirement.id).status == status
+      assert {:ok, started} = Tasks.transition_task(task, :start, actor.id)
+      assert Requirements.get_requirement!(requirement.id).status == :active
+      assert Requirements.get_requirement!(parent.id).status == status
+      assert {:ok, _done} = Tasks.transition_task(started, :complete, actor.id)
+      assert Requirements.get_requirement!(requirement.id).status == :active
+    end
   end
 
-  test "starting preserves non-draft or archived markers without blocking the task" do
+  test "starting preserves active, closed or archived markers without blocking the task" do
     actor = insert(:actor)
 
     for attrs <- [
           %{status: :active},
           %{status: :completed},
-          %{status: :draft, archived_at: DateTime.utc_now()}
+          %{status: :draft, archived_at: DateTime.utc_now()},
+          %{status: :analyzed, archived_at: DateTime.utc_now()}
         ] do
       project = insert(:project)
       requirement = insert(:requirement, Map.put(attrs, :project, project))
@@ -68,7 +71,7 @@ defmodule RintoPMO.TaskRequirementsTest do
       assert errors_on(chset).requirement_id
     end
 
-    requirement = insert(:requirement, project: project, priority: 2)
+    requirement = insert(:requirement, project: project, priority: 2, status: :analyzed)
 
     assert {:ok, task} =
              Tasks.create_task(project, %{
@@ -77,6 +80,7 @@ defmodule RintoPMO.TaskRequirementsTest do
                repo_id: task_repo(project).id
              })
 
+    assert Requirements.get_requirement!(requirement.id).status == :analyzed
     assert task.requirement_id == requirement.id
     assert task.priority == 2
     refute :priority in Task.__schema__(:fields)
@@ -152,19 +156,24 @@ defmodule RintoPMO.TaskRequirementsTest do
            ]
   end
 
-  test "active requirements can be reprioritized, but content stays protected" do
+  test "analyzed and active requirements can be reprioritized, but content stays protected" do
     project = insert(:project)
     assert {:ok, draft} = Requirements.create_requirement(project, %{title: "Default"})
     assert draft.priority == 3
-    requirement = insert(:requirement, project: project, status: :active)
-    assert {:ok, updated} = Requirements.update_requirement(requirement, %{priority: 1})
-    assert updated.priority == 1
-    assert {:error, chset} = Requirements.update_requirement(requirement, %{title: "Changed"})
-    assert errors_on(chset).status
 
-    for priority <- [nil, 0, 6] do
-      assert {:error, chset} = Requirements.update_requirement(requirement, %{priority: priority})
-      assert errors_on(chset).priority
+    for status <- [:analyzed, :active] do
+      requirement = insert(:requirement, project: project, status: status)
+      assert {:ok, updated} = Requirements.update_requirement(requirement, %{priority: 1})
+      assert updated.priority == 1
+      assert {:error, chset} = Requirements.update_requirement(requirement, %{title: "Changed"})
+      assert errors_on(chset).status
+
+      for priority <- [nil, 0, 6] do
+        assert {:error, chset} =
+                 Requirements.update_requirement(requirement, %{priority: priority})
+
+        assert errors_on(chset).priority
+      end
     end
   end
 end

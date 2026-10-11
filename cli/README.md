@@ -350,11 +350,13 @@ that inherits its parent's project). Existing requirements are read and updated
 by ID alone. Descriptions are read verbatim from UTF-8 files. Creation may omit `--body` for
 an empty description. Updates replace only supplied fields; an empty body file
 clears the description. Title and description edits require a draft; priority
-can also be edited while active. Archived requirements and archived projects
+can also be edited while analyzed or active. Archived requirements and archived projects
 remain read-only. Project and parent cannot be changed through `update`.
-Status can be changed independently using `update <id> --status draft|active|completed`.
+Status can be changed independently using `update <id> --status draft|analyzed|active|completed`.
 It is a reversible progress marker, with no document or task prerequisites.
-Starting a task automatically marks its unarchived draft requirement active;
+`analyzed` means documents and planning are ready, awaiting implementation.
+This marker is set manually and does not validate documents or record analysis approval.
+Starting a task automatically marks its unarchived draft or analyzed requirement active;
 finishing tasks does not automatically complete the requirement.
 
 `requirement show` includes every kind of directly associated, unarchived document,
@@ -414,8 +416,8 @@ requirement ID in comment lines so subsequent calls can preserve that context.
 ### Requirement priority and task ownership
 
 `requirement create` and `requirement update` accept `--priority 1` through
-`--priority 5` (1 highest, default 3). Priority can change on an unarchived draft
-or active requirement in an active project. Titles and descriptions remain draft-only.
+`--priority 5` (1 highest, default 3). Priority can change on an unarchived draft,
+analyzed or active requirement in an active project. Titles and descriptions remain draft-only.
 
 Task creation JSON must include `requirement_id`, naming an open leaf requirement
 in the selected project. Task priority is read-only and follows that requirement

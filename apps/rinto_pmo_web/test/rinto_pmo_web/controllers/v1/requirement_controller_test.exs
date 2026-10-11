@@ -6,6 +6,7 @@ defmodule RintoPMOWeb.V1.RequirementControllerTest do
   alias RintoPMO.Repo
   alias RintoPMO.Requirements
   alias RintoPMO.Requirements.Requirement
+  alias RintoPMO.Requirements.Tree
 
   setup do
     project = insert(:project)
@@ -385,7 +386,8 @@ defmodule RintoPMOWeb.V1.RequirementControllerTest do
     child = insert(:requirement, project: project, parent: parent)
     task = insert(:task, project: project, requirement: child)
 
-    for status <- ["completed", "active", "draft"], requirement <- [parent, child] do
+    for status <- ["analyzed", "active", "completed", "analyzed", "draft"],
+        requirement <- [parent, child] do
       result = patch(conn, ~p"/api/v1/requirements/#{requirement.id}", %{status: status})
       assert json_response(result, 200)["data"]["status"] == status
       assert Repo.get!(RintoPMO.Tasks.Task, task.id).status == :open
@@ -409,6 +411,34 @@ defmodule RintoPMOWeb.V1.RequirementControllerTest do
     assert conn
            |> patch(~p"/api/v1/requirements/#{child.id}", %{status: "active"})
            |> json_response(422)
+  end
+
+  test "analyzed is persisted through scoped updates and remains open for children", %{
+    conn: conn,
+    project: project
+  } do
+    parent = insert(:requirement, project: project)
+    path = ~p"/api/v1/projects/#{project.slug}/requirements/#{parent.id}"
+
+    assert json_response(put(conn, path, %{status: "analyzed"}), 200)["data"]["status"] ==
+             "analyzed"
+
+    assert json_response(get(conn, path), 200)["data"]["status"] == "analyzed"
+    listed = json_response(get(conn, ~p"/api/v1/requirements"), 200)["data"]
+    assert Enum.find(listed, &(&1["id"] == parent.id))["status"] == "analyzed"
+
+    child = post(conn, ~p"/api/v1/requirements", %{parent_id: parent.id, title: "Child"})
+    child_id = json_response(child, 201)["data"]["id"]
+    tree = Tree.load([project.id])
+    assert Tree.open?(Requirements.get_requirement!(parent.id))
+
+    assert Tree.descendants(tree, [parent.id], true) ==
+             Enum.sort([parent.id, child_id])
+
+    {:ok, _} = Requirements.archive_requirement(Requirements.get_requirement!(child_id))
+    {:ok, archived} = Requirements.archive_requirement(Requirements.get_requirement!(parent.id))
+    refute Tree.open?(archived)
+    assert json_response(patch(conn, path, %{status: "analyzed"}), 422)
   end
 
   test "clients cannot change project or archive timestamps", %{

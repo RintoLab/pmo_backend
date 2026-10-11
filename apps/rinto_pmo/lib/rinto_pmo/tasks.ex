@@ -215,7 +215,8 @@ defmodule RintoPMO.Tasks do
         {:ok, started} ->
           from(r in RintoPMO.Requirements.Requirement,
             where:
-              r.id == ^started.requirement_id and r.status == :draft and is_nil(r.archived_at)
+              r.id == ^started.requirement_id and r.status in [:draft, :analyzed] and
+                is_nil(r.archived_at)
           )
           |> Repo.update_all(set: [status: :active, updated_at: DateTime.utc_now()])
 
@@ -1240,7 +1241,7 @@ defmodule RintoPMO.Tasks do
 
     case requirement do
       %Requirement{project_id: ^project_id, archived_at: nil, status: status}
-      when status in [:draft, :active] ->
+      when status in [:draft, :analyzed, :active] ->
         if Repo.exists?(
              from child in Requirement,
                where: child.parent_id == ^id and is_nil(child.archived_at)

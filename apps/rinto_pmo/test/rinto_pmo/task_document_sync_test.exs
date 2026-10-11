@@ -46,6 +46,16 @@ defmodule RintoPMO.TaskDocumentSyncTest do
     }
   end
 
+  test "analyzed requirements can synchronize tasks without becoming active", ctx do
+    ctx.requirement |> Ecto.Changeset.change(status: :analyzed) |> Repo.update!()
+
+    assert {:ok, result} =
+             Tasks.sync_document(ctx.document, payload(ctx.revision, [ctx.item]))
+
+    assert [%{action: :created}] = result.items
+    assert RintoPMO.Requirements.get_requirement!(ctx.requirement.id).status == :analyzed
+  end
+
   test "creates work in multiple repos and retries reuse IDs and execution data", ctx do
     second = %{ctx.item | "key" => "T002", "repo_id" => ctx.frontend.id}
     input = payload(ctx.revision, [ctx.item, second])

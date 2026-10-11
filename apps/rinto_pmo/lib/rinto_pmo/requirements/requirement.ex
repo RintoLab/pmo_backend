@@ -13,7 +13,11 @@ defmodule RintoPMO.Requirements.Requirement do
     field :title, :string
     field :description, :string, default: ""
     field :priority, :integer, default: 3
-    field :status, Ecto.Enum, values: [:draft, :active, :completed, :cancelled], default: :draft
+
+    field :status, Ecto.Enum,
+      values: [:draft, :analyzed, :active, :completed, :cancelled],
+      default: :draft
+
     field :archived_at, :utc_datetime_usec
     belongs_to :project, Project
     belongs_to :parent, __MODULE__
@@ -28,7 +32,7 @@ defmodule RintoPMO.Requirements.Requirement do
     |> metadata_changeset(attrs)
     |> cast(attrs, [:status], empty_values: [])
     |> validate_required([:status])
-    |> validate_inclusion(:status, [:draft, :active, :completed])
+    |> validate_inclusion(:status, [:draft, :analyzed, :active, :completed])
     |> reject_fields(attrs, [:parent_id])
   end
 

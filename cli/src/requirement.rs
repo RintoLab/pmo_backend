@@ -91,7 +91,7 @@ pub struct CreateArgs {
 #[derive(Args)]
 pub struct UpdateArgs {
     /// Progress marker; may be changed back without changing tasks
-    #[arg(long, value_parser = ["draft", "active", "completed"])]
+    #[arg(long, value_parser = ["draft", "analyzed", "active", "completed"])]
     status: Option<String>,
 
     #[command(flatten)]
@@ -738,19 +738,31 @@ mod tests {
 
     #[test]
     fn status_only_update_sends_a_progress_marker() {
-        let server = StubServer::start(vec![Reply::json(200, json!({"data": {"id": "req-id"}}))]);
-        update(
-            &client(&server),
-            UpdateArgs {
-                status: Some("completed".into()),
-                priority: None,
-                requirement: scope(),
-                title: None,
-                body: None,
-            },
-        )
-        .unwrap();
-        assert_eq!(server.requests()[0].json(), json!({"status": "completed"}));
+        for status in ["draft", "analyzed", "active", "completed"] {
+            assert!(Cli::try_parse_from([
+                "rinto-pmo",
+                "requirement",
+                "update",
+                "req-id",
+                "--status",
+                status
+            ])
+            .is_ok());
+            let server =
+                StubServer::start(vec![Reply::json(200, json!({"data": {"id": "req-id"}}))]);
+            update(
+                &client(&server),
+                UpdateArgs {
+                    status: Some(status.into()),
+                    priority: None,
+                    requirement: scope(),
+                    title: None,
+                    body: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(server.requests()[0].json(), json!({"status": status}));
+        }
         assert!(Cli::try_parse_from([
             "rinto-pmo",
             "requirement",

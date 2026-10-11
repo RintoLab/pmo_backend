@@ -58,7 +58,7 @@ defmodule RintoPMO.Tasks.DocumentSync do
         invalid(:requirement_id, "must belong to an open leaf requirement")
 
       requirement.project_id != project.id or requirement.archived_at != nil or
-          requirement.status not in [:draft, :active] ->
+          requirement.status not in [:draft, :analyzed, :active] ->
         invalid(:requirement_id, "must belong to an open leaf requirement in this project")
 
       Repo.exists?(
