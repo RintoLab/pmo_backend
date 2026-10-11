@@ -91,6 +91,7 @@ defmodule RintoPMOWeb.Router do
     post "/requirements", RequirementController, :create_unscoped
     post "/requirements/estimate", RequirementController, :estimate
     post "/requirements/:id/prioritize", RequirementController, :prioritize
+    post "/requirements/:id/schedule", RequirementController, :schedule
 
     get "/requirements/:id", RequirementController, :show_by_id
     patch "/requirements/:id", RequirementController, :update_by_id

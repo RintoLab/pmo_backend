@@ -90,6 +90,71 @@ defmodule RintoPMO.Tasks do
     end
   end
 
+  @doc """
+  Schedules only live backlog tasks in the supplied requirements.
+
+  Locks tasks before selecting candidates so concurrent batch requests cannot
+  replace an existing plan. All writes and dependency checks share a transaction:
+  edges are checked against the final batch, never a partially moved dependency chain.
+  """
+  def schedule_unplanned_tasks(requirement_ids, %Date{} = day) do
+    Repo.transact(fn ->
+      tasks =
+        Task.with_priority()
+        |> where([task], task.requirement_id in ^requirement_ids)
+        |> order_by([task], task.id)
+        |> lock([task], fragment("FOR UPDATE OF ?", task))
+        |> Repo.all()
+
+      {targets, skipped} = Enum.split_with(tasks, &is_nil(schedule_skip_reason(&1)))
+
+      with {:ok, updated} <- write_schedule_batch(targets, day),
+           :ok <- check_schedule_batch(updated) do
+        {:ok,
+         %{
+           tasks: updated,
+           skipped: Enum.map(skipped, &%{task_id: &1.id, reason: schedule_skip_reason(&1)})
+         }}
+      else
+        {:error, code, details} -> {:error, {code, details}}
+        error -> error
+      end
+    end)
+    |> unwrap_refusal()
+  end
+
+  defp schedule_skip_reason(task) do
+    cond do
+      task.status not in [:open, :in_progress] -> :not_live
+      not is_nil(task.planned_start_on) -> :already_scheduled
+      true -> nil
+    end
+  end
+
+  defp write_schedule_batch(tasks, day) do
+    Enum.reduce_while(tasks, {:ok, []}, fn task, {:ok, updated} ->
+      case task |> Task.changeset(%{planned_start_on: day}) |> Repo.update() do
+        {:ok, task} -> {:cont, {:ok, [task | updated]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, updated} -> {:ok, Enum.reverse(updated)}
+      error -> error
+    end
+  end
+
+  defp check_schedule_batch(tasks) do
+    Enum.reduce_while(tasks, :ok, fn task, :ok ->
+      with :ok <- check_dependency_schedule(task, list_dependencies(task)),
+           :ok <- check_dependents_schedule(task, list_dependents(task)) do
+        {:cont, :ok}
+      else
+        error -> {:halt, error}
+      end
+    end)
+  end
+
   # The transaction exists so the index is written with the task rather than
   # after it -- see `RintoPMO.Links`. It is also where `create_task/2` and
   # `update_task/2` each keep the rest of their one-atomic-act work.

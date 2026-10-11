@@ -675,6 +675,73 @@ paths:
               schema:
                 $ref: "#/components/schemas/APIError"
 
+  /requirements/{id}/schedule:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Requirements]
+      operationId: scheduleRequirement
+      summary: Atomically schedule a requirement's live backlog tasks
+      description: >-
+        Expands the requirement and its open descendants across repositories. The selected
+        requirement and all ancestors must be open (draft, analyzed or active) and unarchived
+        in an active project. Closed or archived descendant branches are excluded entirely.
+        Only open/in_progress tasks with a null planned_start_on are changed. Existing plans,
+        done/cancelled tasks and tasks outside this hierarchy are preserved. Skipped tasks
+        within the included hierarchy are returned with reasons; excluded branches are not
+        listed. Tasks without estimates can be selected too.
+        Sets the exact requested earliest start date; it does not normalize to Monday or
+        guarantee that all work fits that day/week. GET /schedule retains responsibility for
+        capacity packing and overflow. first_planned_on is set only when absent.
+        All dependency checks use the final batch state, including incoming and outgoing
+        cross-requirement/project dependencies. A conflict rolls back the entire batch and
+        never moves external dependencies. Repeated requests preserve already scheduled work;
+        an empty selection returns 200 with an empty tasks array. This is a one-time operation:
+        tasks created later are not automatically scheduled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planned_start_on]
+              properties:
+                planned_start_on:
+                  type: string
+                  format: date
+                  example: '2026-10-14'
+              additionalProperties: false
+      responses:
+        "200":
+          description: Work scheduled atomically, or no eligible backlog tasks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequirementScheduleResponse"
+        "400":
+          description: Invalid id/date/body, or a closed requirement hierarchy/project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >-
+            No tasks changed. dependency_out_of_order details contain task_id,
+            planned_start_on, depends_on_id and depends_on_planned_start_on
+            (null for an unscheduled prerequisite). Task changeset failures return
+            validation_error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+
   /requirements/estimate:
     post:
       tags: [Requirements]
@@ -5094,6 +5161,43 @@ components:
             unestimated_tasks_remaining:
               type: integer
               minimum: 0
+          additionalProperties: false
+      additionalProperties: false
+    RequirementScheduleResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [requirement_id, planned_start_on, tasks, skipped]
+          properties:
+            requirement_id:
+              type: string
+              format: uuid
+            planned_start_on:
+              type: string
+              format: date
+            tasks:
+              type: array
+              description: Updated tasks, ordered by id. Empty on a successful no-op.
+              items:
+                $ref: "#/components/schemas/Task"
+            skipped:
+              type: array
+              description: >-
+                Unchanged tasks in the included open hierarchy, ordered by id.
+                not_live takes precedence over already_scheduled for terminal tasks.
+              items:
+                type: object
+                required: [task_id, reason]
+                properties:
+                  task_id:
+                    type: string
+                    format: uuid
+                  reason:
+                    type: string
+                    enum: [not_live, already_scheduled]
+                additionalProperties: false
           additionalProperties: false
       additionalProperties: false
     RequirementEstimationResponse:

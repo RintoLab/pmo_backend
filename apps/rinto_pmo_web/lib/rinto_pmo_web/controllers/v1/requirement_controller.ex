@@ -5,6 +5,12 @@ defmodule RintoPMOWeb.V1.RequirementController do
   alias RintoPMO.Projects
   alias RintoPMO.Requirements
 
+  def schedule(conn, %{"id" => id}) do
+    with {:ok, result} <- Requirements.Scheduling.request(id, conn.body_params) do
+      render(conn, :schedule, result: result)
+    end
+  end
+
   def prioritize(conn, %{"id" => id}) do
     with {:ok, job} <- Requirements.Prioritization.request(id) do
       conn |> put_status(:accepted) |> json(%{data: job})
