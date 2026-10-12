@@ -13,6 +13,96 @@ defmodule RintoPMOWeb.V1.RequirementControllerTest do
     {:ok, project: project}
   end
 
+  test "lists compute stages from direct unarchived documents with task > plan > spec", %{
+    conn: conn,
+    project: project
+  } do
+    entries =
+      for {kinds, stage} <- [
+            {[], nil},
+            {[:general, :rfc], nil},
+            {[:spec], "spec"},
+            {[:plan, :spec, :plan], "plan"},
+            {[:task, :plan, :spec, :task], "task"}
+          ] do
+        requirement = insert(:requirement, project: project)
+
+        for kind <- kinds do
+          insert(:document, project: project, requirement: requirement, kind: kind)
+        end
+
+        insert(:document,
+          project: project,
+          requirement: requirement,
+          kind: :task,
+          archived_at: DateTime.utc_now()
+        )
+
+        {requirement.id, stage}
+      end
+
+    {parent_id, _} = hd(entries)
+    child = insert(:requirement, project: project, parent_id: parent_id)
+    insert(:document, project: project, requirement: child, kind: :task, status: :applied)
+    other_project = insert(:project)
+    other = insert(:requirement, project: other_project, status: :analyzed)
+    insert(:document, project: other_project, requirement: other, kind: :spec, status: :formal)
+    insert(:document, project: project, kind: :task)
+
+    for path <- [~p"/api/v1/requirements", ~p"/api/v1/projects/#{project.slug}/requirements"] do
+      data = conn |> get(path) |> json_response(200) |> Map.fetch!("data")
+
+      expected =
+        if path == "/api/v1/requirements", do: [{other.id, "spec"} | entries], else: entries
+
+      assert Map.new(data, &{&1["id"], Map.fetch!(&1, "stage")}) == Map.new(expected)
+
+      children = conn |> get(path, %{parent_id: parent_id}) |> json_response(200)
+      assert [%{"id" => id, "stage" => "task"}] = children["data"]
+      assert id == child.id
+
+      all = conn |> get(path, %{parent_id: "all"}) |> json_response(200)
+
+      assert Map.new(all["data"], &{&1["id"], &1["stage"]}) ==
+               Map.new([{child.id, "task"} | expected])
+    end
+  end
+
+  test "stage is recomputed after document changes and returned by details and updates", %{
+    conn: conn,
+    project: project
+  } do
+    requirement = insert(:requirement, project: project)
+    insert(:document, project: project, requirement: requirement, kind: :spec)
+    plan = insert(:document, project: project, requirement: requirement, kind: :plan)
+    insert(:document_revision, document: plan)
+    task = insert(:document, project: project, requirement: requirement, kind: :task)
+
+    paths = [
+      ~p"/api/v1/requirements/#{requirement.id}",
+      ~p"/api/v1/projects/#{project.slug}/requirements/#{requirement.id}"
+    ]
+
+    for path <- paths do
+      assert json_response(get(conn, path), 200)["data"]["stage"] == "task"
+      updated = conn |> patch(path, %{priority: 2}) |> json_response(200)
+      assert updated["data"]["stage"] == "task"
+      assert updated["data"]["status"] == "draft"
+    end
+
+    {:ok, _} = Documents.archive_document(task)
+
+    for path <- paths do
+      assert json_response(get(conn, path), 200)["data"]["stage"] == "plan"
+    end
+
+    {:ok, _} = Documents.update_document_metadata(plan, %{kind: "general"})
+
+    for path <- paths do
+      assert json_response(get(conn, path), 200)["data"]["stage"] == "spec"
+    end
+  end
+
   test "both list endpoints sort on the server with stable ties and parent filtering", %{
     conn: conn,
     project: project
@@ -101,6 +191,7 @@ defmodule RintoPMOWeb.V1.RequirementControllerTest do
 
     assert root["project"]["slug"] == project.slug
     assert root["documents"] == []
+    assert Map.fetch!(root, "stage") == nil
     assert root["parent_id"] == nil
 
     child =
@@ -293,6 +384,7 @@ defmodule RintoPMOWeb.V1.RequirementControllerTest do
     assert data["project_id"] == project.id
     assert data["title"] == "第三方登录"
     assert data["description"] == ""
+    assert Map.fetch!(data, "stage") == nil
     assert data["status"] == "draft"
     assert data["archived_at"] == nil
     refute Map.has_key?(data, "repo_ids")

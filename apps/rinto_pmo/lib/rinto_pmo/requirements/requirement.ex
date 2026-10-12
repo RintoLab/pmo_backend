@@ -23,6 +23,7 @@ defmodule RintoPMO.Requirements.Requirement do
     belongs_to :parent, __MODULE__
     field :child_count, :integer, virtual: true, default: 0
     field :workload, :map, virtual: true
+    field :stage, :string, virtual: true
     timestamps()
   end
 

@@ -25,6 +25,7 @@ defmodule RintoPMOWeb.V1.RequirementJSON do
         :description,
         :priority,
         :status,
+        :stage,
         :archived_at,
         :inserted_at,
         :updated_at

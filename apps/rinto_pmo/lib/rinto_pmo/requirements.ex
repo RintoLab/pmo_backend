@@ -4,6 +4,7 @@ defmodule RintoPMO.Requirements do
   """
   use RintoPMO, :context
 
+  alias RintoPMO.Documents.Document
   alias RintoPMO.Projects.Project
   alias RintoPMO.Requirements.Requirement
   alias RintoPMO.Requirements.Workload
@@ -22,6 +23,7 @@ defmodule RintoPMO.Requirements do
     |> parent_scope(parent_id)
     |> sort_requirements(sort)
     |> with_child_counts()
+    |> with_stages()
     |> Repo.all()
     |> Workload.load()
   end
@@ -30,6 +32,7 @@ defmodule RintoPMO.Requirements do
   def get_requirement!(%Project{id: project_id}, id) do
     Requirement
     |> with_child_counts()
+    |> with_stages()
     |> preload(:project)
     |> Repo.get_by!(id: id, project_id: project_id)
     |> Workload.load()
@@ -37,7 +40,12 @@ defmodule RintoPMO.Requirements do
 
   @spec get_requirement!(UUIDv7.t()) :: Requirement.t()
   def get_requirement!(id) do
-    Requirement |> with_child_counts() |> preload(:project) |> Repo.get!(id) |> Workload.load()
+    Requirement
+    |> with_child_counts()
+    |> with_stages()
+    |> preload(:project)
+    |> Repo.get!(id)
+    |> Workload.load()
   end
 
   @spec create_requirement(Project.t(), map()) ::
@@ -114,6 +122,33 @@ defmodule RintoPMO.Requirements do
       left_join: children in subquery(counts),
       on: children.parent_id == requirement.id,
       select_merge: %{child_count: coalesce(children.count, 0)}
+  end
+
+  # Stage records the furthest document kind reached, regardless of adoption.
+  # Aggregate direct documents once for the whole list, without loading bodies.
+  defp with_stages(query) do
+    stages =
+      from document in Document,
+        where: is_nil(document.archived_at) and document.kind in [:spec, :plan, :task],
+        group_by: document.requirement_id,
+        select: %{
+          requirement_id: document.requirement_id,
+          rank:
+            max(
+              fragment("CASE ? WHEN 'task' THEN 3 WHEN 'plan' THEN 2 ELSE 1 END", document.kind)
+            )
+        }
+
+    from requirement in query,
+      left_join: stage in subquery(stages),
+      on: stage.requirement_id == requirement.id,
+      select_merge: %{
+        stage:
+          fragment(
+            "CASE ? WHEN 3 THEN 'task' WHEN 2 THEN 'plan' WHEN 1 THEN 'spec' END",
+            stage.rank
+          )
+      }
   end
 
   # Create-only assignment keeps existing subtrees stable. A new row points

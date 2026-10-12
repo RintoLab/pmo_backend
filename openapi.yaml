@@ -5230,7 +5230,7 @@ components:
       additionalProperties: false
     Requirement:
       type: object
-      required: [id, project_id, parent_id, child_count, priority, workload, title, description, status, archived_at, inserted_at, updated_at]
+      required: [id, project_id, parent_id, child_count, priority, workload, title, description, status, stage, archived_at, inserted_at, updated_at]
       properties:
         workload:
           $ref: "#/components/schemas/RequirementWorkload"
@@ -5298,6 +5298,17 @@ components:
             documents and planning are ready for implementation, which has not started.
             Starting a task changes its unarchived draft or analyzed requirement to active.
             Marking analyzed is manual and does not validate documents or record analysis approval.
+        stage:
+          type: string
+          enum: [spec, plan, task, null]
+          nullable: true
+          readOnly: true
+          description: >-
+            Furthest stage among directly associated unarchived documents, with
+            task taking precedence over plan, then spec. All document statuses
+            count. Null when none exist. Excludes ancestor/descendant documents
+            and general/rfc documents. Computed independently of requirement status
+            and included in every list/detail/create/update response.
         archived_at:
           type: string
           format: date-time
