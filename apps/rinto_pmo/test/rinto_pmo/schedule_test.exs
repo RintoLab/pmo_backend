@@ -117,6 +117,32 @@ defmodule RintoPMO.ScheduleTest do
     end
   end
 
+  test "a task larger than a day spans days within its week", %{
+    week: week,
+    days: [monday, tuesday | _]
+  } do
+    task = scheduled(720, planned_start_on: monday)
+    plan = week |> Schedule.pack(week) |> for_week(week)
+
+    assert [%{day: ^monday, minutes: 480}, %{day: ^tuesday, minutes: 240}] = plan.allocations
+    assert allocated_ids(plan) == [task.id, task.id]
+    assert plan.overflow == []
+  end
+
+  test "a task larger than a full week remains overflow without partial allocation", %{
+    week: week,
+    next_week: next_week
+  } do
+    task = scheduled(3000, planned_start_on: week)
+    plans = Schedule.pack(week, next_week)
+
+    for week <- [week, next_week] do
+      plan = for_week(plans, week)
+      assert plan.allocations == []
+      assert Enum.map(plan.overflow, & &1.id) == [task.id]
+    end
+  end
+
   describe "pack/2 overflow" do
     test "what does not fit is reported by name rather than pushed forward", %{
       week: week,

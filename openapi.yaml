@@ -6377,7 +6377,7 @@ components:
           nullable: true
           readOnly: true
           description: Three ordered whole-minute estimates (optimistic, likely, pessimistic),
-            or null. Each is at most 480 minutes. Expected minutes are derived using PERT.
+            or null. Values are non-negative and may exceed one working day. Expected minutes are derived using PERT.
         difficulty:
           type: integer
           nullable: true
@@ -6554,7 +6554,7 @@ components:
           - "$ref": "#/components/schemas/TaskEstimateInput"
           nullable: true
           description: Three ordered whole-minute estimates (optimistic, likely, pessimistic),
-            or null. Each is at most 480 minutes. Expected minutes are derived using PERT.
+            or null. Values are non-negative and may exceed one working day. Expected minutes are derived using PERT.
         difficulty:
           type: integer
           nullable: true
@@ -6620,7 +6620,7 @@ components:
           - "$ref": "#/components/schemas/TaskEstimateInput"
           nullable: true
           description: Three ordered whole-minute estimates (optimistic, likely, pessimistic),
-            or null. Each is at most 480 minutes. Expected minutes are derived using PERT.
+            or null. Values are non-negative and may exceed one working day. Expected minutes are derived using PERT.
         difficulty:
           type: integer
           nullable: true

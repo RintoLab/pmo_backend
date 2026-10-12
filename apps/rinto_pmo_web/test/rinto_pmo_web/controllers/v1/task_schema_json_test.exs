@@ -2,7 +2,7 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
   @moduledoc """
   The served schema is only worth anything if it is still true, so these tests
   put it against the domain rather than against a copy of itself: the enums
-  and the ceiling have to be the ones `RintoPMO.Tasks.Task` publishes, and
+  have to be the ones `RintoPMO.Tasks.Task` publishes, and
   every example it advertises has to be a body `RintoPMO.Tasks` accepts.
 
   That last one is the point of the file. An example that stopped working is
@@ -44,10 +44,11 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSONTest do
       assert properties["difficulty"]["enum"] == Task.difficulties()
       refute Map.has_key?(properties, "priority")
 
-      assert properties["estimate"]["properties"]["pessimistic"]["maximum"] ==
-               Task.estimate_ceiling()
-
-      assert properties["estimate"]["description"] =~ "#{Task.estimate_ceiling()} minutes"
+      for field <- ~w(optimistic likely pessimistic) do
+        schema = properties["estimate"]["properties"][field]
+        assert schema["minimum"] == 0
+        refute Map.has_key?(schema, "maximum")
+      end
     end
 
     # They are dropped before the changeset sees them, so a client that used

@@ -1327,40 +1327,26 @@ defmodule RintoPMO.TasksTest do
     end
   end
 
-  describe "estimate ceiling" do
-    test "refuses an estimate larger than a working day" do
+  describe "estimates beyond one day" do
+    test "creates and updates estimates without a one-day ceiling" do
       project = insert(:project)
-      ceiling = Task.estimate_ceiling()
-
-      assert {:error, :invalid_estimate, %{field: "pessimistic", reason: reason}} =
-               create_task(project, %{
-                 "title" => "A week of work in one row",
-                 "estimate" => %{
-                   "optimistic" => 60,
-                   "likely" => 120,
-                   "pessimistic" => ceiling + 1
-                 }
-               })
-
-      assert reason =~ "at most #{ceiling}"
-      assert reason =~ "smaller tasks"
-    end
-
-    test "accepts an estimate that is exactly a working day" do
-      project = insert(:project)
-      ceiling = Task.estimate_ceiling()
 
       assert {:ok, task} =
                create_task(project, %{
-                 "title" => "A full day",
-                 "estimate" => %{
-                   "optimistic" => ceiling,
-                   "likely" => ceiling,
-                   "pessimistic" => ceiling
-                 }
+                 "title" => "Several days of work",
+                 "estimate" => %{"optimistic" => 600, "likely" => 960, "pessimistic" => 1800}
                })
 
-      assert Task.expected(task) == ceiling
+      assert Task.expected(task) == 1040
+      assert task.estimate_pessimistic == 1800
+
+      assert {:ok, updated} =
+               Tasks.update_task(task, %{
+                 "estimate" => %{"optimistic" => 120, "likely" => 240, "pessimistic" => 600}
+               })
+
+      assert updated.estimate_pessimistic == 600
+      assert Task.expected(updated) == 280
     end
   end
 

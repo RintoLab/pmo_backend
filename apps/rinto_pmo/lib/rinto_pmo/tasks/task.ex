@@ -17,11 +17,6 @@ defmodule RintoPMO.Tasks.Task do
   @difficulties [1, 2, 3, 5, 8, 13, 21]
   @priorities [1, 2, 3, 4, 5]
 
-  # One working day, in minutes. The ceiling on a three-point estimate, and the
-  # reason `RintoPMO.Schedule` never has to special-case a task that cannot fit
-  # anywhere: no work item is larger than a day.
-  @estimate_ceiling 480
-
   # The event table, read as "from this status, this event lands there".
   # Anything absent is a `task_state_conflict`; there is no silent no-op,
   # because "complete" arriving twice from two clients is a fact worth
@@ -122,9 +117,6 @@ defmodule RintoPMO.Tasks.Task do
       join: requirement in assoc(task, :requirement),
       select_merge: %{priority: requirement.priority}
   end
-
-  @spec estimate_ceiling() :: pos_integer()
-  def estimate_ceiling, do: @estimate_ceiling
 
   @doc """
   The PERT expected value of a three-point estimate, in minutes.

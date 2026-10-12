@@ -807,7 +807,7 @@ defmodule RintoPMO.Tasks do
         :invalid ->
           {:halt,
            {:error,
-            "invalid estimate for #{task.id}; use ordered whole minutes up to #{Task.estimate_ceiling()}, or create smaller tasks"}}
+            "invalid estimate for #{task.id}; use non-negative whole minutes with optimistic <= likely <= pessimistic"}}
 
         _changed ->
           {:halt, {:error, "task #{task.id} changed during estimation; run it again"}}
@@ -950,8 +950,7 @@ defmodule RintoPMO.Tasks do
     estimate = stringify_keys(estimate)
 
     with {:ok, values} <- fetch_estimate_values(estimate),
-         :ok <- validate_estimate_order(values),
-         :ok <- validate_estimate_ceiling(values) do
+         :ok <- validate_estimate_order(values) do
       flat = Map.new(values, fn {field, value} -> {"estimate_" <> field, value} end)
       {:ok, Map.merge(attrs, flat)}
     end
@@ -985,19 +984,6 @@ defmodule RintoPMO.Tasks do
       optimistic > likely -> estimate_error("likely", "must be ordered")
       likely > pessimistic -> estimate_error("pessimistic", "must be ordered")
       true -> :ok
-    end
-  end
-
-  defp validate_estimate_ceiling([_optimistic, _likely, {_, pessimistic}]) do
-    ceiling = Task.estimate_ceiling()
-
-    if pessimistic > ceiling do
-      estimate_error(
-        "pessimistic",
-        "must be at most #{ceiling} minutes; create smaller tasks instead"
-      )
-    else
-      :ok
     end
   end
 

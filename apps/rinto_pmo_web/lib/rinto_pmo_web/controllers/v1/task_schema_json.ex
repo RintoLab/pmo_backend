@@ -216,10 +216,10 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
         A three-point estimate in minutes, all three or null to clear: a
         half-given three-point estimate has no expected value, so it is not a
         smaller estimate but a broken one. Must satisfy
-        `optimistic <= likely <= pessimistic`, and no point may exceed
-        #{Task.estimate_ceiling()} minutes -- one working day. A job that
-        wants more was not broken down far enough, and creating smaller tasks is the
-        answer rather than a wider day.
+        `0 <= optimistic <= likely <= pessimistic`, with whole-minute values.
+        Estimates may exceed one working day; do not cap them to fit a schedule.
+        Large tasks may benefit from splitting, but that does not prevent saving
+        an honest estimate.
 
         What is being estimated is what the task costs the person planning it,
         not how long it takes to happen: work handed to an agent still costs
@@ -256,9 +256,9 @@ defmodule RintoPMOWeb.V1.TaskSchemaJSON do
 
   defp estimate_properties do
     %{
-      optimistic: %{type: "integer", minimum: 0, maximum: Task.estimate_ceiling()},
-      likely: %{type: "integer", minimum: 0, maximum: Task.estimate_ceiling()},
-      pessimistic: %{type: "integer", minimum: 0, maximum: Task.estimate_ceiling()}
+      optimistic: %{type: "integer", minimum: 0},
+      likely: %{type: "integer", minimum: 0},
+      pessimistic: %{type: "integer", minimum: 0}
     }
   end
 end

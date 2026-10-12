@@ -140,11 +140,28 @@ defmodule RintoPMO.RequirementEstimationTest do
     assert Tasks.get_task!(task.id).estimate_likely == 10
   end
 
-  test "invalid, duplicate, missing or oversized results write none of the batch", ctx do
+  test "saves a complete AI batch with estimates beyond one day", ctx do
     configure()
     first = insert(:task, project: ctx.project, requirement: ctx.leaf)
     second = insert(:task, project: ctx.project, requirement: ctx.leaf)
-    bad = Map.put(estimate(second), "pessimistic", 481)
+
+    items = [
+      %{"id" => first.id, "optimistic" => 120, "likely" => 240, "pessimistic" => 600},
+      %{"id" => second.id, "optimistic" => 600, "likely" => 960, "pessimistic" => 1800}
+    ]
+
+    expect(TaskEstimatorMock, :estimate_time, fn _input, _opts -> {:ok, items} end)
+    assert :ok = perform(ctx.leaf.id)
+    assert Tasks.get_task!(first.id).estimate_pessimistic == 600
+    assert Tasks.get_task!(second.id).estimate_likely == 960
+    assert Estimation.targets(ctx.leaf.id) == []
+  end
+
+  test "invalid, duplicate or missing results write none of the batch", ctx do
+    configure()
+    first = insert(:task, project: ctx.project, requirement: ctx.leaf)
+    second = insert(:task, project: ctx.project, requirement: ctx.leaf)
+    bad = Map.put(estimate(second), "pessimistic", 1)
 
     for items <- [
           [estimate(first)],
