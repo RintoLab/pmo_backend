@@ -30,6 +30,7 @@ defmodule RintoPMO.Agent.Print do
           | :empty_output
           | {:pi_exit, non_neg_integer(), String.t()}
           | {:provider_refused, String.t()}
+          | {:input_failed, term()}
           | {:spawn_failed, term()}
 
   @type opt ::
@@ -133,7 +134,12 @@ defmodule RintoPMO.Agent.Print do
 
   defp call(system_prompt, user_message, session_dir, opts, name) do
     id = "rinto-pmo-#{name}-#{System.unique_integer([:positive, :monotonic])}"
+    prompt_path = Path.join(session_dir, "system-prompt.txt")
+    File.write!(prompt_path, system_prompt)
 
+    # erlexec's launch packet is limited to 65,535 bytes. Keep prompt bodies
+    # out of argv: Pi reads the system prompt from a file and the user message
+    # from stdin, which erlexec sends in bounded chunks.
     args =
       [
         "--print",
@@ -144,8 +150,8 @@ defmodule RintoPMO.Agent.Print do
         "--session-dir",
         session_dir,
         "--system-prompt",
-        system_prompt
-      ] ++ model_args(opts) ++ [user_message]
+        prompt_path
+      ] ++ model_args(opts)
 
     start_opts = [
       id: id,
@@ -158,8 +164,15 @@ defmodule RintoPMO.Agent.Print do
 
     case OSProcess.start(start_opts) do
       {:ok, _pid} ->
-        _ = OSProcess.close_stdin(id)
-        collect(id, idle_timeout(opts), on_chunk(opts), %{deltas: [], answer: nil, stderr: []})
+        with :ok <- OSProcess.send(id, user_message),
+             :ok <- OSProcess.close_stdin(id) do
+          collect(id, idle_timeout(opts), on_chunk(opts), %{deltas: [], answer: nil, stderr: []})
+        else
+          {:error, reason} ->
+            _ = OSProcess.stop(id)
+            _ = drain(id)
+            {:error, {:input_failed, reason}}
+        end
 
       {:error, {:executable_not_found, _cmd}} ->
         {:error, :pi_not_found}
