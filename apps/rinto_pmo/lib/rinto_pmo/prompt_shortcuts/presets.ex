@@ -131,6 +131,7 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「明确需求」阶段。
       先运行 `rinto-pmo requirement show <id>` 读取最新需求、所属 Project 和相关文档。
       生成或修订 spec，先明确用户场景、范围、可测试要求和验收标准。
+      可标明独立场景的交付批次，保留完整目标和剩余范围；不省略后续 plan / task。
       只完成本阶段。已有同范围文档用 doc propose 修订，新文档通过 doc create 关联 requirement_id。
       关键歧义先询问；不要自行采纳文档、修改代码或跳到下一阶段。
       """
@@ -143,7 +144,8 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       prompt: """
       请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「澄清需求」阶段。
       先运行 `rinto-pmo requirement show <id>` 读取最新需求、所属 Project 和相关文档。
-      检查现有 spec 的关键歧义，逐个询问并将决定提案到文档中。
+      检查现有 spec 的关键歧义，按技能集中提出阻断问题和推荐答案，已有决定不重复询问。
+      合并本轮回答后局部提案，按影响范围复查；共享规则变化或基线不明时扩大检查。
       只完成本阶段。已有同范围文档用 doc propose 修订，新文档通过 doc create 关联 requirement_id。
       关键歧义先询问；不要自行采纳文档、修改代码或跳到下一阶段。
       """
@@ -157,6 +159,8 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「设计方案」阶段。
       先运行 `rinto-pmo requirement show <id>` 读取最新需求、所属 Project 和相关文档。
       基于已采纳 spec 和相关 Repo 的现状，生成或修订 plan，明确分仓库改动和共享契约。
+      详细设计前定位直接相关需求的共享接口、实体和状态，引用唯一规则来源，冲突集中提出。
+      按可独立验收和部署的场景安排交付，保留必要依赖、兼容性及发布顺序，不扫描无关需求。
       只完成本阶段。已有同范围文档用 doc propose 修订，新文档通过 doc create 关联 requirement_id。
       关键歧义先询问；不要自行采纳文档、修改代码或跳到下一阶段。
       """
@@ -170,6 +174,8 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「拆分任务」阶段。
       先运行 `rinto-pmo requirement show <id>` 读取最新需求、所属 Project 和相关文档。
       基于已采纳 spec / plan，生成或修订 kind=task 清单，提供稳定编号和每项的 Repo。
+      每批覆盖完整用户路径和必要依赖，明确剩余范围及最终验收；未决范围不编成可执行任务。
+      部分交付不等于整个需求完成；检查聚焦影响实现和验收的问题，不因措辞或格式阻断。
       只完成本阶段。已有同范围文档用 doc propose 修订，新文档通过 doc create 关联 requirement_id。
       关键歧义先询问；不要自行采纳文档、修改代码或跳到下一阶段。
       """
@@ -181,10 +187,12 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       icon: "file-search",
       prompt: """
       请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「一致性检查（analyze）」阶段。
-      先运行 `rinto-pmo requirement show <id>`，读取本需求的 spec、plan、task 完整正文及 revision，检查待处理提案。
-      核对规格覆盖、跨文档冲突、范围越界、共享契约、任务仓库归属和依赖，以及整体验收。
-      在话题中给出简短报告：检查的文档与版本、结论、问题位置与影响、建议回到哪个阶段修正。
-      区分阻断问题和非阻断建议；资料缺失、候选不明或待处理变更不能判为可同步。
+      先运行 `rinto-pmo requirement show <id>`，读取 spec、plan、task 最新正文及 revision，检查待处理提案。
+      首次检查完整链路；有可核实基线和差异时复查改动及关联场景，按技能的扩大检查条件处理。
+      核对本批覆盖、共享规则来源、任务归属、必要依赖和完整路径验收，以及剩余范围与最终验收安排。
+      报告输入版本、检查范围、所用基线及问题影响；局部结论不代表整个需求就绪。
+      阻断项须说明哪项实现或验收会出错；措辞、格式和可选扩展不阻断。
+      影响本批的资料缺失、候选不明或待处理变更未解决时不能判为可同步。
       只读检查，不创建或修改文档、不提案、不采纳、不修改代码或任务，也不自动同步任务。
       """
     },
@@ -197,6 +205,7 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       请使用 rinto-spec-workflow 技能，对当前引用的 Requirement 执行「同步任务」阶段。
       先运行 `rinto-pmo requirement show <id>` 读取最新需求、所属 Project 和相关文档。
       读取本需求已采纳的 task 文档，使用 task schema sync 与 task sync 提交结构化任务。
+      按文档中明确的执行条目同步，不把剩余范围或待决问题转换成任务，不把本批同步当作整个需求完成。
       只完成本阶段。已有同范围文档用 doc propose 修订，新文档通过 doc create 关联 requirement_id。
       关键歧义先询问；不要自行采纳文档、修改代码或跳到下一阶段。
       """
@@ -241,6 +250,7 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       从正文提取标题、说明和验收条件，并将明确的仓库名称映射到实际 repo_id。
       不增加文档未要求的工作，不根据复选框设置任务完成状态，不写优先级或估时。
       不把清单顺序或 [P] 标记猜成依赖关系。
+      分批交付时按文档中明确的执行条目同步，剩余范围和待决问题不是执行条目；本批同步不代表整个需求完成。
 
       写入 JSON 文件，base_revision_id 使用刚才实际读取的 revision id，随后执行：
       `rinto-pmo task sync <文档ID> --input <JSON文件>`。
@@ -259,35 +269,17 @@ defmodule RintoPMO.PromptShortcuts.Presets do
       label: "拆成任务",
       icon: "list-tree",
       prompt: """
-      根据我引用的文档，生成这个需求的 task 文档。
+      请使用 rinto-spec-workflow 技能，根据我引用的文档执行「拆分任务」阶段。
 
       用 `rinto-pmo doc show <id>` 完整读取源文档，取得 requirement_id；
       用 `rinto-pmo requirement show <id>` 读取需求描述、相关 spec / plan 文档和子需求信息。
       若未关联需求，或仍有子需求，说明需要先确定叶子需求，不要创建无归属的任务文档。
       用 `rinto-pmo project show <project_slug>` 读取实际登记的 Repo。
-      只拆分已明确的工作；规格或实施计划缺失关键决策时，先指出缺口。
-
-      任务按阶段或用户场景分组，用清单表达，每项拥有稳定的编号：
-
-      - [ ] T001 [Repo: backend] 实现验证码校验接口
-        - 说明与相关文件路径。
-        - 验收：有效和过期验证码分别得到规格规定的结果。
-      - [ ] T002 [Repo: frontend] 实现验证码校验界面
-        - 说明与验收条件来自需求和实施计划，不自行添加产品要求。
-
-      Repo 名称必须来自实际登记结果。每项只能属于一个 Repo；
-      需要多个 Repo 配合时分别创建不同编号的任务，允许标题相同。
-      阶段标题不是任务；一项应是开发机能领取并完成的一块工作。
-      可保留 [P]、[US1] 等可读标记，但它们不代替明确的任务依赖说明。
-      不估时，不另设任务优先级，不把复选框当作系统任务的执行状态。
-      编号在同一文档内唯一，之后增删条目不要重新编号或复用旧编号。
-      文档开头引用源 spec / plan，并说明依赖和整体验收条件。
-
-      如果需求已有对应的 task 文档，先读取它，保留编号并用 doc propose 提出修订；
-      不要每次都创建另一份文档，否则稳定编号会失去同一个文档的作用域。
-      首次生成时将 Markdown 写入文件并执行：
-      `rinto-pmo doc create --title "<需求标题> · 任务清单" --requirement-id <需求ID> --kind task --body tasks.md`。
-      不需要再传 project_id。先用 --dry-run 检查内容，再创建文档。
+      必须以已采纳的 spec 和 plan 为依据，保留三阶段职责；本批关键决策缺失时先指出影响。
+      按可独立运行、验收和部署的场景组织任务，保留必要依赖、剩余范围及最终整体验收安排。
+      未决范围不编成可执行任务，部分场景交付不能标记整个需求完成。
+      使用技能规定的稳定编号、单一 Repo 归属和可定位依据，不新增业务规则或技术方案。
+      已有同范围 task 文档用 doc propose 局部修订并保留编号；首次创建先用 doc create --dry-run 检查。
 
       这一步只生成供我审阅的文档，不创建系统任务。
       报告文档 ID；我采纳后可用「同步任务」将条目转成系统任务。
