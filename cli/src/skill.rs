@@ -919,8 +919,8 @@ mod tests {
     #[test]
     fn the_record_round_trips_and_keeps_one_row_per_installed_copy() {
         let skill = Skill {
-            name: "rinto-docs-reference",
-            body: "---\nname: rinto-docs-reference\n---\nbody",
+            name: "rinto-task-execution",
+            body: "---\nname: rinto-task-execution\n---\nbody",
         };
         let one = Path::new("/one/SKILL.md");
         let two = Path::new("/two/SKILL.md");
@@ -930,8 +930,8 @@ mod tests {
         state.record(&skill, one);
 
         assert_eq!(state.records.len(), 2);
-        assert!(state.find_at("rinto-docs-reference", one).is_some());
-        assert!(state.find_at("rinto-docs-reference", two).is_some());
+        assert!(state.find_at("rinto-task-execution", one).is_some());
+        assert!(state.find_at("rinto-task-execution", two).is_some());
 
         let restored = State::parse(&state.as_json());
         assert_eq!(restored.len(), 2);
@@ -1094,8 +1094,8 @@ mod tests {
     #[test]
     fn an_unrecorded_file_is_never_called_current() {
         let skill = Skill {
-            name: "rinto-docs-reference",
-            body: "---\nname: rinto-docs-reference\n---\nours",
+            name: "rinto-task-execution",
+            body: "---\nname: rinto-task-execution\n---\nours",
         };
 
         assert_eq!(
@@ -1103,7 +1103,7 @@ mod tests {
             "matches what this binary carries"
         );
 
-        let stale = unrecorded_status(&skill, "---\nname: rinto-docs-reference\n---\nolder");
+        let stale = unrecorded_status(&skill, "---\nname: rinto-task-execution\n---\nolder");
         assert!(!stale.contains("current"), "{stale}");
         assert!(stale.contains("differs"), "{stale}");
     }

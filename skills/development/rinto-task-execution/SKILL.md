@@ -1,5 +1,5 @@
 ---
-name: rinto-docs-reference
+name: rinto-task-execution
 description: 领取并执行 Rinto 项目任务，按任务关联的方案、规范和设计决策完成开发，并把开始、完成或释放状态同步回 Rinto。当用户要求处理 Rinto 任务、任务描述点名 Rinto 文档、需要按意思搜索项目里的内容、或需要确认项目既有约定时使用。
 ---
 

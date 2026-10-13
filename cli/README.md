@@ -278,6 +278,40 @@ are only reported, even with `sync --force`. Use the printed `skill install
 ... --force` command to explicitly replace those copies. Project repair
 commands include the project path so they work from another directory too.
 
+**Three skills have clearer names.** Their responsibilities are unchanged:
+
+| Previous name | Current name |
+| --- | --- |
+| `rinto-docs-reference` | `rinto-task-execution` |
+| `rinto-project-code` | `rinto-code-reference` |
+| `rinto-backlog-cleanup` | `rinto-task-cancellation` |
+
+New installations use only the current names. Existing installations need an
+explicit migration: `skill sync` does not rename files or install replacements
+for retired names. It drops their old records but leaves the old files in place,
+and `skill install --all` alone would leave both names discoverable.
+
+For each affected installation, move the old skill directory to a backup
+**outside every agent's skill search directory**, then install its replacement
+with the same destination options. For example, for a global Codex installation
+(run with a CLI built from the renamed skills):
+
+```sh
+backup_dir="$(mktemp -d "${TMPDIR:-/tmp}/rinto-skill-backup.XXXXXX")"
+mv "$HOME/.agents/skills/rinto-docs-reference" "$backup_dir/"
+rinto-pmo skill install rinto-task-execution --agent codex --global
+rinto-pmo skill sync --global
+```
+
+Keep that backup until any local customizations have been reviewed and reapplied
+to the new skill. Repeat for the other affected names and installed agents. For
+a project installation, use its skill directory and `--project <DIR>` for both
+install and sync; for a custom installation, install with `--dir <DIR>` and sync
+with `--global`. Update explicit skill references in your own instructions and
+start a new agent session or topic to load the new names. Perform the same
+migration for existing production agent installations before deploying the
+renamed server bundle; new installations derive their names from `skills/server/`.
+
 The release workflow derives the production installation list directly from
 `skills/server/`, then calls this existing command for each entry. Adding a
 skill to that bundle does not require another list in application or deployment

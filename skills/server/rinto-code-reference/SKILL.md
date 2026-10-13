@@ -1,5 +1,5 @@
 ---
-name: rinto-project-code
+name: rinto-code-reference
 description: 读项目的代码来支撑讨论。当用户问某个功能现在是怎么实现的、某段代码在哪、某个改动会牵动什么，或者要写的文档需要以现有实现为依据时使用。涵盖怎么拿到代码所在的位置、分支怎么选、快照有多新、以及读到的代码在 Rinto 里算什么。
 ---
 

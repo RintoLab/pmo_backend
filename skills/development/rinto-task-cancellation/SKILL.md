@@ -1,5 +1,5 @@
 ---
-name: rinto-backlog-cleanup
+name: rinto-task-cancellation
 description: 在 Rinto 里作废被新方案取代的旧任务。当一份新的方案文档已经落库成任务、需要清掉它顶替掉的旧活，或用户说「这些任务不用做了」「新方案取代了之前的安排」时使用。逐条向用户确认后才调用 cancel，不自行决定。
 ---
 
@@ -8,7 +8,7 @@ description: 在 Rinto 里作废被新方案取代的旧任务。当一份新的
 Rinto 里改变计划的方式是**写新文档**，不是回头改老任务。新方案落库之后，
 被它顶替掉的旧活还留在 backlog 里 —— 这个 skill 就是把那些活作废掉。
 
-**这不是执行任务的流程。** 领取和完成任务看 `rinto-docs-reference`。
+**这不是执行任务的流程。** 领取和完成任务看 `rinto-task-execution`。
 
 ## 一条硬规矩：你提名单，人点头
 

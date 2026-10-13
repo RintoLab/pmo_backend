@@ -41,7 +41,7 @@
 #
 #   ~/.local/bin/rinto-pmo         on the unit's PATH -- see pmo_backend.service
 #   ~/.pi/agent/skills/rinto-document-authoring/SKILL.md
-#   ~/.pi/agent/skills/rinto-project-code/SKILL.md
+#   ~/.pi/agent/skills/rinto-code-reference/SKILL.md
 #   ~/.pi/agent/AGENTS.md
 
 set -euo pipefail
