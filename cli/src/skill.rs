@@ -22,6 +22,9 @@ use serde_json::{json, Value};
 use crate::error::{Error, Result};
 use crate::update::sha256_hex;
 
+mod scope;
+use scope::{Scope, ScopeArgs};
+
 /// Agents that can discover the installed skills, and their user-level roots.
 ///
 /// Codex's user scope deliberately lives under `.agents`, not `.codex`: that
@@ -30,6 +33,7 @@ use crate::update::sha256_hex;
 enum SkillAgent {
     Pi,
     Codex,
+    Opencode,
 }
 
 impl SkillAgent {
@@ -37,6 +41,22 @@ impl SkillAgent {
         match self {
             Self::Pi => "~/.pi/agent/skills",
             Self::Codex => "~/.agents/skills",
+            Self::Opencode => "~/.config/opencode/skills",
+        }
+    }
+
+    fn project_directory(self) -> &'static str {
+        match self {
+            Self::Pi => ".pi/skills",
+            Self::Codex => ".agents/skills",
+            Self::Opencode => ".opencode/skills",
+        }
+    }
+
+    fn root(self, scope: &Scope) -> Result<PathBuf> {
+        match scope {
+            Scope::Global => expand_home(self.directory()),
+            Scope::Project(root) => Ok(root.join(self.project_directory())),
         }
     }
 
@@ -44,11 +64,14 @@ impl SkillAgent {
         match self {
             Self::Pi => "pi",
             Self::Codex => "codex",
+            Self::Opencode => "opencode",
         }
     }
 }
 
-const SKILL_AGENTS: &[SkillAgent] = &[SkillAgent::Pi, SkillAgent::Codex];
+const SKILL_AGENTS: &[SkillAgent] = &[SkillAgent::Pi, SkillAgent::Codex, SkillAgent::Opencode];
+// Adding a supported agent must not change the destinations of existing commands.
+const DEFAULT_AGENTS: &[SkillAgent] = &[SkillAgent::Pi, SkillAgent::Codex];
 
 /// What was installed, and what it looked like when this CLI wrote it.
 ///
@@ -88,24 +111,27 @@ include!(concat!(env!("OUT_DIR"), "/skills_registry.rs"));
 #[derive(Subcommand)]
 pub enum SkillCommand {
     /// Show the skills this binary carries
-    List,
-    /// Write a skill where Pi and Codex will discover it
+    List(ScopeArgs),
+    /// Write a skill for Pi, Codex, or OpenCode
     Install(InstallArgs),
-    /// Re-install every skill copy already installed on this machine
+    /// Re-install recorded skill copies in the selected scope
     Sync(SyncArgs),
 }
 
 #[derive(Args)]
 pub struct InstallArgs {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
     /// Skill to install; see `rinto-pmo skill list`
     name: String,
 
-    /// Agent to install for; repeat or comma-separate, and omit for both
+    /// Agent to install for; repeat or comma-separate, and omit for Pi and Codex
     #[arg(long, value_enum, value_delimiter = ',', value_name = "AGENT")]
     agent: Vec<SkillAgent>,
 
     /// Install once into a custom skills directory instead of agent defaults
-    #[arg(long, value_name = "DIR", conflicts_with = "agent")]
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["agent", "project", "global"])]
     dir: Option<PathBuf>,
 
     /// Replace an existing file whose content differs
@@ -115,6 +141,9 @@ pub struct InstallArgs {
 
 #[derive(Args, Default)]
 pub struct SyncArgs {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
     /// Replace files edited since this CLI installed them
     #[arg(long)]
     pub force: bool,
@@ -122,7 +151,7 @@ pub struct SyncArgs {
 
 pub fn run(command: SkillCommand) -> Result<()> {
     match command {
-        SkillCommand::List => list(),
+        SkillCommand::List(args) => list(args),
         SkillCommand::Install(args) => install(args),
         SkillCommand::Sync(args) => sync(args),
     }
@@ -134,8 +163,13 @@ pub fn run(command: SkillCommand) -> Result<()> {
 /// way to learn whether an installed skill was still current was to run `skill
 /// sync` -- a command that *writes* -- so anybody who merely wanted to know had
 /// to change something to find out.
-fn list() -> Result<()> {
-    let installed = State::load().unwrap_or_default();
+fn list(args: ScopeArgs) -> Result<()> {
+    let scope = args.resolve()?;
+    let installed = match scope {
+        // Preserve the legacy read-only listing even when its record is unreadable.
+        Scope::Global => State::load(&scope).unwrap_or_default(),
+        Scope::Project(_) => State::load(&scope)?,
+    };
 
     println!("skills carried by rinto-pmo {}:\n", version());
 
@@ -145,17 +179,17 @@ fn list() -> Result<()> {
         for record in installed.records_for(skill.name) {
             copies.push(format!(
                 "  {}\n    {} -- {}",
-                installed_at(skill.name, &record.path),
+                installed_at(skill.name, &record.path, &scope),
                 written_by(record),
-                status_of(skill, record)
+                status_of(skill, record, &scope)
             ));
         }
 
         // No record is not the same as not installed. A file sitting where an
         // agent reads it is being read on every run, whether or not this CLI
-        // remembers writing it. Check both agents even when the other one's
+        // remembers writing it. Check all agents even when another one's
         // copy is recorded.
-        for (agent, path, existing) in unrecorded_at_defaults(skill) {
+        for (agent, path, existing) in unrecorded_at_defaults(skill, &scope)? {
             if installed.find_at(skill.name, &path).is_some() {
                 continue;
             }
@@ -180,13 +214,17 @@ fn list() -> Result<()> {
         );
     }
 
-    println!("install for Pi and Codex with: rinto-pmo skill install <name>");
-    println!("install for one with: rinto-pmo skill install <name> --agent <pi|codex>");
+    let suffix = scope.command_suffix();
+    println!("install for Pi and Codex with: rinto-pmo skill install <name>{suffix}");
+    println!("select agents with: --agent <pi|codex|opencode>");
+    println!(
+        "use --project [DIR] for project installations or --global for user-wide installations"
+    );
     Ok(())
 }
 
-fn installed_at(name: &str, path: &Path) -> String {
-    match default_agent_for_path(name, path) {
+fn installed_at(name: &str, path: &Path, scope: &Scope) -> String {
+    match default_agent_for_path(name, path, scope) {
         Some(agent) => format!("installed for {}: {}", agent.name(), path.display()),
         None => format!("installed: {}", path.display()),
     }
@@ -204,12 +242,13 @@ fn written_by(record: &Record) -> String {
 /// Decided by the same `decide/4` that `sync` uses, so a listing can never
 /// promise something a sync would then do differently -- a second rule for the
 /// same question is a second rule to keep in step.
-fn status_of(skill: &Skill, record: &Record) -> String {
+fn status_of(skill: &Skill, record: &Record, scope: &Scope) -> String {
+    let sync_command = format!("rinto-pmo skill sync{}", scope.command_suffix());
     match std::fs::read_to_string(&record.path) {
         // Removing it by hand is an uninstall, which `sync` honours by dropping
         // the record. Saying so here is how somebody finds out before then.
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            "the file is gone; `skill sync` will drop it from the record".to_string()
+            format!("the file is gone; `{sync_command}` will drop it from the record")
         }
         Err(err) => format!("could not be read: {err}"),
         Ok(existing) => match decide(&existing, skill.body, &record.sha256, false) {
@@ -217,10 +256,10 @@ fn status_of(skill: &Skill, record: &Record) -> String {
             // text did not change between those releases. Nobody had to
             // maintain a number to say so.
             Action::Current => "current".to_string(),
-            Action::Replace => "out of date; `skill sync` will replace it".to_string(),
+            Action::Replace => format!("out of date; `{sync_command}` will replace it"),
             Action::Edited => format!(
-                "edited here; `skill sync` leaves it alone (`{}` takes ours)",
-                force_install_command(skill.name, &record.path)
+                "edited here; `{sync_command}` leaves it alone (`{}` takes ours)",
+                force_install_command(skill.name, &record.path, scope)
             ),
         },
     }
@@ -228,38 +267,46 @@ fn status_of(skill: &Skill, record: &Record) -> String {
 
 /// Where `install` would put `skill` for each supported agent, and what is
 /// there. A record is the only way to discover a custom `--dir` installation.
-fn unrecorded_at_defaults(skill: &Skill) -> Vec<(SkillAgent, PathBuf, String)> {
-    SKILL_AGENTS
-        .iter()
-        .filter_map(|agent| {
-            let path = default_skill_path(skill.name, *agent).ok()?;
-            let existing = std::fs::read_to_string(&path).ok()?;
-            Some((*agent, path, existing))
-        })
-        .collect()
+fn unrecorded_at_defaults(
+    skill: &Skill,
+    scope: &Scope,
+) -> Result<Vec<(SkillAgent, PathBuf, String)>> {
+    let mut copies = Vec::new();
+    for agent in SKILL_AGENTS {
+        let path = match default_skill_path(skill.name, *agent, scope) {
+            Ok(path) => path,
+            // Legacy custom installations can be listed/synced without HOME.
+            Err(_) if matches!(scope, Scope::Global) => continue,
+            Err(err) => return Err(err),
+        };
+        scope.validate(&path)?;
+        if let Ok(existing) = std::fs::read_to_string(&path) {
+            copies.push((*agent, path, existing));
+        }
+    }
+    Ok(copies)
 }
 
-fn default_skill_path(name: &str, agent: SkillAgent) -> Result<PathBuf> {
-    Ok(expand_home(agent.directory())?.join(name).join("SKILL.md"))
+fn default_skill_path(name: &str, agent: SkillAgent, scope: &Scope) -> Result<PathBuf> {
+    Ok(agent.root(scope)?.join(name).join("SKILL.md"))
 }
 
-fn default_agent_for_path(name: &str, path: &Path) -> Option<SkillAgent> {
+fn default_agent_for_path(name: &str, path: &Path, scope: &Scope) -> Option<SkillAgent> {
     SKILL_AGENTS
         .iter()
         .copied()
-        .find(|agent| default_skill_path(name, *agent).ok().as_deref() == Some(path))
+        .find(|agent| default_skill_path(name, *agent, scope).ok().as_deref() == Some(path))
 }
 
-fn force_install_command(name: &str, path: &Path) -> String {
-    match default_agent_for_path(name, path) {
+fn force_install_command(name: &str, path: &Path, scope: &Scope) -> String {
+    let suffix = scope.command_suffix();
+    match default_agent_for_path(name, path, scope) {
         Some(agent) => format!(
-            "rinto-pmo skill install {name} --agent {} --force",
+            "rinto-pmo skill install {name} --agent {}{suffix} --force",
             agent.name()
         ),
-        // `--dir` can contain whitespace and shell metacharacters, so do not
-        // print a command that pretends it can quote an arbitrary recorded
-        // path safely. Sync already knows the exact path.
-        None => "rinto-pmo skill sync --force".to_string(),
+        // Sync knows custom paths without needing to put them into shell commands.
+        None => format!("rinto-pmo skill sync{suffix} --force"),
     }
 }
 
@@ -291,7 +338,8 @@ fn install(args: InstallArgs) -> Result<()> {
             ))
         })?;
 
-    let directories = install_directories(&args.agent, args.dir)?;
+    let scope = args.scope.resolve()?;
+    let directories = install_directories(&args.agent, args.dir, &scope)?;
     let mut destinations = Vec::new();
 
     // Check every destination before writing any of them. The default install
@@ -300,6 +348,7 @@ fn install(args: InstallArgs) -> Result<()> {
     for root in directories {
         let directory = root.join(skill.name);
         let path = directory.join("SKILL.md");
+        scope.validate(&path)?;
         let current = match std::fs::read_to_string(&path) {
             Ok(existing) if existing == skill.body => true,
             Ok(_) if !args.force => {
@@ -320,13 +369,13 @@ fn install(args: InstallArgs) -> Result<()> {
         destinations.push((directory, path, current));
     }
 
-    let mut state = State::load()?;
+    let mut state = State::load(&scope)?;
 
     for (directory, path, current) in destinations {
         if current {
             println!("already current: {}", path.display());
         } else {
-            write_skill(skill, &directory, &path)?;
+            write_skill(skill, &directory, &path, &scope)?;
             println!(
                 "installed {} {} to {}",
                 skill.name,
@@ -341,23 +390,27 @@ fn install(args: InstallArgs) -> Result<()> {
         state.record(skill, &path);
     }
 
-    state.save()
+    state.save(&scope)
 }
 
-fn install_directories(agents: &[SkillAgent], custom: Option<PathBuf>) -> Result<Vec<PathBuf>> {
+fn install_directories(
+    agents: &[SkillAgent],
+    custom: Option<PathBuf>,
+    scope: &Scope,
+) -> Result<Vec<PathBuf>> {
     if let Some(directory) = custom {
         return Ok(vec![directory]);
     }
 
     let selected = if agents.is_empty() {
-        SKILL_AGENTS
+        DEFAULT_AGENTS
     } else {
         agents
     };
     let mut directories = Vec::new();
 
     for agent in selected {
-        let directory = expand_home(agent.directory())?;
+        let directory = agent.root(scope)?;
         if !directories.contains(&directory) {
             directories.push(directory);
         }
@@ -380,13 +433,14 @@ fn install_directories(agents: &[SkillAgent], custom: Option<PathBuf>) -> Result
 /// current" over a skill that was a year out of date. Being silent about a file
 /// is fine; claiming it is current is not.
 fn sync(args: SyncArgs) -> Result<()> {
-    let mut state = State::load()?;
+    let scope = args.scope.resolve()?;
+    let mut state = State::load(&scope)?;
     if state.records.is_empty() {
         println!("no skills installed by this CLI; nothing to sync");
         // Still worth a look: "no records" is exactly the shape a lost state
         // file leaves behind, and it is the case most likely to be hiding one.
-        if report_unrecorded(&mut state)? {
-            state.save()?;
+        if report_unrecorded(&mut state, &scope)? {
+            state.save(&scope)?;
         }
         return Ok(());
     }
@@ -429,7 +483,7 @@ fn sync(args: SyncArgs) -> Result<()> {
                 Action::Current => kept.push(record.refreshed(skill)),
                 Action::Replace => {
                     let directory = record.path.parent().unwrap_or(Path::new("."));
-                    write_skill(skill, directory, &record.path)?;
+                    write_skill(skill, directory, &record.path, &scope)?;
                     println!("synced {} in {}", skill.name, record.path.display());
                     said_something = true;
                     kept.push(record.refreshed(skill));
@@ -439,7 +493,7 @@ fn sync(args: SyncArgs) -> Result<()> {
                         "edited since install, left alone: {}\n  \
                          take this binary's copy with: {}",
                         record.path.display(),
-                        force_install_command(skill.name, &record.path)
+                        force_install_command(skill.name, &record.path, &scope)
                     );
                     said_something = true;
                     kept.push(record);
@@ -449,8 +503,8 @@ fn sync(args: SyncArgs) -> Result<()> {
     }
 
     state.records = kept;
-    said_something |= report_unrecorded(&mut state)?;
-    state.save()?;
+    said_something |= report_unrecorded(&mut state, &scope)?;
+    state.save(&scope)?;
 
     if !said_something {
         println!("skills already current");
@@ -471,11 +525,11 @@ fn sync(args: SyncArgs) -> Result<()> {
 ///
 /// Returns whether anything was printed, so the caller can keep "skills already
 /// current" for the run that truly had nothing to say.
-fn report_unrecorded(state: &mut State) -> Result<bool> {
+fn report_unrecorded(state: &mut State, scope: &Scope) -> Result<bool> {
     let mut said_something = false;
 
     for skill in SKILLS {
-        for (agent, path, existing) in unrecorded_at_defaults(skill) {
+        for (agent, path, existing) in unrecorded_at_defaults(skill, scope)? {
             if state.find_at(skill.name, &path).is_some() {
                 continue;
             }
@@ -493,12 +547,11 @@ fn report_unrecorded(state: &mut State) -> Result<bool> {
                     "installed but not in this CLI's record: {}\n  \
                      {}\n  \
                      {} reads it on every run; take this binary's copy with:\n    \
-                     rinto-pmo skill install {} --agent {} --force",
+                     {}",
                     path.display(),
                     unrecorded_status(skill, &existing),
                     agent.name(),
-                    skill.name,
-                    agent.name()
+                    force_install_command(skill.name, &path, scope)
                 );
             }
         }
@@ -527,7 +580,8 @@ fn decide(existing: &str, body: &str, recorded: &str, force: bool) -> Action {
     }
 }
 
-fn write_skill(skill: &Skill, directory: &Path, path: &Path) -> Result<()> {
+fn write_skill(skill: &Skill, directory: &Path, path: &Path, scope: &Scope) -> Result<()> {
+    scope.validate(path)?;
     std::fs::create_dir_all(directory)
         .map_err(|err| Error::Io(format!("could not create {}: {err}", directory.display())))?;
 
@@ -573,8 +627,8 @@ struct State {
 }
 
 impl State {
-    fn load() -> Result<Self> {
-        let path = state_path()?;
+    fn load(scope: &Scope) -> Result<Self> {
+        let path = scope.state_path()?;
         let source = match std::fs::read_to_string(&path) {
             Ok(source) => source,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -589,9 +643,11 @@ impl State {
         let value: Value = serde_json::from_str(&source)
             .map_err(|err| Error::Config(format!("{} is not valid JSON: {err}", path.display())))?;
 
-        Ok(Self {
-            records: Self::parse(&value),
-        })
+        let mut records = Self::parse(&value);
+        for record in &mut records {
+            record.path = scope.resolve_record(&record.path)?;
+        }
+        Ok(Self { records })
     }
 
     fn parse(value: &Value) -> Vec<Record> {
@@ -666,24 +722,34 @@ impl State {
         json!({ "installed": installed })
     }
 
-    fn save(&self) -> Result<()> {
-        let path = state_path()?;
+    fn save(&self, scope: &Scope) -> Result<()> {
+        let path = scope.state_path()?;
         let directory = path
             .parent()
             .ok_or_else(|| Error::Io(format!("{} has no parent directory", path.display())))?;
         std::fs::create_dir_all(directory)
             .map_err(|err| Error::Io(format!("could not create {}: {err}", directory.display())))?;
 
-        let body = serde_json::to_string_pretty(&self.as_json())
+        let mut value = self.as_json();
+        if matches!(scope, Scope::Project(_)) {
+            for (entry, record) in value["installed"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .zip(&self.records)
+            {
+                entry["path"] = json!(scope.stored_path(&record.path)?.to_string_lossy());
+                entry["agent"] =
+                    json!(default_agent_for_path(&record.name, &record.path, scope)
+                        .map(SkillAgent::name));
+            }
+        }
+        let body = serde_json::to_string_pretty(&value)
             .map_err(|err| Error::Io(format!("could not serialize the skill record: {err}")))?;
 
         std::fs::write(&path, format!("{body}\n"))
             .map_err(|err| Error::Io(format!("could not write {}: {err}", path.display())))
     }
-}
-
-fn state_path() -> Result<PathBuf> {
-    Ok(crate::config::directory()?.join(STATE_FILE))
 }
 
 fn expand_home(path: &str) -> Result<PathBuf> {
@@ -721,7 +787,7 @@ mod tests {
 
     use super::{
         decide, description_of, install_directories, sha256_hex, status_of, unrecorded_status,
-        version, written_by, Action, Record, Skill, SkillAgent, SkillCommand, State, SKILLS,
+        version, written_by, Action, Record, Scope, Skill, SkillAgent, SkillCommand, State, SKILLS,
     };
 
     #[derive(Parser)]
@@ -786,18 +852,19 @@ mod tests {
 
     #[test]
     fn default_install_directories_cover_pi_and_codex() {
-        let directories = install_directories(&[], None).unwrap();
+        let directories = install_directories(&[], None, &Scope::Global).unwrap();
         assert_eq!(directories.len(), 2);
         assert!(directories[0].ends_with(".pi/agent/skills"));
         assert!(directories[1].ends_with(".agents/skills"));
 
-        let codex = install_directories(&[SkillAgent::Codex], None).unwrap();
+        let codex = install_directories(&[SkillAgent::Codex], None, &Scope::Global).unwrap();
         assert_eq!(codex.len(), 1);
         assert!(codex[0].ends_with(".agents/skills"));
 
         let custom = install_directories(
             &[],
             Some(PathBuf::from("/tmp/rinto-custom-skill-directory")),
+            &Scope::Global,
         )
         .unwrap();
         assert_eq!(
@@ -972,11 +1039,15 @@ mod tests {
         };
 
         assert_eq!(
-            status_of(&skill, &record(skill.body, skill.body.as_bytes())),
+            status_of(
+                &skill,
+                &record(skill.body, skill.body.as_bytes()),
+                &Scope::Global
+            ),
             "current"
         );
-        assert!(status_of(&skill, &record("old", b"old")).contains("out of date"));
-        assert!(status_of(&skill, &record("tuned", b"old")).contains("edited here"));
+        assert!(status_of(&skill, &record("old", b"old"), &Scope::Global).contains("out of date"));
+        assert!(status_of(&skill, &record("tuned", b"old"), &Scope::Global).contains("edited here"));
 
         std::fs::remove_file(&path).unwrap();
         let gone = Record {
@@ -985,7 +1056,7 @@ mod tests {
             sha256: sha256_hex(b"old"),
             version: None,
         };
-        assert!(status_of(&skill, &gone).contains("gone"));
+        assert!(status_of(&skill, &gone, &Scope::Global).contains("gone"));
     }
 
     #[test]

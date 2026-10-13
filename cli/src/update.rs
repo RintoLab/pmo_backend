@@ -94,7 +94,7 @@ pub fn run(args: UpdateArgs) -> Result<()> {
 /// report as a failed update than to report as what it is.
 fn sync_skills(executable: &Path) {
     let outcome = std::process::Command::new(executable)
-        .args(["skill", "sync"])
+        .args(["skill", "sync", "--global"])
         .status();
 
     let complaint = match outcome {

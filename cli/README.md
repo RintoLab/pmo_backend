@@ -212,13 +212,56 @@ this either -- it finds text by meaning, not the ones that wrote this document's
 address down. There is no outbound counterpart, deliberately: what a document
 points at is in its own text, which `doc show` already prints.
 
-**Skills install for Pi and Codex, and use this binary's version.** `skill
+**Skills install for Pi, Codex, and OpenCode, and use this binary's version.** `skill
 install <name>` writes the named skill to both Pi (`~/.pi/agent/skills`) and
 Codex (`~/.agents/skills`) by default. Pass `--agent pi` or `--agent codex` to
 select one; the option can be repeated or comma-separated. `--dir` installs one
 custom copy and cannot be combined with `--agent`. `skill sync` updates every
 recorded copy, including multiple copies of the same skill, but never adds an
-agent destination that was not installed.
+agent destination that was not installed. OpenCode is opt-in with `--agent
+opencode`, using `~/.config/opencode/skills`. Adding OpenCode support does not
+change the default agent selection.
+
+**Project installations are explicit and independently synced.** All three
+commands accept `--project [DIR]` or `--global`; omitting both keeps the existing
+global behavior. With no DIR, `--project` selects the current Git worktree root,
+or the current directory outside Git. An explicit DIR selects that exact
+existing directory, including a subdirectory within a repository. The CLI
+prints the resolved project path.
+
+```sh
+rinto-pmo skill install rinto-requirements --agent opencode --project
+rinto-pmo skill install rinto-requirements --agent pi,opencode --project ./my-project
+rinto-pmo skill list --project
+rinto-pmo skill sync --project
+rinto-pmo skill install rinto-requirements --agent opencode --global
+```
+
+Project roots are `.pi/skills` for Pi, `.agents/skills` for Codex, and
+`.opencode/skills` for OpenCode. Each copy lives at `<root>/<name>/SKILL.md`.
+An agent selection chooses an installation path, not exclusive visibility:
+OpenCode also discovers `.agents/skills`. `skill list --project` displays
+copies in each supported project location, including unrecorded duplicates.
+
+Project installation records live in `.rinto/skills.json`, with paths relative
+to the project and the agent, CLI version, and content hash for each copy.
+The skills and record can be committed together and remain usable after moving
+or cloning the project. Absolute paths, `..` traversal, and symlinks resolving
+outside the project are rejected, including for the record file itself.
+
+`skill sync --project [DIR]` updates only that project. The CLI self-updater
+explicitly runs `skill sync --global`, which retains the existing global and
+custom-directory records; it does not discover or sync project records.
+Existing `--dir` installations remain in their original global record and are
+not automatically migrated. `--dir` cannot be combined with `--agent`,
+`--project`, or `--global`.
+
+Sync preserves locally edited files unless `--force` is supplied, and drops
+records for manually deleted copies instead of reinstalling them. Unrecorded
+files matching the embedded content can be adopted; differing unrecorded files
+are only reported, even with `sync --force`. Use the printed `skill install
+... --force` command to explicitly replace those copies. Project repair
+commands include the project path so they work from another directory too.
 
 The release workflow derives the production installation list directly from
 `skills/server/`, then calls this existing command for each entry. Adding a
