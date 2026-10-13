@@ -124,6 +124,161 @@ fn make_old(state: &Path, file: &Path) {
     write_json(state, &value);
 }
 
+fn bundled_skills() -> Vec<(String, String)> {
+    let mut skills = Vec::new();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills");
+    for bundle in fs::read_dir(root).unwrap() {
+        let bundle = bundle.unwrap().path();
+        if !bundle.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(bundle).unwrap() {
+            let directory = entry.unwrap().path();
+            let file = directory.join("SKILL.md");
+            if file.is_file() {
+                skills.push((
+                    directory.file_name().unwrap().to_str().unwrap().to_owned(),
+                    fs::read_to_string(file).unwrap(),
+                ));
+            }
+        }
+    }
+    assert!(skills.len() > 1);
+    skills
+}
+
+#[test]
+fn install_all_into_custom_subdirectories_is_recorded_and_repeatable() {
+    let sandbox = Sandbox::new();
+    let project = sandbox.dir("project");
+    let custom = project.join("custom skills/nested");
+    let skills = bundled_skills();
+    let args = ["install", "--all", "--dir", custom.to_str().unwrap()];
+    sandbox.ok(&project, &args);
+    let state = read_json(&sandbox.config());
+    let records = state["installed"].as_array().unwrap();
+    assert_eq!(records.len(), skills.len());
+    assert_eq!(fs::read_dir(&custom).unwrap().count(), skills.len());
+    for (name, body) in &skills {
+        let file = custom.join(name).join("SKILL.md");
+        assert_eq!(fs::read_to_string(&file).unwrap(), *body);
+        assert!(records
+            .iter()
+            .any(|record| { record["name"] == *name && record["path"] == file.to_str().unwrap() }));
+    }
+    let output = sandbox.ok(&project, &args);
+    assert_eq!(output.matches("already current:").count(), skills.len());
+    assert_eq!(read_json(&sandbox.config()), state);
+    assert!(sandbox
+        .ok(&project, &["sync"])
+        .contains("skills already current"));
+    assert!(!sandbox.0.join("home/.agents").exists());
+    assert!(!sandbox.0.join("home/.pi").exists());
+    assert!(!project.join(".rinto").exists());
+}
+
+#[test]
+fn install_all_checks_the_whole_batch_before_writing_and_supports_force() {
+    let sandbox = Sandbox::new();
+    let project = sandbox.dir("project");
+    let custom = sandbox.dir("custom");
+    let edited = custom.join(NAME).join("SKILL.md");
+    fs::create_dir_all(edited.parent().unwrap()).unwrap();
+    fs::write(&edited, "local edits").unwrap();
+    let args = ["install", "--all", "--dir", custom.to_str().unwrap()];
+    let output = sandbox.run(&project, &args);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--force"));
+    assert_eq!(fs::read_dir(&custom).unwrap().count(), 1);
+    assert_eq!(fs::read_to_string(&edited).unwrap(), "local edits");
+    assert!(!sandbox.config().exists());
+    let mut forced = args.to_vec();
+    forced.push("--force");
+    sandbox.ok(&project, &forced);
+    for (name, body) in bundled_skills() {
+        assert_eq!(
+            fs::read_to_string(custom.join(name).join("SKILL.md")).unwrap(),
+            body
+        );
+    }
+}
+
+#[test]
+fn install_all_supports_default_agents_global_and_project_scopes() {
+    let skills = bundled_skills();
+    for (flags, roots, project_scope) in [
+        (
+            vec![],
+            vec!["home/.pi/agent/skills", "home/.agents/skills"],
+            false,
+        ),
+        (
+            vec!["--global", "--agent", "opencode"],
+            vec!["home/.config/opencode/skills"],
+            false,
+        ),
+        (
+            vec!["--project", "--agent", "pi,codex", "--agent", "pi"],
+            vec!["project/.pi/skills", "project/.agents/skills"],
+            true,
+        ),
+        (
+            vec!["--project", "project", "--agent", "opencode"],
+            vec!["project/.opencode/skills"],
+            true,
+        ),
+    ] {
+        let sandbox = Sandbox::new();
+        let mut args = vec!["install", "--all"];
+        args.extend(flags);
+        // The explicit relative project path is resolved from this directory.
+        let cwd = if args.contains(&"project") {
+            &sandbox.0
+        } else {
+            &sandbox.0.join("project")
+        };
+        sandbox.ok(cwd, &args);
+        for root in &roots {
+            for (name, body) in &skills {
+                let file = sandbox.0.join(root).join(name).join("SKILL.md");
+                assert_eq!(fs::read_to_string(file).unwrap(), *body);
+            }
+        }
+        let state = if project_scope {
+            sandbox.0.join("project/.rinto/skills.json")
+        } else {
+            sandbox.config()
+        };
+        assert_eq!(
+            read_json(&state)["installed"].as_array().unwrap().len(),
+            skills.len() * roots.len()
+        );
+        if project_scope {
+            assert!(!sandbox.config().exists());
+        } else {
+            assert!(!sandbox.0.join("project/.rinto").exists());
+        }
+    }
+}
+
+#[test]
+fn install_requires_exactly_one_of_name_and_all() {
+    let sandbox = Sandbox::new();
+    let project = sandbox.dir("project");
+    for args in [
+        vec!["install"],
+        vec!["install", NAME, "--all"],
+        vec!["install", "unknown-skill"],
+        vec!["install", "--all", "--dir", "skills", "--project"],
+        vec!["install", "--all", "--dir", "skills", "--agent", "pi"],
+        vec!["install", "--all", "--dir", "skills", "--global"],
+    ] {
+        assert!(!sandbox.run(&project, &args).status.success(), "{args:?}");
+    }
+    assert!(!sandbox.config().exists());
+    assert!(!project.join("skills").exists());
+}
+
 #[test]
 fn default_install_and_custom_directory_remain_compatible() {
     let sandbox = Sandbox::new();

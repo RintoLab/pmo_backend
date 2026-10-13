@@ -112,7 +112,7 @@ include!(concat!(env!("OUT_DIR"), "/skills_registry.rs"));
 pub enum SkillCommand {
     /// Show the skills this binary carries
     List(ScopeArgs),
-    /// Write a skill for Pi, Codex, or OpenCode
+    /// Write one or all bundled skills for Pi, Codex, or OpenCode
     Install(InstallArgs),
     /// Re-install recorded skill copies in the selected scope
     Sync(SyncArgs),
@@ -124,13 +124,18 @@ pub struct InstallArgs {
     scope: ScopeArgs,
 
     /// Skill to install; see `rinto-pmo skill list`
-    name: String,
+    #[arg(required_unless_present = "all", conflicts_with = "all")]
+    name: Option<String>,
+
+    /// Install every skill this binary carries
+    #[arg(long)]
+    all: bool,
 
     /// Agent to install for; repeat or comma-separate, and omit for Pi and Codex
     #[arg(long, value_enum, value_delimiter = ',', value_name = "AGENT")]
     agent: Vec<SkillAgent>,
 
-    /// Install once into a custom skills directory instead of agent defaults
+    /// Install into a custom skills directory, with one subdirectory per skill
     #[arg(long, value_name = "DIR", conflicts_with_all = ["agent", "project", "global"])]
     dir: Option<PathBuf>,
 
@@ -326,52 +331,61 @@ fn unrecorded_status(skill: &Skill, existing: &str) -> &'static str {
 }
 
 fn install(args: InstallArgs) -> Result<()> {
-    let skill = SKILLS
-        .iter()
-        .find(|skill| skill.name == args.name)
-        .ok_or_else(|| {
-            let known: Vec<&str> = SKILLS.iter().map(|skill| skill.name).collect();
-            Error::Input(format!(
-                "no skill named {:?}; this binary carries: {}",
-                args.name,
-                known.join(", ")
-            ))
-        })?;
+    let skills = if args.all {
+        SKILLS
+    } else {
+        let name = args
+            .name
+            .as_deref()
+            .ok_or_else(|| Error::Input("provide a skill name or --all".into()))?;
+        let skill = SKILLS
+            .iter()
+            .find(|skill| skill.name == name)
+            .ok_or_else(|| {
+                let known: Vec<&str> = SKILLS.iter().map(|skill| skill.name).collect();
+                Error::Input(format!(
+                    "no skill named {name:?}; this binary carries: {}",
+                    known.join(", ")
+                ))
+            })?;
+        std::slice::from_ref(skill)
+    };
 
     let scope = args.scope.resolve()?;
     let directories = install_directories(&args.agent, args.dir, &scope)?;
     let mut destinations = Vec::new();
 
-    // Check every destination before writing any of them. The default install
-    // has two outputs now; discovering a tuned Codex copy only after replacing
-    // Pi's would turn one command into a surprising partial install.
-    for root in directories {
-        let directory = root.join(skill.name);
-        let path = directory.join("SKILL.md");
-        scope.validate(&path)?;
-        let current = match std::fs::read_to_string(&path) {
-            Ok(existing) if existing == skill.body => true,
-            Ok(_) if !args.force => {
-                return Err(Error::Input(format!(
-                    "{} exists and differs; pass --force to replace it",
-                    path.display()
-                )))
-            }
-            Ok(_) => false,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-            Err(err) => {
-                return Err(Error::Io(format!(
-                    "could not read {}: {err}",
-                    path.display()
-                )))
-            }
-        };
-        destinations.push((directory, path, current));
+    // Check every skill and destination before writing any of them, so finding
+    // an edited copy does not leave an otherwise partially completed batch.
+    for skill in skills {
+        for root in &directories {
+            let directory = root.join(skill.name);
+            let path = directory.join("SKILL.md");
+            scope.validate(&path)?;
+            let current = match std::fs::read_to_string(&path) {
+                Ok(existing) if existing == skill.body => true,
+                Ok(_) if !args.force => {
+                    return Err(Error::Input(format!(
+                        "{} exists and differs; pass --force to replace it",
+                        path.display()
+                    )))
+                }
+                Ok(_) => false,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+                Err(err) => {
+                    return Err(Error::Io(format!(
+                        "could not read {}: {err}",
+                        path.display()
+                    )))
+                }
+            };
+            destinations.push((skill, directory, path, current));
+        }
     }
 
     let mut state = State::load(&scope)?;
 
-    for (directory, path, current) in destinations {
+    for (skill, directory, path, current) in destinations {
         if current {
             println!("already current: {}", path.display());
         } else {

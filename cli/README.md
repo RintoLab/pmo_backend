@@ -222,6 +222,21 @@ agent destination that was not installed. OpenCode is opt-in with `--agent
 opencode`, using `~/.config/opencode/skills`. Adding OpenCode support does not
 change the default agent selection.
 
+Use `skill install --all` instead of a name to install every skill embedded in
+the binary, across all bundles. It supports the same `--agent`, `--project`,
+`--global`, `--dir`, and `--force` options and their existing combination rules.
+With `--dir`, each skill is written to `<DIR>/<skill-name>/SKILL.md`; missing
+directories are created automatically. A name and `--all` are mutually exclusive.
+All selected files are checked before any are written. If an existing file
+differs, installation stops unless `--force` is supplied.
+
+```sh
+rinto-pmo skill install --all
+rinto-pmo skill install --all --dir ./my-skills
+rinto-pmo skill install --all --agent pi,opencode --project ./my-project
+rinto-pmo skill install --all --agent codex --global --force
+```
+
 **Project installations are explicit and independently synced.** All three
 commands accept `--project [DIR]` or `--global`; omitting both keeps the existing
 global behavior. With no DIR, `--project` selects the current Git worktree root,
