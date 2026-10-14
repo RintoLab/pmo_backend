@@ -746,15 +746,17 @@ paths:
     post:
       tags: [Requirements]
       operationId: estimateRequirements
-      summary: Fill missing task estimates across selected requirement hierarchies
+      summary: Fill missing task time and difficulty estimates across selected requirement hierarchies
       description: >-
         Expands open descendants to leaf requirements and deduplicates overlapping selections.
         All selected requirements and ancestors must be open and unarchived in active projects.
-        Only open/in_progress work tasks without an estimate are eligible. Existing estimates
-        are preserved; no independent requirement estimate is written. One background job per
-        leaf, deduplicated while incomplete. Jobs use the task_estimation AI role and batches
-        of at most 20 tasks. Invalid or stale batches are rejected atomically; previous successful
-        batches remain. No automatic retries. Poll GET /jobs/{id} then re-read the requirement.
+        Only open/in_progress work tasks missing time estimates or difficulty ratings are eligible.
+        Existing values in each dimension are preserved; no independent requirement estimate is written.
+        One background job per leaf, deduplicated while incomplete, first fills missing Fibonacci
+        difficulty ratings, then fills missing three-point time estimates using the updated ratings.
+        Jobs use the task_estimation AI role and batches of at most 20 tasks per dimension.
+        Invalid or stale batches are rejected atomically; previous successful batches and dimensions
+        remain. A failure stops the job; a later explicit request fills only the remaining missing values. No automatic retries. Poll GET /jobs/{id} then re-read the requirement.
         Empty results mean no eligible open leaf descendants. Requires no project parameter.
       requestBody:
         required: true
@@ -5225,7 +5227,7 @@ components:
                 type: string
                 nullable: true
                 enum: [no_tasks, no_pending_tasks, already_estimated, null]
-                description: Null when a job is returned, otherwise explains why this leaf was skipped.
+                description: Null when a job is returned, otherwise explains why this leaf was skipped. already_estimated means all unfinished tasks have both time estimates and difficulty ratings.
             additionalProperties: false
       additionalProperties: false
     Requirement:

@@ -18,14 +18,19 @@ defmodule RintoPMO.Requirements.EstimationWorker do
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"requirement_id" => id}}) do
     case scope(id) do
-      {:ok, requirement, tree} -> run(requirement, tree, Estimation.targets(id))
+      {:ok, requirement, tree} -> run(requirement, tree)
       {:error, reason} -> {:cancel, reason}
     end
   end
 
-  defp run(_requirement, _tree, []), do: :ok
+  defp run(requirement, tree) do
+    targets =
+      Estimation.targets(requirement.id, :difficulty) ++ Estimation.targets(requirement.id)
 
-  defp run(requirement, tree, targets) do
+    if targets == [], do: :ok, else: estimate_missing(requirement, tree)
+  end
+
+  defp estimate_missing(requirement, tree) do
     with {:ok, role} <- role(),
          {:ok, context, fingerprint} <- EstimationContext.load(requirement, tree) do
       input = %{context: context, history: EstimationContext.history(requirement.project_id)}
@@ -37,17 +42,30 @@ defmodule RintoPMO.Requirements.EstimationWorker do
         system_prompt: role.system_prompt
       ]
 
-      estimate_batches(requirement, targets, input, opts, fingerprint)
+      estimate_dimensions(requirement, input, opts, fingerprint)
     else
       {:error, reason} -> {:cancel, reason}
     end
   end
 
-  defp estimate_batches(requirement, targets, input, opts, fingerprint) do
+  defp estimate_dimensions(requirement, input, opts, fingerprint) do
+    Enum.reduce_while([:difficulty, :time], :ok, fn kind, :ok ->
+      # Reload after difficulty writes so time estimation uses the new ratings
+      # and current task versions for its conditional writes.
+      targets = Estimation.targets(requirement.id, kind)
+
+      case estimate_batches(requirement, kind, targets, input, opts, fingerprint) do
+        :ok -> {:cont, :ok}
+        failure -> {:halt, failure}
+      end
+    end)
+  end
+
+  defp estimate_batches(requirement, kind, targets, input, opts, fingerprint) do
     targets
     |> Enum.chunk_every(20)
     |> Enum.reduce_while(:ok, fn batch, :ok ->
-      case estimate(requirement, batch, input, opts, fingerprint) do
+      case estimate(requirement, kind, batch, input, opts, fingerprint) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:cancel, reason}}
       end
@@ -71,7 +89,7 @@ defmodule RintoPMO.Requirements.EstimationWorker do
     end
   end
 
-  defp estimate(requirement, targets, input, opts, fingerprint) do
+  defp estimate(requirement, kind, targets, input, opts, fingerprint) do
     input =
       Map.put(
         input,
@@ -79,19 +97,33 @@ defmodule RintoPMO.Requirements.EstimationWorker do
         Enum.map(targets, &Map.take(&1, [:id, :title, :description, :difficulty]))
       )
 
-    case Utils.module(:task_estimator).estimate_time(input, opts) do
-      {:ok, items} -> apply_result(requirement.id, targets, items, fingerprint)
-      {:error, reason} -> {:error, "AI estimation failed: #{inspect(reason)}"}
+    result =
+      case kind do
+        :difficulty ->
+          Utils.module(:task_estimator).estimate_difficulty(Map.delete(input, :history), opts)
+
+        :time ->
+          Utils.module(:task_estimator).estimate_time(input, opts)
+      end
+
+    case result do
+      {:ok, items} -> apply_result(requirement.id, kind, targets, items, fingerprint)
+      {:error, reason} -> {:error, "AI #{kind} estimation failed: #{inspect(reason)}"}
     end
   end
 
-  defp apply_result(id, targets, items, fingerprint) do
+  defp apply_estimates(:difficulty, targets, items),
+    do: Tasks.apply_difficulty_estimates(targets, items)
+
+  defp apply_estimates(:time, targets, items), do: Tasks.apply_time_estimates(targets, items)
+
+  defp apply_result(id, kind, targets, items, fingerprint) do
     Repo.transact(fn ->
       Repo.one(from requirement in Requirement, where: requirement.id == ^id, lock: "FOR UPDATE")
 
       with {:ok, requirement, tree} <- scope(id),
            {:ok, _context, ^fingerprint} <- EstimationContext.load(requirement, tree),
-           :ok <- Tasks.apply_time_estimates(targets, items) do
+           :ok <- apply_estimates(kind, targets, items) do
         {:ok, :ok}
       else
         {:error, reason} -> {:error, reason}

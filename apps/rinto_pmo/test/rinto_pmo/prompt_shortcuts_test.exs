@@ -432,8 +432,17 @@ defmodule RintoPMO.PromptShortcutsTest do
 
   describe "list_shortcuts/0" do
     test "answers with the whole set, oldest first" do
-      {:ok, one} = PromptShortcuts.create_shortcut(attrs(%{"label" => "一"}))
-      {:ok, two} = PromptShortcuts.create_shortcut(attrs(%{"label" => "二"}))
+      # UUIDv7 ordering is only chronological across different milliseconds.
+      # Insert fixed IDs in reverse order so this does not depend on clock speed.
+      two =
+        %PromptShortcut{id: "01900000-0002-7000-8000-000000000000"}
+        |> PromptShortcut.changeset(attrs(%{"label" => "二"}))
+        |> Repo.insert!()
+
+      one =
+        %PromptShortcut{id: "01900000-0001-7000-8000-000000000000"}
+        |> PromptShortcut.changeset(attrs(%{"label" => "一"}))
+        |> Repo.insert!()
 
       assert Enum.map(PromptShortcuts.list_shortcuts(), & &1.id) == [one.id, two.id]
     end

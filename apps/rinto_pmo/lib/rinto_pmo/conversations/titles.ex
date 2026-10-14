@@ -50,6 +50,7 @@ defmodule RintoPMO.Conversations.Titles do
   alias RintoPMO.Conversations.TitleWorker
   alias RintoPMO.Documents.Document
   alias RintoPMO.Documents.DocumentRevision
+  alias RintoPMO.Requirements
   alias RintoPMO.Utils
 
   require Logger
@@ -433,6 +434,12 @@ defmodule RintoPMO.Conversations.Titles do
       %Document{latest_revision: %DocumentRevision{title: title}} -> clamp(title, summary_chars())
       _no_revision -> nil
     end
+  rescue
+    _missing -> nil
+  end
+
+  defp label(%{ref_type: "requirement", ref_id: id}) when is_binary(id) do
+    clamp(Requirements.get_requirement!(id).title, summary_chars())
   rescue
     _missing -> nil
   end

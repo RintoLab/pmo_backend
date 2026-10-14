@@ -22,7 +22,8 @@ defmodule RintoPMOWeb.V1.RequirementEstimationControllerTest do
   test "starts a job with the public polling contract and returns the existing job on repeat", %{
     conn: conn
   } do
-    task = insert(:task)
+    # Even a task with a complete time estimate needs a job for missing difficulty.
+    task = insert(:task, estimate_optimistic: 10, estimate_likely: 20, estimate_pessimistic: 30)
 
     assert {:ok, _} =
              AIRoles.put_role("task_estimation", %{

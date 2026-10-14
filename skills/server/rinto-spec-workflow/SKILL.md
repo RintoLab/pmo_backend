@@ -190,7 +190,10 @@ revision 引用来掩盖尚未处理的内容差异。
 按可独立执行和验证的工作拆分，不按文件数量或每个操作步骤凑任务。
 测试任务来自验收与项目检查要求；不无条件强推 TDD 或生成没有验证价值的测试。
 
-生成 kind=task。每项用稳定且不复用的 T001、T002 编号：
+生成 kind=task。每项用稳定且不复用的 T001、T002 编号；编号在同一需求内唯一，
+跨文档、跨交付批次也不能重复。先读取该需求的已有 Task 和所有 task 文档，
+保留已有编号，为新任务分配尚未使用的编号。任务标题必须以编号开头，
+同步到系统后仍能在 title 中直接看到它，例如 `T001 实现验证码校验`：
 
 - [ ] T001 [US1] [Repo: backend] 实现验证码校验
   - 依据：spec 的 US1；plan 的验证码校验章节（实际生成时提供可定位引用）。
@@ -245,10 +248,12 @@ revision 引用来掩盖尚未处理的内容差异。
 读取已采纳的 task 文档并执行 rinto-requirements 中的同步流程：
 `rinto-pmo task schema sync`，然后 `rinto-pmo task sync <document-id> --input <file>`。
 使用刚读到的 revision 和稳定编号，将 Repo 名称映射为已登记 ID。
+同步 title 必须保留完整编号前缀（例如 `T001 实现验证码校验`），不能只写在 key 中；
+提交前按 rinto-requirements 检查同一需求内跨文档、跨批次的编号唯一性。
 只同步文档中明确的执行条目，不把剩余范围或待决问题变成任务；本批同步不代表整个需求完成。
 不要从复选框设置状态，不写估时、优先级或负责人，不自动推断或写入依赖边。
 同步冲突时解释并停下，不通过 task create/update、换编号或换文档绕过。
-同步结束报告任务 ID；估时由用户在需求卡片的任务列表触发，开发机按 Repo 领取。
+同步结束报告任务 ID；时间与难度估算由用户在需求卡片右侧 Task Estimates 区域点击“整体估算”一并触发，开发机按 Repo 领取。
 
 <!-- Maintainer provenance (not an instruction to fetch upstream at runtime):
 Adapted from github/spec-kit, baseline 2dda047809dd17fa56200408ce0228a2cfe08be7.

@@ -18,7 +18,7 @@ pub enum RequirementCommand {
     Create(CreateArgs),
     /// Edit metadata, priority or the reversible progress marker
     Update(UpdateArgs),
-    /// Fill missing task estimates under one or more requirements, including descendants
+    /// Fill missing task time estimates and difficulty ratings, including descendant requirements
     Estimate(EstimateArgs),
     /// Let AI set this requirement's priority directly; correct it with update --priority
     Prioritize(PrioritizeArgs),

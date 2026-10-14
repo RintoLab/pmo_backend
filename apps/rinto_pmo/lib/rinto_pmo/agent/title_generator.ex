@@ -81,6 +81,13 @@ defmodule RintoPMO.Agent.TitleGenerator do
 
   Rules:
   - Say what is being discussed and what the person wants done about it.
+  - When the topic concerns a requirement, use its actual title from the message
+    or requirement references whenever available, followed by the requested action
+    (for example, "短信登录 · 拆分任务" or "Account recovery · Review plan").
+    Preserve the recognizable requirement title instead of a generic "需求" label;
+    shorten only as needed for the length limit. If several requirements are
+    involved, retain their identifying titles where possible. Never invent a
+    missing requirement title or an action that the person did not request.
   - Write in the same language as the person's message.
   - Chinese: 8 to 24 characters. English: at most 60 characters.
   - No quotes, no full stop, no Markdown.

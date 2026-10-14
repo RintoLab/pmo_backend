@@ -317,6 +317,33 @@ defmodule RintoPMO.Conversations.TitlesTest do
   end
 
   describe "references" do
+    test "resolves the current requirement title without a client title payload" do
+      requirement = insert(:requirement, title: "短信登录", description: "不发送需求正文")
+      conversation = unnamed()
+      append(conversation, "拆分任务", [%{"type" => "requirement", "id" => requirement.id}])
+
+      expect(TitleGeneratorMock, :generate, fn input, _opts ->
+        assert [%{type: "requirement", title: "短信登录"}] = input.references
+        assert input.first_user_message == "拆分任务"
+        {:ok, "短信登录 · 拆分任务"}
+      end)
+
+      assert {:ok, named, :model} = Titles.name(conversation.id)
+      assert named.title == "短信登录 · 拆分任务"
+    end
+
+    test "a missing requirement does not prevent naming the topic" do
+      conversation = unnamed()
+      append(conversation, "检查需求", [%{"type" => "requirement", "id" => Ecto.UUID.generate()}])
+
+      expect(TitleGeneratorMock, :generate, fn input, _opts ->
+        assert [%{type: "requirement"}] = input.references
+        {:ok, "检查需求"}
+      end)
+
+      assert {:ok, _named, :model} = Titles.name(conversation.id)
+    end
+
     test "describes a referenced task by title, never by description" do
       task = insert(:task, title: "接入 r-nacos", description: "先确认 systemd unit。")
       conversation = unnamed()

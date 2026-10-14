@@ -6,9 +6,9 @@ defmodule RintoPMO.Tasks.EstimationWorker do
   poll the returned job ID; completion also broadcasts on the task channel.
   Oban's lifeline recovers abandoned jobs. Failures are not retried automatically.
 
-  Only missing values are targeted. Time estimates are written conditionally so
-  overlapping task/requirement jobs and manual changes cannot overwrite one
-  another's results. Difficulty estimation retains its existing write behavior.
+  Only missing values are targeted. Both time and difficulty estimates are written
+  conditionally so overlapping task/requirement jobs and manual changes cannot
+  overwrite one another's results.
   """
 
   use Oban.Worker,

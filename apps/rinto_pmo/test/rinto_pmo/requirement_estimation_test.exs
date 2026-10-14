@@ -11,6 +11,10 @@ defmodule RintoPMO.RequirementEstimationTest do
   alias RintoPMO.Tasks.Task
 
   setup do
+    stub(TaskEstimatorMock, :estimate_difficulty, fn input, _opts ->
+      {:ok, Enum.map(input.tasks, &%{"id" => &1.id, "difficulty" => 5})}
+    end)
+
     project = insert(:project)
     root = insert(:requirement, project: project)
     leaf = insert(:requirement, project: project, parent: root)
@@ -97,7 +101,10 @@ defmodule RintoPMO.RequirementEstimationTest do
     assert {:error, :no_estimation_ai, _} = Estimation.request([ctx.leaf.id])
 
     assert {:ok, _} =
-             Tasks.update_task(task, %{estimate: %{optimistic: 1, likely: 2, pessimistic: 3}})
+             Tasks.update_task(task, %{
+               difficulty: 5,
+               estimate: %{optimistic: 1, likely: 2, pessimistic: 3}
+             })
 
     assert {:ok, [%{reason: :already_estimated}]} = Estimation.request([ctx.leaf.id])
     Repo.update_all(from(t in Task, where: t.id == ^task.id), set: [status: :done])
@@ -113,6 +120,7 @@ defmodule RintoPMO.RequirementEstimationTest do
 
     expect(TaskEstimatorMock, :estimate_time, fn input, opts ->
       assert Enum.map(input.tasks, & &1.id) == [task.id]
+      assert hd(input.tasks).difficulty == 5
       assert Enum.map(input.context.requirements, & &1.id) == [ctx.root.id, ctx.leaf.id]
       assert [%{actual_minutes: 42}] = input.history
       assert opts[:model] == "flash"
@@ -245,6 +253,158 @@ defmodule RintoPMO.RequirementEstimationTest do
     workload = Requirements.get_requirement!(ctx.leaf.id).workload
     assert workload.estimate.unestimated_tasks == 1
     assert workload.estimate.total.expected == 1300
+  end
+
+  test "fills only missing dimensions and preserves existing values", ctx do
+    configure()
+    time_only = insert(:task, project: ctx.project, requirement: ctx.leaf, difficulty: 8)
+
+    difficulty_only =
+      insert(:task,
+        project: ctx.project,
+        requirement: ctx.leaf,
+        estimate_optimistic: 10,
+        estimate_likely: 20,
+        estimate_pessimistic: 30
+      )
+
+    complete =
+      insert(:task,
+        project: ctx.project,
+        requirement: ctx.leaf,
+        difficulty: 13,
+        estimate_optimistic: 40,
+        estimate_likely: 50,
+        estimate_pessimistic: 60
+      )
+
+    insert(:task, project: ctx.project, requirement: ctx.leaf, status: :done)
+    insert(:task, project: ctx.project, requirement: ctx.leaf, status: :cancelled)
+
+    expect(TaskEstimatorMock, :estimate_difficulty, fn input, _opts ->
+      assert Enum.map(input.tasks, & &1.id) == [difficulty_only.id]
+      assert Enum.map(input.context.requirements, & &1.id) == [ctx.root.id, ctx.leaf.id]
+      {:ok, [%{"id" => difficulty_only.id, "difficulty" => 3}]}
+    end)
+
+    expect(TaskEstimatorMock, :estimate_time, fn input, _opts ->
+      assert [%{id: id, difficulty: 8}] = input.tasks
+      assert id == time_only.id
+      {:ok, [estimate(time_only)]}
+    end)
+
+    assert :ok = perform(ctx.leaf.id)
+    assert Tasks.get_task!(difficulty_only.id).estimate_likely == 20
+    assert Tasks.get_task!(difficulty_only.id).difficulty == 3
+    assert Tasks.get_task!(time_only.id).difficulty == 8
+    assert Tasks.get_task!(time_only.id).estimate_likely == 60
+    assert Tasks.get_task!(complete.id).difficulty == 13
+    assert Tasks.get_task!(complete.id).estimate_likely == 50
+    assert {:ok, [%{reason: :already_estimated}]} = Estimation.request([ctx.leaf.id])
+  end
+
+  test "time estimates alone do not skip a missing difficulty", ctx do
+    configure()
+
+    task =
+      insert(:task,
+        project: ctx.project,
+        requirement: ctx.leaf,
+        estimate_optimistic: 0,
+        estimate_likely: 0,
+        estimate_pessimistic: 0
+      )
+
+    assert {:ok, [%{reason: nil, job: %{status: :running}}]} = Estimation.request([ctx.leaf.id])
+    assert Estimation.targets(ctx.leaf.id) == []
+    assert Enum.map(Estimation.targets(ctx.leaf.id, :difficulty), & &1.id) == [task.id]
+    assert :ok = perform(ctx.leaf.id)
+    assert Tasks.get_task!(task.id).difficulty == 5
+    assert Tasks.get_task!(task.id).estimate_likely == 0
+  end
+
+  test "invalid difficulty batches are atomic and stop before time estimation", ctx do
+    configure()
+    first = insert(:task, project: ctx.project, requirement: ctx.leaf)
+    second = insert(:task, project: ctx.project, requirement: ctx.leaf)
+    one = %{"id" => first.id, "difficulty" => 3}
+    two = %{"id" => second.id, "difficulty" => 5}
+
+    for items <- [
+          nil,
+          [one],
+          [one, one],
+          [one, Map.put(two, "id", UUIDv7.generate())],
+          [one, Map.put(two, "difficulty", 4)],
+          [one, Map.put(two, "difficulty", nil)]
+        ] do
+      # A nil result is validated at the write boundary; the estimator contract
+      # itself promises a list, so exercise the boundary directly for that case.
+      if is_nil(items) do
+        assert {:error, _} = Tasks.apply_difficulty_estimates([first, second], items)
+      else
+        expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts -> {:ok, items} end)
+        assert {:cancel, _} = perform(ctx.leaf.id)
+      end
+
+      assert Tasks.get_task!(first.id).difficulty == nil
+      assert Tasks.get_task!(second.id).difficulty == nil
+      assert Tasks.get_task!(first.id).estimate_likely == nil
+    end
+  end
+
+  test "concurrent manual difficulty wins and rejects the rest of its batch", ctx do
+    configure()
+    first = insert(:task, project: ctx.project, requirement: ctx.leaf)
+    second = insert(:task, project: ctx.project, requirement: ctx.leaf)
+
+    expect(TaskEstimatorMock, :estimate_difficulty, fn input, _opts ->
+      {:ok, _} = Tasks.update_task(second, %{difficulty: 13})
+      {:ok, Enum.map(input.tasks, &%{"id" => &1.id, "difficulty" => 5})}
+    end)
+
+    assert {:cancel, reason} = perform(ctx.leaf.id)
+    assert reason =~ "changed"
+    assert Tasks.get_task!(first.id).difficulty == nil
+    assert Tasks.get_task!(second.id).difficulty == 13
+  end
+
+  test "difficulty results cannot outlive changes to requirement context", ctx do
+    configure()
+    task = insert(:task, project: ctx.project, requirement: ctx.leaf)
+
+    expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts ->
+      {:ok, _} = Requirements.update_requirement(ctx.leaf, %{description: "New scope"})
+      {:ok, [%{"id" => task.id, "difficulty" => 5}]}
+    end)
+
+    assert {:cancel, reason} = perform(ctx.leaf.id)
+    assert reason =~ "documents changed"
+    assert Tasks.get_task!(task.id).difficulty == nil
+  end
+
+  test "a failed time phase preserves difficulty and a new request resumes missing work", ctx do
+    configure()
+    task = insert(:task, project: ctx.project, requirement: ctx.leaf)
+
+    expect(TaskEstimatorMock, :estimate_difficulty, fn _input, _opts ->
+      {:ok, [%{"id" => task.id, "difficulty" => 8}]}
+    end)
+
+    expect(TaskEstimatorMock, :estimate_time, fn input, _opts ->
+      assert hd(input.tasks).difficulty == 8
+      {:error, :invalid_output}
+    end)
+
+    assert {:cancel, reason} = perform(ctx.leaf.id)
+    assert reason =~ "time"
+    assert Tasks.get_task!(task.id).difficulty == 8
+    assert Tasks.get_task!(task.id).estimate_likely == nil
+
+    expect(TaskEstimatorMock, :estimate_time, fn _input, _opts -> {:ok, [estimate(task)]} end)
+    assert :ok = perform(ctx.leaf.id)
+    assert Tasks.get_task!(task.id).difficulty == 8
+    assert Tasks.get_task!(task.id).estimate_likely == 60
   end
 
   defp configure do

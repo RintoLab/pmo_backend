@@ -1,5 +1,5 @@
 defmodule RintoPMO.Requirements.Estimation do
-  @moduledoc "Queues missing task estimates once per open leaf requirement."
+  @moduledoc "Queues missing task difficulty and time estimates once per open leaf requirement."
   import Ecto.Query
 
   alias RintoPMO.AIRoles
@@ -19,12 +19,14 @@ defmodule RintoPMO.Requirements.Estimation do
     end
   end
 
-  def targets(id) do
+  def targets(id, kind \\ :time) when kind in [:difficulty, :time] do
+    missing_field = if kind == :difficulty, do: :difficulty, else: :estimate_optimistic
+
     Repo.all(
       from task in Task,
         where:
           task.requirement_id == ^id and
-            task.status in [:open, :in_progress] and is_nil(task.estimate_optimistic),
+            task.status in [:open, :in_progress] and is_nil(field(task, ^missing_field)),
         order_by: task.id
     )
   end
@@ -76,10 +78,17 @@ defmodule RintoPMO.Requirements.Estimation do
 
     reason =
       cond do
-        work == [] -> :no_tasks
-        pending == [] -> :no_pending_tasks
-        Enum.all?(pending, &(not is_nil(&1.estimate_optimistic))) -> :already_estimated
-        true -> nil
+        work == [] ->
+          :no_tasks
+
+        pending == [] ->
+          :no_pending_tasks
+
+        Enum.all?(pending, &(not is_nil(&1.estimate_optimistic) and not is_nil(&1.difficulty))) ->
+          :already_estimated
+
+        true ->
+          nil
       end
 
     %{requirement_id: requirement.id, title: requirement.title, job: nil, reason: reason}

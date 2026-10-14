@@ -753,12 +753,14 @@ defmodule RintoPMO.Tasks do
     :already_set
   end
 
-  defp write_difficulty(%Task{} = task, value) do
+  defp write_difficulty(%Task{} = task, value) when is_integer(value) do
     case put_difficulty(%{"difficulty" => value}) do
-      {:ok, attrs} -> task |> Task.changeset(attrs) |> Repo.update()
+      {:ok, attrs} -> write_estimate_if_unchanged(task, attrs, :difficulty)
       _invalid -> :invalid
     end
   end
+
+  defp write_difficulty(_task, _value), do: :invalid
 
   defp write_estimate(%Task{estimate_optimistic: minutes}, _item) when not is_nil(minutes) do
     :already_set
@@ -778,14 +780,19 @@ defmodule RintoPMO.Tasks do
   end
 
   @doc "Validates a complete AI batch and writes it atomically without replacing changed tasks."
-  def apply_time_estimates(targets, items) when is_list(items) do
+  def apply_time_estimates(targets, items), do: apply_estimates(:time, targets, items)
+
+  @doc "Validates and conditionally writes a complete batch of missing difficulty ratings."
+  def apply_difficulty_estimates(targets, items), do: apply_estimates(:difficulty, targets, items)
+
+  defp apply_estimates(kind, targets, items) when is_list(items) do
     expected = Enum.sort(Enum.map(targets, & &1.id))
     actual = Enum.map(items, fn item -> if is_map(item), do: Map.get(item, "id") end)
 
     if Enum.sort(actual) == expected do
       by_id = Map.new(items, &{&1["id"], &1})
 
-      Repo.transact(fn -> write_estimation_batch(targets, by_id) end)
+      Repo.transact(fn -> write_estimation_batch(kind, targets, by_id) end)
       |> case do
         {:ok, :ok} -> :ok
         {:error, reason} -> {:error, reason}
@@ -795,19 +802,25 @@ defmodule RintoPMO.Tasks do
     end
   end
 
-  def apply_time_estimates(_targets, _items),
+  defp apply_estimates(_kind, _targets, _items),
     do: {:error, "the model did not return an estimate list"}
 
-  defp write_estimation_batch(targets, by_id) do
+  defp write_estimation_batch(kind, targets, by_id) do
     Enum.reduce_while(targets, {:ok, :ok}, fn task, _acc ->
-      case write_estimate(task, Map.fetch!(by_id, task.id)) do
+      item = Map.fetch!(by_id, task.id)
+
+      result =
+        case kind do
+          :difficulty -> write_difficulty(task, Map.get(item, "difficulty"))
+          :time -> write_estimate(task, item)
+        end
+
+      case result do
         {:ok, _updated} ->
           {:cont, {:ok, :ok}}
 
         :invalid ->
-          {:halt,
-           {:error,
-            "invalid estimate for #{task.id}; use non-negative whole minutes with optimistic <= likely <= pessimistic"}}
+          {:halt, {:error, invalid_batch_estimate(kind, task.id)}}
 
         _changed ->
           {:halt, {:error, "task #{task.id} changed during estimation; run it again"}}
@@ -815,12 +828,19 @@ defmodule RintoPMO.Tasks do
     end)
   end
 
-  defp write_estimate_if_unchanged(task, attrs) do
+  defp invalid_batch_estimate(:difficulty, id),
+    do: "invalid difficulty for #{id}; use a Fibonacci story point (1, 2, 3, 5, 8, 13, 21)"
+
+  defp invalid_batch_estimate(:time, id),
+    do:
+      "invalid estimate for #{id}; use non-negative whole minutes with optimistic <= likely <= pessimistic"
+
+  defp write_estimate_if_unchanged(task, attrs, kind \\ :time) do
     Repo.transact(fn ->
       current =
         Repo.one(from candidate in Task, where: candidate.id == ^task.id, lock: "FOR UPDATE")
 
-      if same_estimation_target?(current, task) do
+      if same_estimation_target?(current, task, kind) do
         current |> Task.changeset(attrs) |> Repo.update()
       else
         {:error, :changed}
@@ -828,9 +848,9 @@ defmodule RintoPMO.Tasks do
     end)
   end
 
-  defp same_estimation_target?(nil, _task), do: false
+  defp same_estimation_target?(nil, _task, _kind), do: false
 
-  defp same_estimation_target?(current, task) do
+  defp same_estimation_target?(current, task, kind) do
     fields = [
       :updated_at,
       :title,
@@ -843,7 +863,12 @@ defmodule RintoPMO.Tasks do
       :estimate_pessimistic
     ]
 
-    Map.take(current, fields) == Map.take(task, fields) and is_nil(current.estimate_optimistic)
+    missing =
+      if kind == :difficulty,
+        do: is_nil(current.difficulty),
+        else: is_nil(current.estimate_optimistic)
+
+    Map.take(current, fields) == Map.take(task, fields) and missing
   end
 
   defp succeed(job_id, task_id, kind) do
